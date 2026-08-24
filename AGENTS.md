@@ -1,40 +1,103 @@
-# Agent Instructions
+# CLAUDE.md
 
-This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get started.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Quick Reference
+## What this is
+
+A review-driven document ingestion pipeline (product name "Bharat Vistaar Docs Pipeline"): Temporal workflows + FastAPI + SQLite + MinIO + Marqo/Qdrant. Documents move through explicit stages (OCR → review → translate → review → chunk → review → ingest DEV → Super Admin promote to PROD), with every major output persisted as an inspectable artifact rather than hidden.
+
+Full narrative docs (read these before deep architectural changes, don't re-derive):
+- `README.md` — what the system does, API surface, supported inputs, auth model
+- `docs/SYSTEM_DESIGN.md` — C4 diagrams, containers, DEV/PROD indexing, stage/activity table
+- `docs/architecture-pipeline-rbac.md` — login flow, roles, DEV vs Super-Admin-PROD gate
+- `docs/MASTER_SCHEME_CATALOG_AND_AI_SYNC_DESIGN.md` — master catalog → Redis sync to AI layer (bharat-oan-api)
+- `ENV.md` — full annotated environment variable reference (`.env.example` for a working template)
+
+## Commands
 
 ```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --status in_progress  # Claim work
-bd close <id>         # Complete work
-bd sync               # Sync with git
+# Run the full stack (api, worker, temporal, minio, marqo, ui, lang-detect)
+docker compose up -d --build
+docker compose down
+
+# Tests (pytest.ini: testpaths=tests, markers unit/integration/slow/api/db/workflow)
+pytest
+pytest -m "not slow"                    # skip slow tests
+pytest tests/test_activities.py -v      # single file
+pytest tests/test_api.py::test_name     # single test
+
+# Quick sanity checks (no test infra needed)
+python3 -m py_compile pipeline/*.py
+cd ui && npm run build
+
+# UI dev server
+cd ui && npm run dev        # vite, talks to API on :8001
+cd ui && npm run build
+
+# Health checks against a running stack
+curl http://localhost:8001/health
+curl http://localhost:8882/                       # marqo
+curl http://localhost:9000/minio/health/live
 ```
 
-## Landing the Plane (Session Completion)
+Local ports: UI `3000`, API `8001`, Marqo `8882`, Temporal `7233`, Temporal UI `8080`, MinIO API `9000`/console `9001`, Keycloak `8082` (path `/auth`).
 
-**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
+Interactive API docs once running: `http://localhost:8001/docs`.
 
-**MANDATORY WORKFLOW:**
+## Architecture
 
-1. **File issues for remaining work** - Create issues for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY:
-   ```bash
-   git pull --rebase
-   bd sync
-   git push
-   git status  # MUST show "up to date with origin"
-   ```
-5. **Clean up** - Clear stashes, prune remote branches
-6. **Verify** - All changes committed AND pushed
-7. **Hand off** - Provide context for next session
+### Everything lives in `pipeline/`, not split into microservices
 
-**CRITICAL RULES:**
-- Work is NOT complete until `git push` succeeds
-- NEVER stop before pushing - that leaves work stranded locally
-- NEVER say "ready to push when you are" - YOU must push
-- If push fails, resolve and retry until it succeeds
+`pipeline/api.py` (~4.3k lines) is a single FastAPI app with all routes declared directly via `@app.get/post/patch/delete` — there is no router-per-resource split. When adding an endpoint, find the existing block by resource (documents, pages, chunks, artifacts, catalog, audit, admin) and add near its siblings rather than creating a new file.
 
+Core modules (all under `pipeline/`):
+- `api.py` — FastAPI app, all HTTP routes
+- `workflows.py` — Temporal workflow definitions (`DocumentPipelineWorkflow` is the main one; also `ReingestionWorkflow`, `PromoteToProdWorkflow`, `TranslationOnlyWorkflow`, `OcrOnlyWorkflow`, `ChunkingOnlyWorkflow`)
+- `activities.py` — Temporal activities invoked by the workflows (OCR, translate, chunk, ingest, state updates)
+- `worker.py` — Temporal worker process; registers workflows/activities on task queue `ocr-pipeline`
+- `db.py` — SQLite access layer; SQLite is the **canonical** metadata/review-state store (documents, pages, chunks, jobs, artifacts, audit log), not just a cache
+- `models.py` — Pydantic models, including `DocumentStage` enum and `PIPELINE_STAGES` (the stepper-UI stage list)
+- `config.py` — `Config` dataclass reading env vars, with defaults
+- `instances.py` — instance/tenant (state) code ↔ human name mapping; `bv` = Bharat Vistaar platform-wide, others are state codes matching Keycloak group paths (`/states/MH/...` → `mh`)
+- `master_catalog_pg.py`, `scheme_catalog.py` — Postgres-backed master scheme catalog, synced to Redis for the AI layer (bharat-oan-api) to consume
+- `ocr/`, `translation/`, `chunking/`, `vector_store/` — pluggable provider packages, each with a `base.py` protocol/ABC and a `service.py` (or equivalent) that dispatches to the configured provider
+- `auth/` — Keycloak JWT validation, group-based tenancy/permissions, email-OTP flow, admin user management
+
+### Provider pattern
+
+`ocr/`, `translation/`, `chunking/`, `vector_store/` each define a `base.py` protocol and one-or-more concrete implementations selected by env var (e.g. `OCR_PROVIDER`, `TRANSLATION_PROVIDER`, `CHUNKING_PROVIDER`) via a `service.py` factory. Adding a new provider means implementing the base protocol and registering it in that package's service dispatcher — not touching `activities.py` call sites.
+
+### Temporal workflow model
+
+`DocumentPipelineWorkflow` pauses at review stages via Temporal **signals** and resumes on operator action (the approve-* API endpoints send the signal). Stage order (`DocumentStage` in `models.py` / `PIPELINE_STAGES`):
+
+```
+registered → ocr_processing → ocr_review → translation_processing → translation_review
+  → chunking → chunk_review → ready_for_ingestion → ingesting
+  → approval_for_prod → ingesting_prod → completed   (or → failed at any point)
+```
+
+`approval_for_prod`/`ingesting_prod` are **PROD-only stages** (`PROD_ONLY_STAGES` in `models.py`); with `DISABLE_PROD_SETTING=true` a document goes straight from `ingesting` to `completed`. That flag is read only at workflow *start* and passed in as an argument — never read inside a running workflow, since that would break Temporal replay determinism if flipped mid-flight (see the docstring in `instances.py`).
+
+### DEV vs PROD dual indexing
+
+`ingest_document_from_db` (activity) writes the **DEV** index (Marqo). A separate Super-Admin-only approval gate (`approve-prod` / `request-prod-ready` endpoints, `PromoteToProdWorkflow`) triggers `promote_document_to_prod_qdrant`, which promotes into the **PROD** index (Qdrant). `pipeline/vector_store/` abstracts both behind a common `VectorStore` protocol (`base.py`) — Marqo and Qdrant are not interchangeable providers of the same store, they are the DEV and PROD stores respectively.
+
+### Storage responsibilities (don't blur these)
+
+- **SQLite** — canonical metadata/content/review state (documents, pages, chunks, jobs, artifacts, audit, search settings). Source of truth for anything editable.
+- **MinIO** — blob storage for original uploads, normalized files, and stage artifacts (OCR/translation/chunk exports, Marqo payload snapshots).
+- **Temporal** — orchestration/retries/review-gate signaling only; not a content store.
+- **Marqo/Qdrant** — downstream search projections of approved chunk state; never the place to edit content.
+
+### Auth (optional, off by default)
+
+`AUTH_DISABLED=true` by default — no login, a synthetic local admin is used. When enabled (`AUTH_DISABLED=false`), the API validates Keycloak RS256 JWTs against realm JWKS. Preferred model is Keycloak **groups** (`/states/{STATE}/contributor`, `/global/super-admin`); realm roles + `instances` claims are a legacy fallback. `pipeline/auth/` holds `jwt.py` (validation), `groups.py`/`tenancy.py` (state scoping), `permissions.py` (role→permission mapping), `email_otp.py` (OTP login flow), `keycloak_admin.py` (admin API calls). See `docs/architecture-pipeline-rbac.md` for the full role table and login flow before changing anything here.
+
+### UI (`ui/`)
+
+React 18 + Vite + Tailwind v4 + Radix UI operator console (not a plain upload form) — dashboard, document operations (stage/artifacts/jobs/pages/chunks/Marqo state/audit in one view), search workbench, settings, audit log. `ui/src/` layout: `views/`, `components/` (+ `components/ui/` for primitives), `hooks/`, `lib/`, `auth/`, `config/`, `styles/`.
+
+### Scripts (`scripts/`)
+
+Operational tools, not one-off hacks — e.g. `bulk_reingest_sqlite_to_marqo.py`, `list_failed_workflows.py`, `terminate_stuck_workflows.py`, `reset_marqo_index.py`, `keycloak_bootstrap_docs_pipeline.py`, `backfill_marqo_instance.py`. Check here before writing a new maintenance script — an equivalent likely exists.
