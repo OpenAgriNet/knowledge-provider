@@ -6,12 +6,11 @@ from __future__ import annotations
 import base64
 import io
 import os
-from typing import Optional
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
 from PIL import Image
+from pydantic import BaseModel, Field
 
 app = FastAPI(title="Chandra HF OCR", version="1.0.0")
 _manager = None

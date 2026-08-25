@@ -9,7 +9,6 @@ from .base import ChunkingConfig, ChunkingResult
 from .deterministic import DeterministicChunkingProvider
 from .recursive_splitter import RecursiveSplitterChunkingProvider
 
-
 PROVIDERS = {
     "deterministic": DeterministicChunkingProvider,
     "recursive_splitter": RecursiveSplitterChunkingProvider,

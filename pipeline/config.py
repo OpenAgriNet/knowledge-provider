@@ -6,7 +6,6 @@ Validates required environment variables and provides typed configuration access
 
 import os
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass

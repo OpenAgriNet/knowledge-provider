@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Iterable, Optional
+from typing import Iterable
 
 import httpx
 

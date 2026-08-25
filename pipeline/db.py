@@ -5,17 +5,15 @@ This provides a fallback when Temporal workflow queries fail during
 long-running activities, ensuring the dashboard always shows document status.
 """
 
-import sqlite3
-import os
 import hashlib
+import json
+import os
+import sqlite3
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from contextlib import contextmanager
-from typing import Optional
 from threading import Lock
-import json
-
-from .models import DocumentStage
+from typing import Optional
 
 # Database path - can be configured via environment
 DB_PATH = os.environ.get("DOCUMENT_DB_PATH", "/data/documents.db")

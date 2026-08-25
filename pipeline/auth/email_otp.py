@@ -45,8 +45,8 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from . import keycloak_admin
 from .. import db
+from . import keycloak_admin
 
 OTP_LENGTH = 6
 OTP_TTL_SECONDS = 300

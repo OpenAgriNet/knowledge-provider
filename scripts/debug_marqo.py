@@ -38,7 +38,7 @@ try:
     
     # Try to get settings
     settings = index.get_settings()
-    print(f"\nIndex settings:")
+    print("\nIndex settings:")
     print(f"  Type: {settings.get('type')}")
     print(f"  Model: {settings.get('model')}")
     print(f"  Fields: {len(settings.get('allFields', []))}")
