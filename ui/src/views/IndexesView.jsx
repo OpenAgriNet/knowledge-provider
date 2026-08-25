@@ -1,11 +1,11 @@
-import React, { useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent } from '../components/ui/card'
 import { Skeleton } from '../components/ui/skeleton'
 import { fetchAllDocuments, fetchJson, formatCompactDateTime, formatCount } from '../lib/pipelineUi'
 import { useAuth } from '../auth/AuthProvider'
-import { Activity, AlertTriangle, CheckCircle, ChevronDown, ChevronUp, CircleAlert, Clock, Database, HardDrive, RefreshCcw } from 'lucide-react'
+import { Activity, AlertTriangle, CheckCircle, ChevronDown, ChevronUp, Clock, Database, HardDrive, RefreshCcw } from 'lucide-react'
 
 function formatMetric(value, suffix = '') {
   if (value === null || value === undefined || value === '') return '—'

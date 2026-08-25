@@ -79,8 +79,6 @@ const OAUTH_CALLBACK_PARAMS = [
 ]
 
 const MIN_TOKEN_VALIDITY_SECONDS = 30
-const SSO_POPUP_NAME = 'docs-pipeline-sso'
-const SSO_POPUP_FEATURES = 'popup,width=520,height=720,left=120,top=80'
 
 export const KEYCLOAK_SSO_MESSAGE = {
   SUCCESS: 'KEYCLOAK_SSO_SUCCESS',

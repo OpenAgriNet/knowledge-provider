@@ -1,6 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Checkbox } from '../components/ui/checkbox'
 import { Card, CardContent } from '../components/ui/card'
@@ -18,7 +17,7 @@ import {
 } from '../components/ui/alert-dialog'
 import { NoticeCard } from '../components/NoticeCard'
 import { useAuth } from '../auth/AuthProvider'
-import { fetchJson, getDocumentListLabel, summarizeAvailableAction, summarizeQueueReason } from '../lib/pipelineUi'
+import { fetchJson, summarizeAvailableAction } from '../lib/pipelineUi'
 import { CheckCircle, ListTodo, MoreHorizontal, RefreshCw } from 'lucide-react'
 
 const bulkActions = [

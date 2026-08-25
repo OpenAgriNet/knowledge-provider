@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   AlertCircle,
@@ -10,7 +10,6 @@ import {
   ClipboardList,
   Database,
   Eye,
-  ExternalLink,
   FileCode,
   FileText,
   Layers,
@@ -49,7 +48,6 @@ import {
   fetchJson,
   formatCompactDateTime,
   getAuditActionOptions,
-  getDocumentFileLabel,
   getDocumentListLabel,
   getStageLabel,
   summarizeAuditAction,

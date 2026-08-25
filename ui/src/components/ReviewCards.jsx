@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { RotateCcw, Save, SquareArrowOutUpRight, WandSparkles } from 'lucide-react'
 import { API_BASE } from '../config'
 import { apiFetch } from '../auth/keycloak'

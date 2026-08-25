@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { PanelLeft } from 'lucide-react'
 import { AppSidebar } from './AppSidebar'
 import { ThemeSwitcher } from './ThemeSwitcher'
