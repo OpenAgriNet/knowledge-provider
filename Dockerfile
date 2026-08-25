@@ -10,7 +10,7 @@ WORKDIR /app
 #     curl \
 #     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=ghcr.io/astral-sh/uv:0.9.26 /uv /uvx /usr/local/bin/
+COPY --from=ghcr.io/astral-sh/uv:0.12.5 /uv /uvx /usr/local/bin/
 
 # Use the base image's own Python 3.10 rather than letting uv download a
 # managed interpreter — there's no point fetching a second one.
