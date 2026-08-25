@@ -70,8 +70,8 @@ class TestTranslationService:
     @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_translate_pages_skips_english(self, monkeypatch):
-        from pipeline.translation.base import TranslationConfig
         from pipeline.translation import service as translation_service
+        from pipeline.translation.base import TranslationConfig
 
         config = TranslationConfig(
             provider="gemma_vllm",
@@ -205,8 +205,8 @@ class TestScriptGate:
     @pytest.mark.asyncio
     async def test_gate_skips_lang_detect_for_english_pages(self, monkeypatch):
         """No HTTP call at all when every page is Latin script."""
-        from pipeline.translation.base import TranslationConfig
         from pipeline.translation import service
+        from pipeline.translation.base import TranslationConfig
 
         pages = [
             {"page_number": 1, "original_markdown": "Operational guidelines for oil palm."},
@@ -228,8 +228,8 @@ class TestScriptGate:
     @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_gate_logs_decision_per_page(self):
-        from pipeline.translation.base import TranslationConfig
         from pipeline.translation import service
+        from pipeline.translation.base import TranslationConfig
 
         pages = [
             {"page_number": 1, "original_markdown": "Operational guidelines for oil palm."},

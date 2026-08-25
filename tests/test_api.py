@@ -10,10 +10,9 @@ Tests cover:
 - Error handling
 """
 
-import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
-from fastapi.testclient import TestClient
 import os
+
+import pytest
 
 # Set test environment
 os.environ["DOCUMENT_DB_PATH"] = ":memory:"

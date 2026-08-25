@@ -274,10 +274,9 @@ def test_permission_is_str_enum_compatible():
 def test_decode_and_validate_token_requires_exp_and_rejects_bad_sig():
     from datetime import datetime, timedelta, timezone
 
+    import jwt as pyjwt
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
-
-    import jwt as pyjwt
 
     from pipeline.auth.config import AuthConfig
     from pipeline.auth.jwt import clear_jwks_cache, decode_and_validate_token
