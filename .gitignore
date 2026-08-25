@@ -10,6 +10,9 @@ venv/
 *.egg-info/
 dist/
 build/
+htmlcov/
+.coverage
+coverage.xml
 
 # IDE
 .idea/
