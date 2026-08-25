@@ -21,13 +21,16 @@ docker compose up -d --build
 docker compose down
 
 # Tests (pytest.ini: testpaths=tests, markers unit/integration/slow/api/db/workflow)
-pytest
-pytest -m "not slow"                    # skip slow tests
-pytest tests/test_activities.py -v      # single file
-pytest tests/test_api.py::test_name     # single test
+uv run pytest
+uv run pytest -m "not slow"                    # skip slow tests
+uv run pytest tests/test_activities.py -v      # single file
+uv run pytest tests/test_api.py::test_name     # single test
+
+# Lint
+uv run ruff check .
 
 # Quick sanity checks (no test infra needed)
-python3 -m py_compile pipeline/*.py
+uv run python -c "import pipeline.api"
 cd ui && npm run build
 
 # UI dev server

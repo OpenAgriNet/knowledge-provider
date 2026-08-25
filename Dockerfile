@@ -10,29 +10,24 @@ WORKDIR /app
 #     curl \
 #     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install Python dependencies
-COPY requirements.txt .
-# The pip shipped in python:3.10-slim (23.0.1) rejects wheels whose metadata
-# name uses underscores ("expected 'typing-extensions', got 'typing_extensions'")
-# and falls back to building the sdist. That needs flit_core, which lives on
-# PyPI — unreachable below because --index-url REPLACES PyPI rather than adding
-# to it, so the build fails. A newer pip accepts the wheel and never shells out
-# to a source build. Keep this ahead of the torch install.
-# Cache mounts persist pip's download/wheel cache across builds (even
-# cache-busted ones) without baking it into the image layer, so a rebuild
-# only re-downloads packages that actually changed.
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --upgrade "pip>=24.0"
-# CPU-only torch — only needed for local sentence_transformers embeddings.
-# If EMBEDDING_PROVIDER=openai_compatible (remote API), this can be skipped
-# by building with: --build-arg INSTALL_TORCH=0
-ARG INSTALL_TORCH=1
-RUN --mount=type=cache,target=/root/.cache/pip \
-    if [ "$INSTALL_TORCH" = "1" ]; then \
-      pip install torch --index-url https://download.pytorch.org/whl/cpu; \
-    fi
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -r requirements.txt
+COPY --from=ghcr.io/astral-sh/uv:0.9.26 /uv /uvx /usr/local/bin/
+
+# Use the base image's own Python 3.10 rather than letting uv download a
+# managed interpreter — there's no point fetching a second one.
+ENV UV_PYTHON_DOWNLOADS=never
+
+# Copy dependency files and install (no dev group: pytest/ruff aren't needed
+# at runtime). pyproject.toml pins torch to the CPU-only wheel index —
+# sentence-transformers depends on it, and default PyPI torch bundles CUDA
+# and is far larger for no benefit in this container.
+# Cache mounts persist uv's download cache across builds (even cache-busted
+# ones) without baking it into the image layer, so a rebuild only
+# re-downloads packages that actually changed.
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev
+
+ENV PATH="/app/.venv/bin:$PATH"
 
 # Copy pipeline code
 COPY pipeline/ ./pipeline/

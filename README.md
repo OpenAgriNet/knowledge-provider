@@ -301,7 +301,7 @@ tests/           Automated tests
 test_data/       Small local fixtures for tests and smoke checks
 docker-compose.yml
 Dockerfile
-requirements.txt
+pyproject.toml
 ```
 
 ## Services And Ports
