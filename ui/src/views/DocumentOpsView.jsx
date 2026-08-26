@@ -753,23 +753,6 @@ export default function DocumentOpsView() {
     }
   }
 
-  async function saveChunk(chunkNumber, text) {
-    try {
-      await fetchJson(`/documents/${workflowId}/chunks/${chunkNumber}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ edited_text: text })
-      })
-      setMessage(`Chunk ${chunkNumber} saved`)
-      const next = { ...chunkEdits }
-      delete next[chunkNumber]
-      setChunkEdits(next)
-      await reloadAfterMutation()
-    } catch (err) {
-      setMessage(err.message)
-    }
-  }
-
   const visibleActions = (doc?.available_actions || []).filter(
     action => !['disable_document', 'restore_document', 'inspect_runtime', 'reconcile_document'].includes(action)
       // super_admin already sees the real "Approve publish to prod" button at this
@@ -824,7 +807,6 @@ export default function DocumentOpsView() {
     : ''
   const translationText = currentPageRecord ? (translationEdits[currentPage] ?? (currentPageRecord.edited_translation || currentPageRecord.translated_markdown || '')) : ''
   const isOcrPending = !currentPageRecord && (doc?.stage === 'registered' || doc?.stage === 'ocr_processing')
-  const canApproveOcr = canReview && doc?.stage === 'ocr_review'
   const canApproveTranslation = canReview && doc?.stage === 'translation_review'
   const canApproveChunks = canReview && doc?.stage === 'chunk_review'
   const ocrAlreadyPast = doc?.stage && !['registered', 'ocr_processing', 'ocr_review'].includes(doc.stage)
@@ -1089,17 +1071,6 @@ export default function DocumentOpsView() {
                       </Button>
                       <Button size="sm" className="h-8" disabled={!canReview} onClick={() => savePage(currentPage, pageText)}>
                         <Save className="mr-1 h-3.5 w-3.5" />Save
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="success"
-                        className="h-8"
-                        disabled={!canApproveOcr || Boolean(actionPending)}
-                        title={!canApproveOcr ? `Available only in ocr_review (current: ${doc.stage})` : undefined}
-                        onClick={() => runAction('approve_ocr')}
-                      >
-                        <CheckCircle className="mr-1 h-3.5 w-3.5" />
-                        {actionPending === 'approve_ocr' ? 'Approving…' : 'Approve OCR'}
                       </Button>
                     </div>
                   )}
@@ -1463,16 +1434,6 @@ export default function DocumentOpsView() {
                                   }}
                                 >
                                   <RotateCcw className="h-3 w-3" />
-                                </Button>
-                              )}
-                              {canEdit && (
-                                <Button size="sm" className="h-6 text-[10px]" disabled={!canReview}
-                                  onClick={() => saveChunk(
-                                    chunk.chunk_number,
-                                    chunkEdits[chunk.chunk_number] ?? chunk.edited_text ?? chunk.text ?? chunk.original_text ?? ''
-                                  )}
-                                >
-                                  <Save className="h-3 w-3" />
                                 </Button>
                               )}
                             </div>
