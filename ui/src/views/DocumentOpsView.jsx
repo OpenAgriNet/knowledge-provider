@@ -891,8 +891,6 @@ export default function DocumentOpsView() {
     )
   }
 
-  const totalPages = sortedPages.length || doc.page_count || 1
-
   return (
     <div className="flex h-[calc(100svh-3.5rem)] min-h-0 w-full min-w-0 flex-col overflow-hidden">
       {/* Fixed header — does not scroll the whole app */}
@@ -1062,7 +1060,7 @@ export default function DocumentOpsView() {
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-card/60 px-3 py-2 sm:px-4">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-sm font-medium text-foreground">
-                      Review text{sortedPages.length ? ` · Page ${currentPage} of ${totalPages}` : ''}
+                      Review text{sortedPages.length ? ` · Page ${currentPage}` : ''}
                     </span>
                     {currentPageRecord && (
                       <Badge variant={currentPageRecord.is_reviewed ? 'success' : 'secondary'}>
@@ -1218,7 +1216,7 @@ export default function DocumentOpsView() {
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-card/60 px-3 py-2 sm:px-4">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-sm font-medium text-foreground">
-                      Translation{sortedPages.length ? ` · Page ${currentPage} of ${totalPages}` : ''}
+                      Translation{sortedPages.length ? ` · Page ${currentPage}` : ''}
                     </span>
                     {sortedPages.length > 0 && (
                       <span className="text-xs text-muted-foreground">
