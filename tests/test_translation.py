@@ -77,7 +77,6 @@ class TestTranslationService:
             provider="gemma_vllm",
             model="gemma-4",
             endpoint="http://localhost:8000/v1",
-            lang_detect_url="http://lang-detect:3001",
         )
 
         pages = [
@@ -203,10 +202,10 @@ class TestScriptGate:
 
     @pytest.mark.unit
     @pytest.mark.asyncio
-    async def test_gate_skips_lang_detect_for_english_pages(self, monkeypatch):
-        """No HTTP call at all when every page is Latin script."""
-        from pipeline.translation import service
+    async def test_gate_skips_pyfranc_for_english_pages(self, monkeypatch):
+        """No disambiguation call at all when every page is Latin script."""
         from pipeline.translation.base import TranslationConfig
+        from pipeline.translation import service
 
         pages = [
             {"page_number": 1, "original_markdown": "Operational guidelines for oil palm."},
@@ -214,14 +213,12 @@ class TestScriptGate:
         ]
 
         def explode(*args, **kwargs):
-            raise AssertionError("lang-detect must not be called for Latin-script pages")
+            raise AssertionError("pyfranc must not be called for Latin-script pages")
 
-        monkeypatch.setattr(service.httpx, "AsyncClient", explode)
+        monkeypatch.setattr(service.franc, "lang_detect", explode)
 
         config = TranslationConfig(provider="gemma_vllm", model="gemma-4")
-        detected = await service.detect_page_languages(
-            pages, "http://lang-detect:3000", config=config
-        )
+        detected = await service.detect_page_languages(pages, config=config)
 
         assert detected == {0: "en", 1: "en"}
 
@@ -241,9 +238,7 @@ class TestScriptGate:
             messages.append(msg % args if args else msg)
 
         config = TranslationConfig(provider="gemma_vllm", model="gemma-4")
-        detected = await service.detect_page_languages(
-            pages, "http://lang-detect:3000", log=log, config=config
-        )
+        detected = await service.detect_page_languages(pages, log=log, config=config)
 
         assert detected == {0: "en", 1: "gu"}
         joined = "\n".join(messages)

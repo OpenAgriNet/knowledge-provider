@@ -105,7 +105,6 @@ flowchart TB
   end
 
   subgraph Aux
-    LANG["lang-detect<br/>Node service"]
     INF["External inference<br/>OCR · translate · chunk · tag"]
   end
 
@@ -122,7 +121,6 @@ flowchart TB
   WORKER --> MINIO
   WORKER --> MARQO
   WORKER -->|promote_document_to_prod_qdrant| QPROD
-  WORKER --> LANG
   WORKER --> INF
   TEMPUI --> TEMP
 ```
@@ -140,7 +138,6 @@ flowchart TB
 | **qdrant (prod)** | external / env | PROD vectors after Super Admin promote | `PROD_QDRANT_URL` |
 | **sqlite** | volume file | Canonical document/page/chunk/job/audit state | path |
 | **keycloak** | official | Identity, groups `/states/{ST}/role`, `/global/super-admin` | 8082 |
-| **lang-detect** | `lang-detect/` | Language hints before translation | internal |
 
 API and worker share one **SQLite volume** and the same env for providers so
 read and write paths stay consistent.

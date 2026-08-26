@@ -294,11 +294,6 @@
         <p>OCR · translate · chunk · tag · ingest · promote</p>
         <span class="tech">same image as API</span>
       </div>
-      <div class="node orch" style="left:746px; top:410px; width:168px;">
-        <h3>lang-detect</h3>
-        <p>Language detection service</p>
-        <span class="tech">Node internal</span>
-      </div>
 
       <!-- Data plane -->
       <div class="node store" style="left:1010px; top:70px;">
@@ -438,9 +433,6 @@
         <!-- Worker -> Qdrant PROD (gold) -->
         <path d="M914,350 C1020,320 1120,280 1180,250" stroke="#d97706" stroke-width="2.4" fill="none" marker-end="url(#arrow-gold)"/>
         <text x="1050" y="300" fill="#d97706" font-size="10" font-weight="700">promote PROD (SA only)</text>
-
-        <!-- Worker -> lang-detect -->
-        <path d="M830,370 L830,408" stroke="#7c3aed" stroke-width="1.5" stroke-dasharray="5 3" fill="none" marker-end="url(#arrow-violet)"/>
 
         <!-- Worker -> inference -->
         <path d="M746,360 C600,400 520,440 415,470" stroke="#db2777" stroke-width="1.7" stroke-dasharray="5 3" fill="none" marker-end="url(#arrow-pink)"/>

@@ -8,11 +8,11 @@ import re
 from datetime import datetime
 from typing import Callable, Optional
 
-import httpx
+from pyfranc import franc
 
 from .base import TranslationConfig, TranslationProvider
 from .gemma_vllm import GemmaVllmTranslationProvider
-from .script_detect import analyze_script, script_family
+from .script_detect import analyze_script, iso3_map, script_family
 
 PROVIDERS: dict[str, type[TranslationProvider]] = {
     "gemma_vllm": GemmaVllmTranslationProvider,
@@ -33,9 +33,21 @@ LANG_MAP = {
     "bengali": "bn",
     "oriya": "or",
     "odia": "or",
-    # Observed noisy code from lang-detect service for Gujarati pages.
+    # Observed noisy code from the old lang-detect service for Gujarati pages.
     "zl": "gu",
 }
+
+# ISO 639-3 codes pyfranc returns → our short codes, sourced from
+# script_families.json's "iso3" map (not hardcoded here) so that adding a
+# language to an existing ambiguous family is a JSON-only edit — see that
+# file's $comment and script_detect.iso3_map() for the full explanation.
+LANG_TO_ISO3 = iso3_map()
+ISO3_TO_LANG = {v: k for k, v in LANG_TO_ISO3.items()}
+
+
+def _family_whitelist(family: tuple[str, ...]) -> list[str]:
+    """Map a script_family() result to the ISO 639-3 codes pyfranc expects."""
+    return [LANG_TO_ISO3[code] for code in family if code in LANG_TO_ISO3]
 
 
 def _gemma_endpoint() -> str:
@@ -78,7 +90,6 @@ def load_translation_config(target_language: str = "en") -> TranslationConfig:
         retry_base_seconds=max(0.5, float(os.environ.get("TRANSLATION_RETRY_BASE_SECONDS", "2.0"))),
         max_output_tokens=int(os.environ.get("TRANSLATION_MAX_OUTPUT_TOKENS", "8000")),
         request_timeout_seconds=float(os.environ.get("TRANSLATION_REQUEST_TIMEOUT_SECONDS", "300")),
-        lang_detect_url=os.environ.get("LANG_DETECT_URL", "http://localhost:3001"),
         script_gate_enabled=(
             os.environ.get("TRANSLATION_SCRIPT_GATE_ENABLED", "true").strip().lower()
             not in {"false", "0", "no"}
@@ -157,31 +168,29 @@ def normalize_detected_language(detected_lang: str | None, page_text: str) -> st
 
 async def detect_page_languages(
     pages: list[dict],
-    lang_detect_url: str,
     log: Optional[Callable[..., None]] = None,
     config: Optional[TranslationConfig] = None,
 ) -> dict[int, str]:
     """Decide each page's language, gating on script regex before any model call.
 
     With the gate on (default), a page is only considered for translation when
-    it actually contains non-Latin script. lang-detect is then consulted just
-    for the scripts that map to more than one language (Devanagari, Bengali),
-    and its answer is accepted only if it names a language in that script's
-    family — a page of Devanagari cannot be French.
+    it actually contains non-Latin script. pyfranc is then consulted in-process
+    just for the scripts that map to more than one language (Devanagari,
+    Bengali), and its answer is accepted only if it names a language in that
+    script's family — a page of Devanagari cannot be French.
     """
     config = config or load_translation_config()
 
     if config.script_gate_enabled:
-        return await _detect_via_script_gate(pages, lang_detect_url, config, log=log)
+        return await _detect_via_script_gate(pages, config, log=log)
 
     if log:
-        log("Script gate DISABLED — falling back to per-line lang-detect for all pages")
-    return await _detect_via_lang_detect(pages, lang_detect_url, log=log)
+        log("Script gate DISABLED — falling back to per-line pyfranc detection for all pages")
+    return await _detect_via_lang_detect(pages, log=log)
 
 
 async def _detect_via_script_gate(
     pages: list[dict],
-    lang_detect_url: str,
     config: TranslationConfig,
     log: Optional[Callable[..., None]] = None,
 ) -> dict[int, str]:
@@ -220,9 +229,7 @@ async def _detect_via_script_gate(
             ambiguous.append(i)
 
     if ambiguous:
-        await _disambiguate_languages(
-            pages, ambiguous, detected_languages, lang_detect_url, log=log
-        )
+        await _disambiguate_languages(pages, ambiguous, detected_languages, log=log)
 
     if log:
         log(
@@ -240,129 +247,130 @@ async def _disambiguate_languages(
     pages: list[dict],
     indices: list[int],
     detected_languages: dict[int, str],
-    lang_detect_url: str,
     log: Optional[Callable[..., None]] = None,
 ) -> None:
-    """Refine shared-script pages (e.g. Devanagari → hi vs mr) via lang-detect.
+    """Refine shared-script pages (e.g. Devanagari → hi vs mr) via pyfranc.
 
-    Failure here is non-fatal: the script-derived default already translates
-    correctly, so a lang-detect outage must not block the pipeline.
+    Runs in-process — no network call, nothing to be unavailable — but a
+    lookup failure on one line is still non-fatal: the script-derived default
+    already translates correctly, so we just keep it and move on.
     """
     if log:
         log(
-            "Script gate: %s page(s) on a shared script, asking lang-detect to disambiguate",
+            "Script gate: %s page(s) on a shared script, disambiguating with pyfranc",
             len(indices),
         )
 
-    async with httpx.AsyncClient(timeout=60.0) as http_client:
-        for i in indices:
-            page = pages[i]
-            page_no = page.get("page_number", i + 1)
-            default_lang = detected_languages[i]
-            family = script_family(default_lang)
-            text = page.get("edited_markdown") or page.get("original_markdown", "")
-            lines = [line.strip() for line in text.split("\n") if len(line.strip()) >= 10]
-            if not lines:
-                continue
+    for i in indices:
+        page = pages[i]
+        page_no = page.get("page_number", i + 1)
+        default_lang = detected_languages[i]
+        family = script_family(default_lang)
+        whitelist = _family_whitelist(family)
+        text = page.get("edited_markdown") or page.get("original_markdown", "")
+        lines = [line.strip() for line in text.split("\n") if len(line.strip()) >= 10]
+        if not lines or not whitelist:
+            continue
 
+        votes: dict[str, int] = {}
+        for line in lines:
             try:
-                response = await http_client.post(
-                    f"{lang_detect_url.rstrip('/')}/detect/batch",
-                    json={"texts": lines},
-                )
-                response.raise_for_status()
-                results = response.json().get("results", [])
+                results = franc.lang_detect(line, whitelist=whitelist)
             except Exception as exc:
                 if log:
                     log(
-                        "Page %s: lang-detect unavailable (%s: %s), keeping regex default %s",
+                        "Page %s: pyfranc error on a line (%s: %s), skipping it",
                         page_no,
                         type(exc).__name__,
                         exc,
-                        default_lang,
                     )
                 continue
-
-            votes: dict[str, int] = {}
-            for result in results:
-                raw = str(result.get("language", "")).lower()
-                candidate = LANG_MAP.get(raw, raw[:2] if raw else "")
-                if candidate in family:
-                    votes[candidate] = votes.get(candidate, 0) + 1
-
-            if not votes:
-                if log:
-                    log(
-                        "Page %s: lang-detect returned nothing in the %s family, keeping %s",
-                        page_no,
-                        "/".join(family),
-                        default_lang,
-                    )
+            if not results:
                 continue
+            candidate = ISO3_TO_LANG.get(results[0][0])
+            if candidate in family:
+                votes[candidate] = votes.get(candidate, 0) + 1
 
-            winner = max(votes, key=lambda k: votes[k])
-            if winner != default_lang:
-                detected_languages[i] = winner
-                if log:
-                    log(
-                        "Page %s: lang-detect refined %s → %s (votes=%s)",
-                        page_no,
-                        default_lang,
-                        winner,
-                        votes,
-                    )
+        if not votes:
+            if log:
+                log(
+                    "Page %s: pyfranc found nothing in the %s family, keeping %s",
+                    page_no,
+                    "/".join(family),
+                    default_lang,
+                )
+            continue
+
+        winner = max(votes, key=lambda k: votes[k])
+        if winner != default_lang:
+            detected_languages[i] = winner
+            if log:
+                log(
+                    "Page %s: pyfranc refined %s → %s (votes=%s)",
+                    page_no,
+                    default_lang,
+                    winner,
+                    votes,
+                )
 
 
 async def _detect_via_lang_detect(
     pages: list[dict],
-    lang_detect_url: str,
     log: Optional[Callable[..., None]] = None,
 ) -> dict[int, str]:
-    """Legacy per-line detection, kept for TRANSLATION_SCRIPT_GATE_ENABLED=false."""
+    """Legacy per-line detection, kept for TRANSLATION_SCRIPT_GATE_ENABLED=false.
+
+    Runs pyfranc unrestricted (no whitelist) across all 414 languages it
+    knows, which is the same trade-off the old franc-min-backed lang-detect
+    service made: short OCR lines can be misdetected as an unrelated Latin
+    language. That's exactly why the script gate above is the default path —
+    it never calls pyfranc without a script-derived whitelist.
+    """
     detected_languages: dict[int, str] = {}
 
-    async with httpx.AsyncClient(timeout=60.0) as http_client:
-        for i, page in enumerate(pages):
-            text = page.get("edited_markdown") or page.get("original_markdown", "")
-            if not text or len(text.strip()) < 20:
-                detected_languages[i] = "en"
-                continue
+    for i, page in enumerate(pages):
+        text = page.get("edited_markdown") or page.get("original_markdown", "")
+        if not text or len(text.strip()) < 20:
+            detected_languages[i] = "en"
+            continue
 
-            lines = [line.strip() for line in text.split("\n") if len(line.strip()) >= 10]
-            if not lines:
-                detected_languages[i] = "en"
-                continue
+        lines = [line.strip() for line in text.split("\n") if len(line.strip()) >= 10]
+        if not lines:
+            detected_languages[i] = "en"
+            continue
 
+        non_english_lang = None
+        for line in lines:
             try:
-                response = await http_client.post(
-                    f"{lang_detect_url.rstrip('/')}/detect/batch",
-                    json={"texts": lines},
-                )
-                response.raise_for_status()
-                results = response.json().get("results", [])
-
-                non_english_lang = None
-                for result in results:
-                    lang = result.get("language", "en").lower()
-                    if lang not in {"en", "unknown"}:
-                        non_english_lang = lang
-                        if log:
-                            log(
-                                "Page %s: Found non-English content, detected language: %s",
-                                page.get("page_number"),
-                                lang,
-                            )
-                        break
-
-                page_text = page.get("edited_markdown") or page.get("original_markdown", "")
-                detected_languages[i] = normalize_detected_language(
-                    non_english_lang if non_english_lang else "en",
-                    page_text,
-                )
+                results = franc.lang_detect(line)
             except Exception as exc:
                 if log:
-                    log("Lang-detect error for page %s: %s: %s", i, type(exc).__name__, exc)
-                detected_languages[i] = "en"
+                    log(
+                        "Page %s: pyfranc error on a line: %s: %s",
+                        page.get("page_number"),
+                        type(exc).__name__,
+                        exc,
+                    )
+                continue
+            if not results:
+                continue
+            top_iso3 = results[0][0]
+            lang = ISO3_TO_LANG.get(top_iso3, top_iso3[:2] if top_iso3 else "en")
+            if lang not in {"en", "und"}:
+                non_english_lang = lang
+                if log:
+                    log(
+                        "Page %s: Found non-English content, detected language: %s",
+                        page.get("page_number"),
+                        lang,
+                    )
+                break
+
+        page_text = page.get("edited_markdown") or page.get("original_markdown", "")
+        detected_languages[i] = normalize_detected_language(
+            non_english_lang if non_english_lang else "en",
+            page_text,
+        )
 
     return detected_languages
 
@@ -379,7 +387,6 @@ async def translate_pages(
 
     if log:
         log("Processing %s pages for translation", len(pages))
-        log("Using lang-detect service at %s", config.lang_detect_url)
         log("Using translation provider=%s model=%s", config.provider, config.model)
         log(
             "Translation runtime config: concurrency=%s max_retries=%s retry_base_seconds=%s target_language=%s",
@@ -389,9 +396,7 @@ async def translate_pages(
             config.target_language,
         )
 
-    detected_languages = await detect_page_languages(
-        pages, config.lang_detect_url, log=log, config=config
-    )
+    detected_languages = await detect_page_languages(pages, log=log, config=config)
 
     pages_to_translate: list[tuple[int, dict, str]] = []
     for i, page in enumerate(pages):

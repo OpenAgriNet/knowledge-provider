@@ -1,0 +1,38 @@
+{
+  "$comment": "Default script → language table for the regex script gate (pipeline/translation/script_detect.py). Each entry is one Unicode script block. 'lang' is the default/primary language for that script; 'family' lists every language that shares the script (leave empty if the script maps 1:1 to a language) — the gate flags the page as non-English but only calls out to disambiguation (pyfranc) when 'family' has more than one entry. 'ranges' are inclusive Unicode code point ranges (hex, no 0x/U+ prefix) that belong to the script; most scripts are one contiguous block, a few (e.g. Arabic) are split across more than one. To add a new unambiguous script (single language, empty family): append an entry with the language's ISO 639-1 (or 639-3 if no 639-1 code exists, e.g. 'kok' for Konkani) and its Unicode block range(s) from unicode.org/charts — that's the whole change. To add a new language to an EXISTING family (e.g. a third Devanagari language): add its code to that entry's 'family' list AND add a 'yourcode: iso3code' pair to the 'iso3' map below — pyfranc (the disambiguation library) needs the ISO 639-3 code to know what to look for; without it the new family member is silently never chosen. To fully replace this table at deploy time instead of editing it in place, set SCRIPT_FAMILIES_CONFIG_PATH to a JSON file with this same shape.",
+  "iso3": {
+    "en": "eng",
+    "hi": "hin",
+    "mr": "mar",
+    "ne": "nep",
+    "sa": "san",
+    "kok": "kok",
+    "bn": "ben",
+    "as": "asm",
+    "pa": "pan",
+    "gu": "guj",
+    "or": "ory",
+    "ta": "tam",
+    "te": "tel",
+    "kn": "kan",
+    "ml": "mal",
+    "si": "sin",
+    "ur": "urd",
+    "ar": "ara",
+    "fa": "fas"
+  },
+  "scripts": [
+  
+    { "lang": "hi", "script": "Devanagari", "ranges": [["0900", "097F"]], "family": ["hi", "mr", "ne", "sa", "kok"] },
+    { "lang": "bn", "script": "Bengali", "ranges": [["0980", "09FF"]], "family": ["bn", "as"] },
+    { "lang": "pa", "script": "Gurmukhi", "ranges": [["0A00", "0A7F"]], "family": [] },
+    { "lang": "gu", "script": "Gujarati", "ranges": [["0A80", "0AFF"]], "family": [] },
+    { "lang": "or", "script": "Odia", "ranges": [["0B00", "0B7F"]], "family": [] },
+    { "lang": "ta", "script": "Tamil", "ranges": [["0B80", "0BFF"]], "family": [] },
+    { "lang": "te", "script": "Telugu", "ranges": [["0C00", "0C7F"]], "family": [] },
+    { "lang": "kn", "script": "Kannada", "ranges": [["0C80", "0CFF"]], "family": [] },
+    { "lang": "ml", "script": "Malayalam", "ranges": [["0D00", "0D7F"]], "family": [] },
+    { "lang": "si", "script": "Sinhala", "ranges": [["0D80", "0DFF"]], "family": [] },
+    { "lang": "ur", "script": "Arabic", "ranges": [["0600", "06FF"], ["0750", "077F"]], "family": ["ur", "ar", "fa"] }
+  ]
+}

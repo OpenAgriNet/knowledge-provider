@@ -37,10 +37,6 @@ if docker buildx version >/dev/null 2>&1; then
   set -a; . "$ENV_FILE"; set +a
 
   docker buildx build --platform "$PLATFORM" \
-    -t docs-pipeline-lang-detect:latest \
-    -f lang-detect/Dockerfile ./lang-detect --load
-
-  docker buildx build --platform "$PLATFORM" \
     -t docs-pipeline-api:latest \
     -t docs-pipeline-worker:latest \
     -f Dockerfile . --load
@@ -59,14 +55,13 @@ if docker buildx version >/dev/null 2>&1; then
 else
   echo "==> Using docker compose build (DOCKER_DEFAULT_PLATFORM=$PLATFORM)"
   docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" build \
-    lang-detect api worker ui
+    api worker ui
   # Ensure worker tag exists (same image as api)
   docker tag docs-pipeline-api:latest docs-pipeline-worker:latest 2>/dev/null || true
 fi
 
 echo "==> Saving → $OUT_FILE"
 docker save \
-  docs-pipeline-lang-detect:latest \
   docs-pipeline-api:latest \
   docs-pipeline-worker:latest \
   docs-pipeline-ui:latest \
