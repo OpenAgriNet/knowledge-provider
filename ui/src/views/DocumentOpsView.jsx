@@ -1042,7 +1042,7 @@ export default function DocumentOpsView() {
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-card/60 px-3 py-2 sm:px-4">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-sm font-medium text-foreground">
-                      Review text{sortedPages.length ? ` · Page ${currentPage}` : ''}
+                      Review text{sortedPages.length ? ` · Page ${currentPage} of ${totalPages}` : ''}
                     </span>
                     {currentPageRecord && (
                       <Badge variant={currentPageRecord.is_reviewed ? 'success' : 'secondary'}>
@@ -1071,6 +1071,17 @@ export default function DocumentOpsView() {
                       </Button>
                       <Button size="sm" className="h-8" disabled={!canReview} onClick={() => savePage(currentPage, pageText)}>
                         <Save className="mr-1 h-3.5 w-3.5" />Save
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="success"
+                        className="h-8"
+                        disabled={!canApproveOcr || Boolean(actionPending)}
+                        title={!canApproveOcr ? `Available only in ocr_review (current: ${doc.stage})` : undefined}
+                        onClick={() => runAction('approve_ocr')}
+                      >
+                        <CheckCircle className="mr-1 h-3.5 w-3.5" />
+                        {actionPending === 'approve_ocr' ? 'Approving…' : 'Approve OCR'}
                       </Button>
                     </div>
                   )}
@@ -1187,7 +1198,7 @@ export default function DocumentOpsView() {
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-card/60 px-3 py-2 sm:px-4">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-sm font-medium text-foreground">
-                      Translation{sortedPages.length ? ` · Page ${currentPage}` : ''}
+                      Translation{sortedPages.length ? ` · Page ${currentPage} of ${totalPages}` : ''}
                     </span>
                     {sortedPages.length > 0 && (
                       <span className="text-xs text-muted-foreground">
@@ -1434,6 +1445,16 @@ export default function DocumentOpsView() {
                                   }}
                                 >
                                   <RotateCcw className="h-3 w-3" />
+                                </Button>
+                              )}
+                              {canEdit && (
+                                <Button size="sm" className="h-6 text-[10px]" disabled={!canReview}
+                                  onClick={() => saveChunk(
+                                    chunk.chunk_number,
+                                    chunkEdits[chunk.chunk_number] ?? chunk.edited_text ?? chunk.text ?? chunk.original_text ?? ''
+                                  )}
+                                >
+                                  <Save className="h-3 w-3" />
                                 </Button>
                               )}
                             </div>
