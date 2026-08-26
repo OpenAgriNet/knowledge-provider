@@ -434,6 +434,19 @@ def _mint_tokens_for_verified_email(email: str) -> dict[str, Any]:
         "email-otp: password-grant bridge failed for %s: status=%s body=%s",
         email, status, payload,
     )
+
+    error = str(payload.get("error") or "")
+    if error in ("invalid_client", "unauthorized_client"):
+        # The client rejected the password grant itself — almost always
+        # Direct Access Grants being disabled for it, not anything the user
+        # did. Surface this as an operator-actionable misconfiguration
+        # rather than a generic try-again, matching exchange_authorization_code's
+        # handling of the same Keycloak error vocabulary.
+        raise HTTPException(
+            503,
+            "Email OTP sign-in is misconfigured (Keycloak rejected the password grant). "
+            "Confirm Direct Access Grants is enabled for the client tied to KEYCLOAK_CLIENT_ID.",
+        )
     raise HTTPException(502, "Could not complete sign-in. Please try again.")
 
 
