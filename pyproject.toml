@@ -88,3 +88,10 @@ select = ["E4", "E7", "E9", "F", "I"]
 # Standalone scripts insert the project root onto sys.path before importing
 # project modules — that import necessarily comes after the sys.path mutation.
 "scripts/*.py" = ["E402"]
+
+[tool.coverage.report]
+# Baseline at the time this gate was added was 47.89% (pipeline/, uv run
+# pytest --cov=pipeline). Floor set a touch below that as headroom for
+# minor cross-platform variance; raise it as real coverage improves, never
+# lower it to make a drop pass.
+fail_under = 47
