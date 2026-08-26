@@ -1,9 +1,10 @@
 """Regex script detection — decides which pages actually need translation.
 
-The lang-detect service is run per *line* and is unreliable on the short,
-noisy lines OCR produces (headings, table fragments, page numbers). A single
-misdetected line used to mark a whole page non-English, so English pages were
-sent to the translation model as Swahili/German/Hungarian/French/Romanian.
+Per-line language detection (the old lang-detect service, and pyfranc when
+run unrestricted) is unreliable on the short, noisy lines OCR produces
+(headings, table fragments, page numbers). A single misdetected line used to
+mark a whole page non-English, so English pages were sent to the translation
+model as Swahili/German/Hungarian/French/Romanian.
 
 This module gates that decision on what the page is actually written in: the
 Unicode block of its characters. Documents in this corpus are English plus
@@ -12,32 +13,63 @@ those ranges answers "is this page non-English" without a model call and
 without false positives from Latin-script noise.
 
 Script → language is 1:1 except Devanagari (Hindi/Marathi/…) and Bengali
-(Bengali/Assamese); those stay ambiguous here and are handed to lang-detect to
+(Bengali/Assamese); those stay ambiguous here and are handed to pyfranc to
 disambiguate, but only for pages this gate has already flagged.
+
+The script → language table itself lives in ``script_families.json`` next to
+this file, not in code: adding a new unambiguous script (say, Myanmar for
+Burmese) is a JSON edit, not a Python change. Adding a language to an
+*already-ambiguous* script (a second Bengali-family language, say) also needs
+an ISO 639-3 code added to that same file's ``iso3`` map, since the
+disambiguation library (pyfranc) is ISO-639-3-based — see ``iso3_map()``
+below. A deployer can point SCRIPT_FAMILIES_CONFIG_PATH at their own JSON
+file (same shape) to replace the table entirely without touching this repo.
 """
 
 from __future__ import annotations
 
+import json
+import os
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
-# Unicode blocks, in the order they are reported on ties.
-# (language, script name, pattern, other languages sharing the script)
-_SCRIPTS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
-    ("hi", "Devanagari", r"[ऀ-ॿ]", ("hi", "mr", "ne", "sa", "kok")),
-    ("bn", "Bengali", r"[ঀ-৿]", ("bn", "as")),
-    ("pa", "Gurmukhi", r"[਀-੿]", ()),
-    ("gu", "Gujarati", r"[઀-૿]", ()),
-    ("or", "Odia", r"[଀-୿]", ()),
-    ("ta", "Tamil", r"[஀-௿]", ()),
-    ("te", "Telugu", r"[ఀ-౿]", ()),
-    ("kn", "Kannada", r"[ಀ-೿]", ()),
-    ("ml", "Malayalam", r"[ഀ-ൿ]", ()),
-    ("si", "Sinhala", r"[඀-෿]", ()),
-    ("ur", "Arabic", r"[؀-ۿݐ-ݿ]", ("ur", "ar", "fa")),
-)
+_DEFAULT_CONFIG_PATH = Path(__file__).with_name("script_families.json")
 
-_COMPILED = tuple((lang, name, re.compile(pat), family) for lang, name, pat, family in _SCRIPTS)
+
+def _load_config() -> dict:
+    """Read the script → language config JSON (bundled default, or the
+    SCRIPT_FAMILIES_CONFIG_PATH override — see module docstring)."""
+    override = os.environ.get("SCRIPT_FAMILIES_CONFIG_PATH", "").strip()
+    path = Path(override) if override else _DEFAULT_CONFIG_PATH
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _compile_scripts(raw: dict) -> tuple[tuple[str, str, re.Pattern, tuple[str, ...]], ...]:
+    compiled = []
+    for entry in raw["scripts"]:
+        char_ranges = "".join(
+            f"{chr(int(start, 16))}-{chr(int(end, 16))}" for start, end in entry["ranges"]
+        )
+        pattern = re.compile(f"[{char_ranges}]")
+        compiled.append((entry["lang"], entry["script"], pattern, tuple(entry.get("family", ()))))
+    return tuple(compiled)
+
+
+_RAW_CONFIG = _load_config()
+_COMPILED = _compile_scripts(_RAW_CONFIG)
+_ISO3_MAP: dict[str, str] = dict(_RAW_CONFIG.get("iso3", {}))
+
+
+def iso3_map() -> dict[str, str]:
+    """Our short language codes → ISO 639-3, for pyfranc's whitelist/results.
+
+    Sourced from the same config file as the script table, so a deployer
+    adding a language to an ambiguous family's ``family`` list adds its ISO
+    639-3 code here too, in the same edit.
+    """
+    return dict(_ISO3_MAP)
 
 # Script code points that carry no language signal on their own: the Devanagari
 # danda (।/॥) and the rupee sign show up inside otherwise-English government

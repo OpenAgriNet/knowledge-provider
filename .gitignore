@@ -79,3 +79,4 @@ qdrant_storage/
 client_secret_903620546319-kc0pgck46a2lal8t6go139hmi06ic07p.apps.googleusercontent.com.json
 keycloak/import/knowledge-engine-realm.json
 .env-prod
+test_data/test_thai.pdf

@@ -45,11 +45,6 @@ The platform is composed of six main services:
 - `ui`
   - React operator console for dashboard, document review, search workbench, settings, and audit
 
-Supporting service:
-
-- `lang-detect`
-  - lightweight language detection service used before translation
-
 ```text
                            +------------------+
                            |  Operator UI     |
@@ -294,7 +289,6 @@ General behavior:
 ```text
 pipeline/        FastAPI app, Temporal workflows, activities, models, database logic
 ui/              React operator console
-lang-detect/     Language detection microservice
 scripts/         Operational and maintenance scripts
 docs/            Supporting design and operational notes
 tests/           Automated tests
@@ -363,7 +357,6 @@ Important runtime variables include:
 - `MINIO_SECRET_KEY`
 - `MINIO_BUCKET`
 - `DOCUMENT_DB_PATH`
-- `LANG_DETECT_URL`
 - `TRANSLATION_PROVIDER`
 - `TRANSLATION_MODEL`
 - `TRANSLATION_PAGE_CONCURRENCY`

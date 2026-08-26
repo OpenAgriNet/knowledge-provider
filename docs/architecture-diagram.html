@@ -210,12 +210,6 @@
         <p>Temporal activities<br/>same Docker image as api</p>
         <span class="port">python -m pipeline.worker</span>
       </div>
-      <div class="node api" style="left:455px; top:330px; width:170px;">
-        <h3>lang-detect</h3>
-        <p>Node microservice</p>
-        <span class="port">internal :3000</span>
-      </div>
-
       <!-- Workflow -->
       <div class="node temp" style="left:705px; top:80px; width:170px;">
         <h3>temporal</h3>
@@ -354,9 +348,6 @@
         <!-- Temporal -> Worker -->
         <path d="M705,320 C640,300 600,260 625,250" stroke="#a78bfa" stroke-width="2" stroke-dasharray="6 4" fill="none" marker-end="url(#a-violet)"/>
         <text x="640" y="285" fill="#c4b5fd" font-size="10" font-weight="600">dispatch</text>
-
-        <!-- Worker -> lang-detect -->
-        <path d="M540,275 L540,328" stroke="#34d399" stroke-width="1.5" fill="none" marker-end="url(#a-green)"/>
 
         <!-- API/Worker -> stores -->
         <path d="M625,140 C780,80 900,90 955,100" stroke="#fb923c" stroke-width="1.6" fill="none" marker-end="url(#a-orange)"/>

@@ -179,33 +179,6 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # Language detection microservice
-  # ---------------------------------------------------------------------------
-  lang-detect:
-    image: docs-pipeline-lang-detect
-    pull_policy: never
-    platform: linux/amd64
-    build:
-      context: ./lang-detect
-      dockerfile: Dockerfile
-      # Bridge-network DNS/routing adds ~30x latency per request on this host,
-      # which compounds badly across npm's many small per-package requests.
-      # Host networking during build avoids that (see ui build below).
-      network: host
-    environment:
-      - PORT=3000
-    healthcheck:
-      test:
-        [
-          "CMD", "node", "-e",
-          "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
-        ]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    restart: unless-stopped
-
-  # ---------------------------------------------------------------------------
   # Pipeline API
   # The image is built once; dev vs prod is controlled by .env values.
   # env_file loads all config; environment: only overrides Docker-network
@@ -225,7 +198,6 @@ services:
       TEMPORAL_HOST: temporal:7233
       MINIO_ENDPOINT: minio:9000
       DOCUMENT_DB_PATH: /data/documents.db
-      LANG_DETECT_URL: http://lang-detect:3000
       ALLOWED_FILE_PATHS: /app/books,/data/documents
       # HF cache path propagated into the container
       HF_HOME: ${HF_HOME:-/opt/hf-cache}
@@ -236,8 +208,6 @@ services:
       temporal:
         condition: service_healthy
       minio:
-        condition: service_healthy
-      lang-detect:
         condition: service_healthy
       keycloak:
         condition: service_started
@@ -268,7 +238,6 @@ services:
       TEMPORAL_HOST: temporal:7233
       MINIO_ENDPOINT: minio:9000
       DOCUMENT_DB_PATH: /data/documents.db
-      LANG_DETECT_URL: http://lang-detect:3000
       ALLOWED_FILE_PATHS: /app/books,/data/documents
       HF_HOME: ${HF_HOME:-/opt/hf-cache}
       HF_HUB_CACHE: ${HF_HOME:-/opt/hf-cache}
@@ -279,8 +248,6 @@ services:
         condition: service_healthy
       api:
         condition: service_started
-      lang-detect:
-        condition: service_healthy
     command: python -m pipeline.worker
     volumes:
       - ./books:/app/books:ro

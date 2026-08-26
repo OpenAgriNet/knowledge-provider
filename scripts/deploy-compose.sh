@@ -60,7 +60,7 @@ if [[ ${#BUILD_FLAG[@]} -gt 0 ]]; then
     NO_CACHE_FLAG=(--no-cache)
   fi
   docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" build \
-    "${NO_CACHE_FLAG[@]}" keycloak lang-detect api worker ui
+    "${NO_CACHE_FLAG[@]}" keycloak api worker ui
 fi
 
 # ── 3. Bring the stack up ─────────────────────────────────────────────────────
