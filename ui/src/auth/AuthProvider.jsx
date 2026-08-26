@@ -224,14 +224,15 @@ export function AuthProvider({ children }) {
           syncUnauthenticated({ clearStorage: true })
         }
       } finally {
-        if (cancelled) return
-        const storedErr = getStoredAuthError()
-        if (storedErr) {
-          setAuthError(storedErr)
-          clearStoredAuthError()
+        if (!cancelled) {
+          const storedErr = getStoredAuthError()
+          if (storedErr) {
+            setAuthError(storedErr)
+            clearStoredAuthError()
+          }
+          setIsInitializing(false)
+          setBootstrapped(true)
         }
-        setIsInitializing(false)
-        setBootstrapped(true)
       }
     })()
 
