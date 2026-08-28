@@ -5,7 +5,6 @@ set -euo pipefail
 # - Temporal Postgres database
 # - MinIO object storage
 # - SQLite documents/chunks DB
-# - Marqo Vespa backend data (/opt/vespa/var)
 #
 # Usage:
 #   ./scripts/backup_volumes.sh                # writes to ./backups
@@ -55,29 +54,6 @@ backup_volume "minio" "minio-data"
 
 # 3) SQLite documents/chunks DB
 backup_volume "sqlite" "sqlite-data"
-
-# 4) Marqo Vespa backend at /opt/vespa/var
-echo "Detecting Marqo Vespa volume (/opt/vespa/var)…"
-
-# Try to find the marqo container started by this docker-compose stack
-MARQO_CONTAINER="$(docker ps -a --filter 'name=docs-pipeline-marqo' --format '{{.ID}}' | head -n 1 || true)"
-
-if [[ -z "$MARQO_CONTAINER" ]]; then
-  echo "WARNING: marqo container matching 'docs-pipeline-marqo' not found; skipping Vespa backup" >&2
-else
-  # Use docker inspect to find the volume mounted at /opt/vespa/var
-  VESPA_VOL="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/opt/vespa/var"}}{{.Name}}{{end}}{{end}}' "$MARQO_CONTAINER" || true)"
-
-  if [[ -z "$VESPA_VOL" ]]; then
-    echo "WARNING: no /opt/vespa/var volume found on container ${MARQO_CONTAINER}; skipping Vespa backup" >&2
-  else
-    echo "Backing up Marqo Vespa volume: ${VESPA_VOL}"
-    docker run --rm \
-      -v "${VESPA_VOL}":/from \
-      -v "${ROOT_DIR}/${BACKUP_DIR}":/backup \
-      alpine sh -c "cd /from && tar czf /backup/marqo-vespa-var-backup-${TIMESTAMP}.tar.gz ."
-  fi
-fi
 
 echo
 echo "Backup complete. Files in ${BACKUP_DIR}:"
