@@ -58,7 +58,7 @@ export default function SearchWorkbenchView() {
     try {
       setSearching(true)
       setSearchError(null)
-      const data = await fetchJson('/marqo/search', {
+      const data = await fetchJson('/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
