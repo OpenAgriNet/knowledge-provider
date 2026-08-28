@@ -297,7 +297,7 @@ def init_db():
                 CREATE TABLE IF NOT EXISTS document_index_status (
                     workflow_id TEXT NOT NULL,
                     index_name TEXT NOT NULL,
-                    marqo_doc_id TEXT,
+                    vector_doc_id TEXT,
                     chunk_count_indexed INTEGER DEFAULT 0,
                     last_indexed_at TEXT,
                     last_verified_at TEXT,
@@ -308,14 +308,20 @@ def init_db():
                 )
             """)
             # vector_doc_id supersedes the legacy marqo_doc_id column (generic
-            # naming, no DB name baked into the schema). marqo_doc_id is left in
-            # place, unwritten, until scripts/drop_legacy_marqo_columns.py is run.
+            # naming, no DB name baked into the schema) on databases that
+            # predate this change. marqo_doc_id is left in place, unwritten,
+            # until scripts/drop_legacy_marqo_columns.py is run — so this
+            # backfill is best-effort: a fresh database, or one that's already
+            # had the column dropped, simply has nothing to migrate.
             _add_column_if_missing(conn, "document_index_status", "vector_doc_id", "TEXT")
-            conn.execute("""
-                UPDATE document_index_status
-                SET vector_doc_id = marqo_doc_id
-                WHERE vector_doc_id IS NULL AND marqo_doc_id IS NOT NULL
-            """)
+            try:
+                conn.execute("""
+                    UPDATE document_index_status
+                    SET vector_doc_id = marqo_doc_id
+                    WHERE vector_doc_id IS NULL AND marqo_doc_id IS NOT NULL
+                """)
+            except sqlite3.OperationalError:
+                pass
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS document_manifest_entries (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
