@@ -1,6 +1,6 @@
 # Document Ingestion Pipeline
 
-This repository contains a review-driven document ingestion pipeline built around Temporal workflows, FastAPI, SQLite, MinIO, and Marqo. It is designed for teams that need to normalize heterogeneous files, extract structured text, review and correct outputs, generate chunks, and publish searchable records into a vector index.
+This repository contains a review-driven document ingestion pipeline built around Temporal workflows, FastAPI, SQLite, MinIO, and Qdrant. It is designed for teams that need to normalize heterogeneous files, extract structured text, review and correct outputs, generate chunks, and publish searchable records into a vector index.
 
 The system is intentionally operational, not just algorithmic. Documents move through explicit stages, every major output can be persisted as an artifact, and the operator UI is designed to inspect and manage the pipeline rather than hide it.
 
@@ -18,7 +18,7 @@ At a high level, the pipeline supports:
 - optional translation for non-English content
 - chunk generation
 - manual review and correction of pages, translations, and chunks
-- indexing of approved chunks into Marqo
+- indexing of approved chunks into Qdrant
 - operational inspection of workflow, artifacts, audit history, and index state
 
 The system is suitable for:
@@ -40,7 +40,7 @@ The platform is composed of six main services:
   - workflow orchestration and retry engine
 - `minio`
   - object storage for original uploads, normalized files, and stage artifacts
-- `marqo`
+- `qdrant`
   - vector and lexical search index for approved chunks
 - `ui`
   - React operator console for dashboard, document review, search workbench, settings, and audit
@@ -72,7 +72,7 @@ The platform is composed of six main services:
                                             |
                                             v
                                    +--------+---------+
-                                   | Marqo            |
+                                   | Qdrant           |
                                    | search index     |
                                    | approved chunks  |
                                    +------------------+
@@ -142,7 +142,7 @@ Final gate before indexing approved chunks.
 
 ### 9. Ingesting
 
-Approved chunks are written into Marqo using a passage-style schema.
+Approved chunks are written into Qdrant using a passage-style schema.
 
 ### 10. Completed
 
@@ -173,7 +173,7 @@ Persisted files or exports associated with a document and stage, such as:
 - OCR JSON exports
 - translation JSON exports
 - chunk exports
-- Marqo payload exports
+- vector-index payload exports
 
 ### Pages
 
@@ -185,7 +185,7 @@ Chunked text, review state, exclusion state, and page-span lineage.
 
 ### Index Status
 
-Document-level view of what has been pushed to Marqo.
+Document-level view of what has been pushed to the vector index.
 
 ## Storage Responsibilities
 
@@ -215,7 +215,7 @@ Typical artifact types include:
 - OCR page exports
 - translation exports
 - chunk exports
-- Marqo payload snapshots
+- vector-index payload snapshots
 
 ### Temporal
 
@@ -230,9 +230,9 @@ It is responsible for:
 
 It is not the canonical store for edited content.
 
-### Marqo
+### Qdrant
 
-Marqo is the search-facing index.
+Qdrant is the search-facing index.
 
 It should be treated as a downstream projection of approved chunk state, not as the source of truth for content editing.
 
@@ -304,7 +304,7 @@ Default local ports from `docker-compose.yml`:
 
 - UI: `3000`
 - API: `8001`
-- Marqo: `8882`
+- Qdrant: `6333`
 - Temporal: `7233`
 - Temporal UI: `8080`
 - MinIO API: `9000`
@@ -317,11 +317,7 @@ Default local ports from `docker-compose.yml`:
 
 - Docker and Docker Compose
 - an OCR provider API key exposed as `MISTRAL_API_KEY`
-- enough local disk for SQLite, MinIO artifacts, and Marqo state
-
-Optional but recommended:
-
-- GPU runtime support if using a GPU-backed Marqo image
+- enough local disk for SQLite, MinIO artifacts, and Qdrant state
 
 ### Start
 
@@ -341,7 +337,7 @@ Useful endpoints after startup:
 
 ```bash
 curl http://localhost:8001/health
-curl http://localhost:8882/
+curl http://localhost:6333/
 curl http://localhost:9000/minio/health/live
 ```
 
@@ -351,7 +347,7 @@ Important runtime variables include:
 
 - `MISTRAL_API_KEY`
 - `TEMPORAL_HOST`
-- `MARQO_URL`
+- `VECTOR_DB_URL`
 - `MINIO_ENDPOINT`
 - `MINIO_ACCESS_KEY`
 - `MINIO_SECRET_KEY`
@@ -397,7 +393,7 @@ The simplest production-style deployment pattern is:
 - expose the API either:
   - behind the same domain under `/api`, or
   - at a separate internal hostname behind a reverse proxy
-- keep Temporal, MinIO, and Marqo internal to the deployment network
+- keep Temporal, MinIO, and Qdrant internal to the deployment network
 
 Recommended routing shape:
 
@@ -462,7 +458,7 @@ The document operations screen is intended to expose:
 - pages
 - translations
 - chunks
-- Marqo state
+- vector-index state
 - audit history
 
 ## API Overview
@@ -515,12 +511,13 @@ Translation data is surfaced through the page model and review endpoints.
 
 ### Index And Search
 
-- `GET /documents/{workflow_id}/qdrant` (legacy alias: `/documents/{workflow_id}/marqo`)
-- `GET /documents/{workflow_id}/qdrant/chunks` (legacy alias: `/documents/{workflow_id}/marqo/chunks`)
+- `GET /documents/{workflow_id}/qdrant`
+- `GET /documents/{workflow_id}/qdrant/chunks`
 - `POST /documents/{workflow_id}/reingest`
-- `POST /marqo/search`
-- `GET /marqo/indexes/{index_name}/settings`
-- `GET /marqo/indexes/{index_name}/stats`
+- `POST /search`
+- `GET /indexes/summary`
+- `GET /indexes/{index_name}/settings`
+- `GET /indexes/{index_name}/stats`
 
 ### Audit And Settings
 
@@ -535,7 +532,7 @@ http://localhost:8001/docs
 
 ## Search Model
 
-The search workbench and API support a configurable Marqo retrieval surface, including:
+The search workbench and API support a configurable retrieval surface, including:
 
 - hybrid, tensor, or lexical modes
 - candidate pool sizing
@@ -555,12 +552,10 @@ The default example index name in this showcase branch is:
 
 The `scripts/` directory contains operational helpers for:
 
-- inspecting Marqo fields
-- counting indexed records
-- resetting or creating indexes
-- bulk reingesting SQLite chunks into Marqo
 - listing failed workflows
 - terminating stuck workflows
+- backing up persistent volumes
+- Keycloak bootstrap and role maintenance
 
 These are intended as operator tools, not hidden one-off commands.
 

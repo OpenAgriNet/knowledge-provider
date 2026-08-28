@@ -41,10 +41,10 @@ Today, scheme coverage for the farmer chat agent is **hard-coded in four places*
 |---|---|
 | Tenancy | `documents.instance` (state code), JWT groups `/states/{ST}/role` |
 | Stages | `registered` → … → `ready_for_ingestion` → `ingesting` → `approval_for_prod` → `ingesting_prod` → `completed` |
-| DEV index | Marqo / Qdrant DEV via `ingest_document_from_db` |
-| PROD index | `promote_document_to_prod_qdrant` → `PROD_QDRANT_URL` / `PROD_QDRANT_COLLECTION_NAME` (default **`documents-index`**) |
+| DEV index | Qdrant DEV via `ingest_document_from_db` |
+| PROD index | `promote_document_to_prod_qdrant` → `PROD_VECTOR_DB_URL` / `PROD_VECTOR_DB_COLLECTION_NAME` (default **`documents-index`**) |
 | Payload shape | `_prepare_records` in `pipeline/activities.py` sets `type: "document"`, `instance`, domain tags — **no `scheme_code` / `scheme_name` / `type: "scheme"`** |
-| Disable | `DELETE /documents/{id}` soft-disables SQLite and optionally deletes from **Marqo only** — **not PROD Qdrant** |
+| Disable | `DELETE /documents/{id}` soft-disables SQLite and optionally deletes from **the DEV index only** — **not PROD Qdrant** |
 
 **Important:** Live vector schemes already work today via OAN/provider against a separate **`schemes-index`** collection with `type=scheme` payloads. Those vectors were **not** produced by the current docs-pipeline promote path. Migration is therefore a first-class workstream (see **Appendix A**), not only a catalog bootstrap.
 
@@ -451,15 +451,15 @@ OAN `_hit_to_result` already reads `payload.scheme_code`, `scheme_name`, `text`,
 
 | `document_kind` | DEV target | PROD target |
 |---|---|---|
-| `document` | existing Marqo/Qdrant documents-index | `PROD_QDRANT_COLLECTION_NAME` (default `documents-index`) |
-| `scheme` | optional DEV schemes collection | **`PROD_SCHEME_QDRANT_COLLECTION_NAME`** default `schemes-index` |
+| `document` | existing Qdrant documents-index | `PROD_VECTOR_DB_COLLECTION_NAME` (default `documents-index`) |
+| `scheme` | optional DEV schemes collection | **`PROD_SCHEME_VECTOR_DB_COLLECTION_NAME`** default `schemes-index` |
 
 Env (docs-pipeline):
 
 ```text
-PROD_SCHEME_QDRANT_URL                 # default: PROD_QDRANT_URL
-PROD_SCHEME_QDRANT_API_KEY             # default: PROD_QDRANT_API_KEY
-PROD_SCHEME_QDRANT_COLLECTION_NAME=schemes-index
+PROD_SCHEME_VECTOR_DB_URL                 # default: PROD_VECTOR_DB_URL
+PROD_SCHEME_VECTOR_DB_API_KEY             # default: PROD_VECTOR_DB_API_KEY
+PROD_SCHEME_VECTOR_DB_COLLECTION_NAME=schemes-index
 ```
 
 **Guard:** if `document_kind=scheme`, promote **must not** write to the documents-index collection. Fail the activity with a clear error if scheme collection env is missing.
@@ -470,9 +470,9 @@ Extend `DELETE /documents/{workflow_id}` (`disable_document` in `pipeline/api.py
 
 When `remove_from_search=true` (default):
 
-1. Existing Marqo delete for document-kind paths
+1. Existing DEV-index delete for document-kind paths
 2. **NEW:** if `document_kind == scheme` (or points exist in scheme collection for this `doc_id`/`workflow_id`):
-   - Delete points from `PROD_SCHEME_QDRANT_COLLECTION_NAME` filtered by `doc_id` or `workflow_id`
+   - Delete points from `PROD_SCHEME_VECTOR_DB_COLLECTION_NAME` filtered by `doc_id` or `workflow_id`
    - Optionally delete from DEV scheme collection if configured
 3. Rebuild `scheme_catalog_entries` for that `scheme_code`
 4. If no remaining live docs for code → `status=disabled`
@@ -1099,7 +1099,7 @@ Snapshot size estimate: ~50 schemes × ~1 KB ≈ **50 KB**.
 | Pipeline models / stages | `docs-pipeline/pipeline/models.py` |
 | Promote to PROD | `docs-pipeline/pipeline/activities.py` → `promote_document_to_prod_qdrant` |
 | Record payload prep | `docs-pipeline/pipeline/activities.py` → `_prepare_records` |
-| Disable (Marqo only today) | `docs-pipeline/pipeline/api.py` → `disable_document` |
+| Disable (DEV index only today) | `docs-pipeline/pipeline/api.py` → `disable_document` |
 | Qdrant PAYLOAD_FIELDS | `docs-pipeline/pipeline/vector_store/qdrant_store.py` |
 | OAN scheme search | `bharat-oan-api/helpers/scheme_qdrant_search.py` |
 | OAN search tool | `bharat-oan-api/agents/tools/search.py` |
@@ -1126,7 +1126,7 @@ Live vector schemes already work against `schemes-index` with `type=scheme` payl
 | **A0 — Inventory** | Scroll/facet `schemes-index` for distinct `scheme_code`, sample payload (`scheme_aliases` shape, `chunk_id`, point IDs). Export CSV: code → point count, sample doc_id | — |
 | **A1 — Catalog bootstrap** | Insert `scheme_catalog_entries` for **13** prompt vector codes from definitions; `source=bootstrap`; `status=live`; aliases from `_QDRANT_SCHEME_DEFINITIONS`; **exclude nbm** from vector entries | Unblocks dynamic list **without** re-embedding |
 | **A2 — Link or re-own** | For each code, either: (a) register a pipeline document row pointing at known PDF with matching `scheme_code` and `document_kind=scheme` without rewriting vectors, or (b) re-ingest via pipeline with deterministic point IDs | Prefer (a) then (b) when PDF review needed |
-| **A3 — Dual-write forbid** | Enforce scheme promotes only to `PROD_SCHEME_QDRANT_COLLECTION_NAME`; refuse writing `type=scheme` into documents-index | Prevents split-brain |
+| **A3 — Dual-write forbid** | Enforce scheme promotes only to `PROD_SCHEME_VECTOR_DB_COLLECTION_NAME`; refuse writing `type=scheme` into documents-index | Prevents split-brain |
 | **A4 — Cutover** | New schemes only via pipeline; bootstrap rows upgraded to `source=pipeline` as docs complete; drift job fails CI if Qdrant code ∉ catalog (or vice versa for live) | Full SoT |
 | **A5 — Optional reindex** | If payload shape differs (e.g. aliases string vs array), batch re-upsert from pipeline SQLite once docs exist | Consistency |
 
@@ -1180,7 +1180,7 @@ Incremental, independently reviewable. Order is dependency-aware.
 | **Title** | `feat(docs-pipeline): scheme Qdrant payload, schemes-index routing, disable deletes PROD points` |
 | **Files** | `pipeline/activities.py` (`_prepare_records` plumbing from document row, promote routing), `pipeline/vector_store/qdrant_store.py` (`PAYLOAD_FIELDS` + delete-by-doc_id for schemes), `pipeline/api.py` (`disable_document`), `ENV.md`, tests including promote → disable → no points |
 | **Depends on** | PR 1 |
-| **Description** | Emit scheme payload fields; route to `PROD_SCHEME_QDRANT_COLLECTION_NAME`; forbid scheme→documents-index; on disable+`remove_from_search`, delete PROD scheme vectors. |
+| **Description** | Emit scheme payload fields; route to `PROD_SCHEME_VECTOR_DB_COLLECTION_NAME`; forbid scheme→documents-index; on disable+`remove_from_search`, delete PROD scheme vectors. |
 
 ### PR 3 — docs-pipeline: Master Catalog API + version bumps + schema fixture
 
