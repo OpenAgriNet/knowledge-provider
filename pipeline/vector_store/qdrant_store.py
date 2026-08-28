@@ -117,17 +117,17 @@ def get_qdrant_client(
     url: Optional[str] = None,
     api_key: Optional[str] = None,
 ) -> QdrantClient:
-    qdrant_url = (url or os.environ.get("QDRANT_URL") or "http://localhost:6333").strip()
-    qdrant_key = api_key if api_key is not None else os.environ.get("QDRANT_API_KEY")
+    qdrant_url = (url or os.environ.get("VECTOR_DB_URL") or "http://localhost:6333").strip()
+    qdrant_key = api_key if api_key is not None else os.environ.get("VECTOR_DB_API_KEY")
     cache_key = (qdrant_url, qdrant_key)
     if cache_key in _client_cache:
         return _client_cache[cache_key]
 
     is_local = any(host in qdrant_url for host in ("localhost", "127.0.0.1"))
     if not qdrant_key and not is_local:
-        raise ValueError("QDRANT_API_KEY is required for remote Qdrant")
+        raise ValueError("VECTOR_DB_API_KEY is required for remote Qdrant")
 
-    timeout = float(os.environ.get("QDRANT_TIMEOUT_SECONDS", "60"))
+    timeout = float(os.environ.get("VECTOR_DB_TIMEOUT_SECONDS", "60"))
     endpoint = _parse_qdrant_endpoint(qdrant_url)
     kwargs: dict[str, Any] = {
         "url": endpoint["url"],

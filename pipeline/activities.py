@@ -1345,31 +1345,31 @@ async def promote_document_to_prod_qdrant(
     from . import db
     from .vector_store.qdrant_store import QdrantVectorStore, get_qdrant_client
 
-    prod_url = (os.environ.get("PROD_QDRANT_URL") or "").strip()
-    prod_key = (os.environ.get("PROD_QDRANT_API_KEY") or "").strip() or None
+    prod_url = (os.environ.get("PROD_VECTOR_DB_URL") or "").strip()
+    prod_key = (os.environ.get("PROD_VECTOR_DB_API_KEY") or "").strip() or None
     prod_collection = (
-        os.environ.get("PROD_QDRANT_COLLECTION_NAME")
-        or os.environ.get("QDRANT_COLLECTION_NAME")
+        os.environ.get("PROD_VECTOR_DB_COLLECTION_NAME")
+        or os.environ.get("VECTOR_DB_COLLECTION_NAME")
         or "documents-index"
     ).strip()
     if not prod_url:
-        raise RuntimeError("PROD_QDRANT_URL is required to promote documents to prod")
+        raise RuntimeError("PROD_VECTOR_DB_URL is required to promote documents to prod")
 
     timeout = float(
-        os.environ.get("PROD_QDRANT_TIMEOUT_SECONDS")
-        or os.environ.get("QDRANT_TIMEOUT_SECONDS")
+        os.environ.get("PROD_VECTOR_DB_TIMEOUT_SECONDS")
+        or os.environ.get("VECTOR_DB_TIMEOUT_SECONDS")
         or "30"
     )
     # Temporarily honor prod timeout for this client build via env used by get_qdrant_client
-    prev_timeout = os.environ.get("QDRANT_TIMEOUT_SECONDS")
-    os.environ["QDRANT_TIMEOUT_SECONDS"] = str(timeout)
+    prev_timeout = os.environ.get("VECTOR_DB_TIMEOUT_SECONDS")
+    os.environ["VECTOR_DB_TIMEOUT_SECONDS"] = str(timeout)
     try:
         client = get_qdrant_client(url=prod_url, api_key=prod_key)
     finally:
         if prev_timeout is None:
-            os.environ.pop("QDRANT_TIMEOUT_SECONDS", None)
+            os.environ.pop("VECTOR_DB_TIMEOUT_SECONDS", None)
         else:
-            os.environ["QDRANT_TIMEOUT_SECONDS"] = prev_timeout
+            os.environ["VECTOR_DB_TIMEOUT_SECONDS"] = prev_timeout
 
     chunks = db.get_chunks(workflow_id, include_excluded=True)
     doc = db.get_document(workflow_id) or {}
@@ -1379,29 +1379,29 @@ async def promote_document_to_prod_qdrant(
 
     if is_scheme:
         prod_url = (
-            (os.environ.get("PROD_SCHEME_QDRANT_URL") or "").strip()
+            (os.environ.get("PROD_SCHEME_VECTOR_DB_URL") or "").strip()
             or prod_url
         )
         prod_key = (
-            (os.environ.get("PROD_SCHEME_QDRANT_API_KEY") or "").strip()
+            (os.environ.get("PROD_SCHEME_VECTOR_DB_API_KEY") or "").strip()
             or prod_key
         )
         prod_collection = (
-            os.environ.get("PROD_SCHEME_QDRANT_COLLECTION_NAME") or "schemes-index"
+            os.environ.get("PROD_SCHEME_VECTOR_DB_COLLECTION_NAME") or "schemes-index"
         ).strip()
         docs_default = (
-            os.environ.get("PROD_QDRANT_COLLECTION_NAME")
-            or os.environ.get("QDRANT_COLLECTION_NAME")
+            os.environ.get("PROD_VECTOR_DB_COLLECTION_NAME")
+            or os.environ.get("VECTOR_DB_COLLECTION_NAME")
             or "documents-index"
         ).strip()
         if prod_collection == docs_default:
             raise RuntimeError(
-                "Scheme promote refused: PROD_SCHEME_QDRANT_COLLECTION_NAME must not "
+                "Scheme promote refused: PROD_SCHEME_VECTOR_DB_COLLECTION_NAME must not "
                 f"equal documents collection ({docs_default}). Set schemes-index."
             )
         # Rebuild client if scheme URL differs
-        scheme_url = (os.environ.get("PROD_SCHEME_QDRANT_URL") or "").strip()
-        if scheme_url and scheme_url != (os.environ.get("PROD_QDRANT_URL") or "").strip():
+        scheme_url = (os.environ.get("PROD_SCHEME_VECTOR_DB_URL") or "").strip()
+        if scheme_url and scheme_url != (os.environ.get("PROD_VECTOR_DB_URL") or "").strip():
             client = get_qdrant_client(url=scheme_url, api_key=prod_key)
 
     records = _prepare_records(
