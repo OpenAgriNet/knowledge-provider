@@ -164,7 +164,7 @@ flowchart LR
   subgraph Lists
     Docs["GET /documents"]
     Runs["GET /runs"]
-    Search["Marqo/Qdrant filters"]
+    Search["Qdrant filters"]
   end
 
   G --> Scope

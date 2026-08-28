@@ -244,18 +244,18 @@
         <span class="port">WAL + lock</span>
       </div>
       <div class="node store" style="left:955px; top:200px; width:150px;">
-        <h3>marqo</h3>
+        <h3>qdrant</h3>
         <p>DEV search index</p>
-        <span class="port">:8882 · GPU</span>
+        <span class="port">:6333</span>
       </div>
       <div class="node prod" style="left:1125px; top:200px; width:150px;">
         <h3>qdrant-prod</h3>
         <p>PROD vectors<br/>(external URL)</p>
-        <span class="port">PROD_QDRANT_*</span>
+        <span class="port">PROD_VECTOR_DB_*</span>
       </div>
       <div class="node store" style="left:1035px; top:340px; width:160px;">
         <h3>Volumes</h3>
-        <p>minio-data · marqo-data<br/>sqlite-data · temporal-db</p>
+        <p>minio-data · qdrant-data<br/>sqlite-data · temporal-db</p>
         <span class="port">Docker volumes</span>
       </div>
 
@@ -294,7 +294,7 @@
       </div>
       <div class="node infer" style="left:1170px; top:545px; width:100px;">
         <h3>Embed</h3>
-        <p>E5 / Marqo</p>
+        <p>E5 / Qdrant</p>
         <span class="port">in-index</span>
       </div>
       <div class="node infer" style="left:705px; top:660px; width:565px;">
