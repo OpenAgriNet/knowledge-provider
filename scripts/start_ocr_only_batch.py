@@ -12,7 +12,6 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-
 ALLOWED_EXTENSIONS = {
     ".pdf", ".doc", ".docx", ".ppt", ".pptx",
     ".xls", ".xlsx", ".csv",

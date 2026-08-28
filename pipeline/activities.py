@@ -4,32 +4,29 @@ Each activity is a retryable unit of work.
 """
 
 import asyncio
-import base64
 import csv
 import hashlib
 import json
+import mimetypes
 import os
 import re
 import shutil
 import subprocess
 import tempfile
-import mimetypes
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
 from uuid import uuid4
 
-import httpx
-import fitz
 import tiktoken
 from minio import Minio
-from pypdf import PdfReader, PdfWriter
 from temporalio import activity
 
 from . import scheme_catalog
 from .chunking import chunk_pages, load_chunking_config
 from .instances import instance_display_name
-from .ocr import ocr_pdf as run_ocr_pdf, ocr_pdf_in_segments as run_ocr_pdf_in_segments
+from .ocr import ocr_pdf as run_ocr_pdf
+from .ocr import ocr_pdf_in_segments as run_ocr_pdf_in_segments
 from .translation import load_translation_config, translate_pages
 
 SUPPORTED_INPUT_EXTENSIONS = {
@@ -334,6 +331,7 @@ def _csv_to_pages(input_path: str, rows_per_page: int = 80) -> list[dict]:
 
 def _xlsx_to_pages(input_path: str, rows_per_page: int = 80) -> list[dict]:
     from datetime import date, datetime
+
     from openpyxl import load_workbook
 
     def _cell_to_str(value) -> str:
@@ -519,7 +517,7 @@ def is_reference_section(text: str) -> bool:
             return True
 
     lines = text.split("\n")
-    total_lines = len([l for l in lines if l.strip()])
+    total_lines = len([line for line in lines if line.strip()])
     if total_lines == 0:
         return False
 

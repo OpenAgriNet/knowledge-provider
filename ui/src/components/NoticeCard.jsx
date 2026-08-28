@@ -1,4 +1,3 @@
-import React from 'react'
 import { CheckCircle2, CircleAlert } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Card, CardContent } from './ui/card'

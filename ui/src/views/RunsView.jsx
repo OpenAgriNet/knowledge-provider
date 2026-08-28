@@ -20,7 +20,6 @@ import {
   ChevronRight,
   ChevronUp,
   Clock,
-  Loader2,
   Play,
   RefreshCw,
   XCircle,

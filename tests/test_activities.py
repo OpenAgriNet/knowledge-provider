@@ -10,9 +10,10 @@ Tests cover:
 """
 
 import asyncio
-import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
 import os
+from unittest.mock import MagicMock
+
+import pytest
 
 os.environ["MINIO_ACCESS_KEY"] = "test-access"
 os.environ["MINIO_SECRET_KEY"] = "test-secret"

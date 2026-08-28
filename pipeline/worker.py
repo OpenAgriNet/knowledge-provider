@@ -9,30 +9,30 @@ import os
 from temporalio.client import Client
 from temporalio.worker import Worker
 
-from .workflows import (
-    DocumentPipelineWorkflow,
-    ReingestionWorkflow,
-    PromoteToProdWorkflow,
-    TranslationOnlyWorkflow,
-    OcrOnlyWorkflow,
-    ChunkingOnlyWorkflow,
-)
+from . import db
 from .activities import (
-    run_ocr,
-    run_ocr_and_store,
+    auto_tag_chunks_from_db,
     create_chunks,
     create_chunks_from_db,
-    auto_tag_chunks_from_db,
-    prepare_for_ingestion,
-    ingest_to_marqo,
-    ingest_document_from_db,
-    promote_document_to_prod_qdrant,
-    update_document_state,
     detect_and_translate_pages,
     detect_and_translate_pages_from_db,
+    ingest_document_from_db,
+    ingest_to_marqo,
     persist_document_content,
+    prepare_for_ingestion,
+    promote_document_to_prod_qdrant,
+    run_ocr,
+    run_ocr_and_store,
+    update_document_state,
 )
-from . import db
+from .workflows import (
+    ChunkingOnlyWorkflow,
+    DocumentPipelineWorkflow,
+    OcrOnlyWorkflow,
+    PromoteToProdWorkflow,
+    ReingestionWorkflow,
+    TranslationOnlyWorkflow,
+)
 
 # Configure verbose logging
 logging.basicConfig(

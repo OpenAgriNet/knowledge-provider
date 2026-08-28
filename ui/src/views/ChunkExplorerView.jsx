@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ChevronDown, ChevronRight, Search, X } from 'lucide-react'
 import { Badge } from '../components/ui/badge'
@@ -60,7 +60,7 @@ export default function ChunkExplorerView() {
       if (!raw) return
       const parsed = JSON.parse(raw)
       if (Array.isArray(parsed)) setPresets(parsed)
-    } catch (_) {
+    } catch {
       setPresets([])
     }
   }, [])
@@ -68,7 +68,7 @@ export default function ChunkExplorerView() {
   useEffect(() => {
     try {
       localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify(presets))
-    } catch (_) {
+    } catch {
       // Ignore storage errors.
     }
   }, [presets])

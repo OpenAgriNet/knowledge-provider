@@ -35,7 +35,6 @@ from pipeline.auth.keycloak_admin import (  # noqa: E402
     ensure_access_group,
     load_keycloak_admin_config,
     provision_user,
-    require_admin_config,
 )
 
 DEFAULT_SUPER_ADMINS = [

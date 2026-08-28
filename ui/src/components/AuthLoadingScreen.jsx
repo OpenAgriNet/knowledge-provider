@@ -1,4 +1,3 @@
-import React from 'react'
 import { PlatformLogoIcon } from './PlatformLogoIcon'
 import { APP_NAME } from '../lib/app-brand'
 import { cn } from '../lib/utils'

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pipeline.auth.groups import (
-    ROLE_BH_VIEWER,
     ROLE_STATE_ADMIN,
     ROLE_STATE_APPROVER,
     ROLE_STATE_CONTRIBUTOR,

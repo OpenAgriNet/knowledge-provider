@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import { Navigate, useLocation } from 'react-router-dom'
 import { API_BASE } from '../config'
 import { appPath } from '../basePath'
@@ -224,14 +224,15 @@ export function AuthProvider({ children }) {
           syncUnauthenticated({ clearStorage: true })
         }
       } finally {
-        if (cancelled) return
-        const storedErr = getStoredAuthError()
-        if (storedErr) {
-          setAuthError(storedErr)
-          clearStoredAuthError()
+        if (!cancelled) {
+          const storedErr = getStoredAuthError()
+          if (storedErr) {
+            setAuthError(storedErr)
+            clearStoredAuthError()
+          }
+          setIsInitializing(false)
+          setBootstrapped(true)
         }
-        setIsInitializing(false)
-        setBootstrapped(true)
       }
     })()
 

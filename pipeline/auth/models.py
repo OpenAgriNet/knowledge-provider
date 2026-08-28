@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .groups import ROLE_BH_VIEWER, ROLE_STATE_VIEW, ROLE_SUPER_ADMIN, normalize_state_code
+from .groups import ROLE_STATE_VIEW, ROLE_SUPER_ADMIN, normalize_state_code
 from .permissions import Permission
 
 # Platform superadmin — full permissions AND every instance.

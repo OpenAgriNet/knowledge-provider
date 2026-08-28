@@ -1,4 +1,3 @@
-import React from 'react'
 import { Card, CardContent } from './ui/card'
 
 export function EmptyState({ icon: Icon, title, subtitle, className = '' }) {

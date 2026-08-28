@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, ClipboardList, ExternalLink } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { EmptyState } from './EmptyState'
@@ -132,7 +132,7 @@ export function DocumentAuditLog({ workflowId }) {
       const data = await fetchJson(url)
       setLogs(data.logs || [])
       setTotal(data.total || 0)
-    } catch (error) {
+    } catch {
       setLogs([])
       setTotal(0)
     } finally {
@@ -205,7 +205,7 @@ export function GlobalAuditLogPanel() {
       const data = await fetchJson(url)
       setLogs(data.logs || [])
       setTotal(data.total || 0)
-    } catch (error) {
+    } catch {
       setLogs([])
       setTotal(0)
     } finally {
