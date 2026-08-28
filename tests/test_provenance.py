@@ -1,4 +1,4 @@
-"""Tests for Marqo provenance ingest fields and /provenance/chunk resolver."""
+"""Tests for vector-store provenance ingest fields and /provenance/chunk resolver."""
 
 import hashlib
 
@@ -47,7 +47,7 @@ def test_prepare_records_includes_provenance_fields():
 
 
 @pytest.mark.unit
-def test_find_document_by_legacy_marqo_doc_id(db_connection):
+def test_find_document_by_legacy_doc_id_hash(db_connection):
     db = db_connection
     document_id = "legacy-doc-id-001"
     workflow_id = "doc-legacy000001"
@@ -71,20 +71,20 @@ def test_find_document_by_legacy_marqo_doc_id(db_connection):
             }
         ],
     )
-    legacy_marqo_doc_id = hashlib.md5(document_id.encode()).hexdigest()
+    legacy_doc_id_hash = hashlib.md5(document_id.encode()).hexdigest()
     db.upsert_document_index_status(
         workflow_id=workflow_id,
         index_name="documents-index",
-        marqo_doc_id=legacy_marqo_doc_id,
+        vector_doc_id=legacy_doc_id_hash,
         chunk_count_indexed=1,
         status="indexed",
     )
 
-    doc = db.find_document_by_doc_identifier(legacy_marqo_doc_id)
+    doc = db.find_document_by_doc_identifier(legacy_doc_id_hash)
     assert doc is not None
     assert doc["workflow_id"] == workflow_id
 
-    provenance = db.resolve_chunk_provenance(doc_id=legacy_marqo_doc_id, chunk_num=5)
+    provenance = db.resolve_chunk_provenance(doc_id=legacy_doc_id_hash, chunk_num=5)
     assert provenance is not None
     assert provenance["workflow_id"] == workflow_id
     assert provenance["chunk_num"] == 5

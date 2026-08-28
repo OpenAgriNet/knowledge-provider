@@ -307,6 +307,15 @@ def init_db():
                     PRIMARY KEY (workflow_id, index_name)
                 )
             """)
+            # vector_doc_id supersedes the legacy marqo_doc_id column (generic
+            # naming, no DB name baked into the schema). marqo_doc_id is left in
+            # place, unwritten, until scripts/drop_legacy_marqo_columns.py is run.
+            _add_column_if_missing(conn, "document_index_status", "vector_doc_id", "TEXT")
+            conn.execute("""
+                UPDATE document_index_status
+                SET vector_doc_id = marqo_doc_id
+                WHERE vector_doc_id IS NULL AND marqo_doc_id IS NOT NULL
+            """)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS document_manifest_entries (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -336,7 +345,7 @@ def init_db():
                 ("search_ranking_method", "rrf", "Hybrid ranking: rrf or normalize_linear"),
                 ("search_show_highlights", "true", "Show highlighted matches in results"),
                 ("search_ef_search", "256", "HNSW search accuracy parameter"),
-                ("search_index_name", "documents-index", "Default Marqo index name"),
+                ("search_index_name", "documents-index", "Default vector DB collection name"),
                 ("search_candidate_cap", "120", "Candidate retrieval pool cap"),
                 ("search_candidate_multiplier", "10", "Candidate pool multiplier before final cut"),
                 ("search_max_chunks_per_doc", "2", "Final result diversity cap per document"),
@@ -1756,7 +1765,7 @@ def get_document_artifact(workflow_id: str, artifact_id: int) -> Optional[dict]:
 def upsert_document_index_status(
     workflow_id: str,
     index_name: str,
-    marqo_doc_id: Optional[str] = None,
+    vector_doc_id: Optional[str] = None,
     chunk_count_indexed: Optional[int] = None,
     last_indexed_at: Optional[str] = None,
     last_verified_at: Optional[str] = None,
@@ -1769,11 +1778,11 @@ def upsert_document_index_status(
         with get_connection() as conn:
             conn.execute("""
                 INSERT INTO document_index_status (
-                    workflow_id, index_name, marqo_doc_id, chunk_count_indexed,
+                    workflow_id, index_name, vector_doc_id, chunk_count_indexed,
                     last_indexed_at, last_verified_at, schema_version, status, details_json
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(workflow_id, index_name) DO UPDATE SET
-                    marqo_doc_id = COALESCE(excluded.marqo_doc_id, document_index_status.marqo_doc_id),
+                    vector_doc_id = COALESCE(excluded.vector_doc_id, document_index_status.vector_doc_id),
                     chunk_count_indexed = COALESCE(excluded.chunk_count_indexed, document_index_status.chunk_count_indexed),
                     last_indexed_at = COALESCE(excluded.last_indexed_at, document_index_status.last_indexed_at),
                     last_verified_at = COALESCE(excluded.last_verified_at, document_index_status.last_verified_at),
@@ -1781,7 +1790,7 @@ def upsert_document_index_status(
                     status = excluded.status,
                     details_json = COALESCE(excluded.details_json, document_index_status.details_json)
             """, (
-                workflow_id, index_name, marqo_doc_id, chunk_count_indexed,
+                workflow_id, index_name, vector_doc_id, chunk_count_indexed,
                 last_indexed_at, last_verified_at, schema_version, status, details_json
             ))
             conn.commit()
@@ -1808,7 +1817,7 @@ def list_document_index_status(workflow_id: str) -> list[dict]:
 
 
 def find_document_by_doc_identifier(identifier: str) -> Optional[dict]:
-    """Resolve a Marqo/chat doc identifier to a SQLite document row."""
+    """Resolve a vector-store/chat doc identifier to a SQLite document row."""
     if not identifier:
         return None
 
@@ -1839,7 +1848,7 @@ def find_document_by_doc_identifier(identifier: str) -> Optional[dict]:
             SELECT d.*
             FROM document_index_status s
             JOIN documents d ON d.workflow_id = s.workflow_id
-            WHERE s.marqo_doc_id = ?
+            WHERE s.vector_doc_id = ?
             LIMIT 1
             """,
             (identifier,),
@@ -1847,17 +1856,17 @@ def find_document_by_doc_identifier(identifier: str) -> Optional[dict]:
         if row:
             return dict(row)
 
-        legacy_marqo_id = hashlib.md5(identifier.encode()).hexdigest()
-        if legacy_marqo_id != identifier:
+        legacy_doc_id_hash = hashlib.md5(identifier.encode()).hexdigest()
+        if legacy_doc_id_hash != identifier:
             row = conn.execute(
                 """
                 SELECT d.*
                 FROM document_index_status s
                 JOIN documents d ON d.workflow_id = s.workflow_id
-                WHERE s.marqo_doc_id = ?
+                WHERE s.vector_doc_id = ?
                 LIMIT 1
                 """,
-                (legacy_marqo_id,),
+                (legacy_doc_id_hash,),
             ).fetchone()
             if row:
                 return dict(row)

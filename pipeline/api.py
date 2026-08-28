@@ -3896,7 +3896,7 @@ async def get_document_qdrant_status(
     db.upsert_document_index_status(
         workflow_id=workflow_id,
         index_name=resolved_index,
-        marqo_doc_id=index_doc_id,
+        vector_doc_id=index_doc_id,
         chunk_count_indexed=len(hits),
         last_verified_at=datetime.utcnow().isoformat(),
         status=status["status"],
