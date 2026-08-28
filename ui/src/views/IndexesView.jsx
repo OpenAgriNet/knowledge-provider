@@ -30,7 +30,7 @@ export default function IndexesView() {
     setLoading(true)
     setError('')
     try {
-      const rows = await fetchJson('/marqo/indexes/summary')
+      const rows = await fetchJson('/indexes/summary')
       setIndexRows(Array.isArray(rows) ? rows : [])
     } catch (loadError) {
       setError(loadError.message)

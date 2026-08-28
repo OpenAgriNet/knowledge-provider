@@ -3802,8 +3802,8 @@ async def list_document_qdrant_chunks(
     return result["hits"]
 
 
-@app.get("/marqo/indexes/{index_name}/settings")
-async def get_marqo_index_settings(index_name: str, user: RequireSearch):
+@app.get("/indexes/{index_name}/settings")
+async def get_vector_index_settings(index_name: str, user: RequireSearch):
     from .vector_store import get_vector_store
 
     try:
@@ -3812,8 +3812,8 @@ async def get_marqo_index_settings(index_name: str, user: RequireSearch):
         raise HTTPException(404, f"Index '{index_name}' settings unavailable: {exc}") from exc
 
 
-@app.get("/marqo/indexes/{index_name}/stats")
-async def get_marqo_index_stats(index_name: str, user: RequireSearch):
+@app.get("/indexes/{index_name}/stats")
+async def get_vector_index_stats(index_name: str, user: RequireSearch):
     from .vector_store import get_vector_store
 
     try:
@@ -3822,8 +3822,8 @@ async def get_marqo_index_stats(index_name: str, user: RequireSearch):
         raise HTTPException(404, f"Index '{index_name}' stats unavailable: {exc}") from exc
 
 
-@app.get("/marqo/indexes/summary")
-async def get_marqo_indexes_summary(
+@app.get("/indexes/summary")
+async def get_vector_indexes_summary(
     user: RequireSearch,
     x_include_demo: Optional[str] = Header(None, alias="X-Include-Demo"),
     x_include_disabled: Optional[str] = Header(None, alias="X-Include-Disabled"),
@@ -3860,8 +3860,8 @@ async def get_marqo_indexes_summary(
     return results
 
 
-@app.post("/marqo/search")
-async def run_marqo_search(payload: dict, user: RequireSearch):
+@app.post("/search")
+async def run_search(payload: dict, user: RequireSearch):
     from .vector_store import get_default_index_name, get_vector_store
 
     settings = db.get_search_settings()
