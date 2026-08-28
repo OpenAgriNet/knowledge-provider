@@ -1,4 +1,3 @@
-import React from 'react'
 import { Badge } from './ui/badge'
 
 export function DocumentSectionHeader({ title, description, badge }) {

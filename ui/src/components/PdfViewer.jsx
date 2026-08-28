@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { ChevronLeft, ChevronRight, Minus, Plus } from 'lucide-react'
 import { Document, Page, pdfjs } from 'react-pdf'
 import { API_BASE } from '../config'

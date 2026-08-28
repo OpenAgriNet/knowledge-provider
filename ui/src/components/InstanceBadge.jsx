@@ -1,4 +1,3 @@
-import React from 'react'
 import { formatInstanceLabel, instanceBadgeTitle } from '../lib/instanceLabels'
 import { Badge } from './ui/badge'
 import { cn } from '../lib/utils'

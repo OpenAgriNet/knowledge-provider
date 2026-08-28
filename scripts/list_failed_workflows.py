@@ -12,10 +12,9 @@ This script:
 import asyncio
 import csv
 import os
-import sys
 import sqlite3
+import sys
 from pathlib import Path
-from datetime import datetime
 
 # Add project root to Python path
 project_root = Path(__file__).parent.parent
@@ -195,7 +194,7 @@ async def main():
             writer.writerows(rows)
         
         print(f"✓ Successfully wrote {len(rows)} failed workflows to {OUTPUT_FILE}")
-        print(f"\nSummary:")
+        print("\nSummary:")
         print(f"  - Total failed workflows: {len(rows)}")
         print(f"  - With SQLite error messages: {sum(1 for r in rows if r.get('sqlite_error_message'))}")
         if temporal_client:

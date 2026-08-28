@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   AlertCircle,
@@ -10,7 +10,6 @@ import {
   ClipboardList,
   Database,
   Eye,
-  ExternalLink,
   FileCode,
   FileText,
   Layers,
@@ -49,7 +48,6 @@ import {
   fetchJson,
   formatCompactDateTime,
   getAuditActionOptions,
-  getDocumentFileLabel,
   getDocumentListLabel,
   getStageLabel,
   summarizeAuditAction,
@@ -755,23 +753,6 @@ export default function DocumentOpsView() {
     }
   }
 
-  async function saveChunk(chunkNumber, text) {
-    try {
-      await fetchJson(`/documents/${workflowId}/chunks/${chunkNumber}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ edited_text: text })
-      })
-      setMessage(`Chunk ${chunkNumber} saved`)
-      const next = { ...chunkEdits }
-      delete next[chunkNumber]
-      setChunkEdits(next)
-      await reloadAfterMutation()
-    } catch (err) {
-      setMessage(err.message)
-    }
-  }
-
   const visibleActions = (doc?.available_actions || []).filter(
     action => !['disable_document', 'restore_document', 'inspect_runtime', 'reconcile_document'].includes(action)
       // super_admin already sees the real "Approve publish to prod" button at this
@@ -826,7 +807,6 @@ export default function DocumentOpsView() {
     : ''
   const translationText = currentPageRecord ? (translationEdits[currentPage] ?? (currentPageRecord.edited_translation || currentPageRecord.translated_markdown || '')) : ''
   const isOcrPending = !currentPageRecord && (doc?.stage === 'registered' || doc?.stage === 'ocr_processing')
-  const canApproveOcr = canReview && doc?.stage === 'ocr_review'
   const canApproveTranslation = canReview && doc?.stage === 'translation_review'
   const canApproveChunks = canReview && doc?.stage === 'chunk_review'
   const ocrAlreadyPast = doc?.stage && !['registered', 'ocr_processing', 'ocr_review'].includes(doc.stage)
@@ -892,8 +872,6 @@ export default function DocumentOpsView() {
       </div>
     )
   }
-
-  const totalPages = sortedPages.length || doc.page_count || 1
 
   return (
     <div className="flex h-[calc(100svh-3.5rem)] min-h-0 w-full min-w-0 flex-col overflow-hidden">

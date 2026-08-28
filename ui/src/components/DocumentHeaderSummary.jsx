@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { ArrowLeft, Info } from 'lucide-react'
 import { formatInstanceLabel, instanceBadgeTitle } from '../lib/instanceLabels'
 import {

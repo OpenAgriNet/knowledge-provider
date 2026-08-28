@@ -1,4 +1,3 @@
-import React from 'react'
 import { Navigate, Outlet, Route, Routes } from 'react-router-dom'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'

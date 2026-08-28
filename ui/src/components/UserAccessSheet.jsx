@@ -1,4 +1,3 @@
-import React from 'react'
 import { Building2, Check, LogOut, Shield, X as XIcon } from 'lucide-react'
 import { useAuth } from '../auth/AuthProvider'
 import {

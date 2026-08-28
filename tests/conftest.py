@@ -10,10 +10,9 @@ Provides fixtures for:
 """
 
 import os
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
-import tempfile
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
 
 # Set test environment before imports
 os.environ["DOCUMENT_DB_PATH"] = ":memory:"
@@ -80,8 +79,16 @@ def mock_minio_client():
 
 @pytest.fixture
 def test_client(mock_temporal_client, mock_minio_client):
-    """Create FastAPI TestClient with mocked dependencies."""
+    """Create FastAPI TestClient with mocked dependencies.
+
+    Neutralizes the app's real lifespan (which otherwise connects to a live
+    Temporal server and MinIO) before entering TestClient — see
+    test_scheme_catalog.py's asgi_client fixture for the same pattern.
+    """
+    from contextlib import asynccontextmanager
+
     from fastapi.testclient import TestClient
+
     from pipeline import api
 
     # Patch the global clients
@@ -91,8 +98,17 @@ def test_client(mock_temporal_client, mock_minio_client):
     # Initialize database
     api.db.init_db()
 
-    with TestClient(api.app) as client:
-        yield client
+    @asynccontextmanager
+    async def _noop_lifespan(_app):
+        yield
+
+    original = api.app.router.lifespan_context
+    api.app.router.lifespan_context = _noop_lifespan
+    try:
+        with TestClient(api.app) as client:
+            yield client
+    finally:
+        api.app.router.lifespan_context = original
 
 
 @pytest.fixture

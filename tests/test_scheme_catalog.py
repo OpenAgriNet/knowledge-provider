@@ -10,8 +10,7 @@ import pytest
 
 @pytest.fixture
 def catalog_db(temp_db_path):
-    from pipeline import db
-    from pipeline import scheme_catalog
+    from pipeline import db, scheme_catalog
 
     db.DB_PATH = temp_db_path
     db.init_db()
@@ -243,6 +242,7 @@ def asgi_client(temp_db_path, mock_temporal_client, mock_minio_client):
     from contextlib import asynccontextmanager
 
     from fastapi.testclient import TestClient
+
     from pipeline import api, db, scheme_catalog
 
     db.DB_PATH = temp_db_path

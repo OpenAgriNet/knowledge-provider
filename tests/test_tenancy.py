@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import os
-from unittest.mock import patch
-
 import pytest
 from fastapi import HTTPException
 
@@ -12,9 +9,9 @@ from pipeline.auth.jwt import claims_to_user
 from pipeline.auth.models import local_bypass_user
 from pipeline.auth.tenancy import (
     PORTAL_INSTANCE,
+    allowed_instances,
     assert_document_instance_access,
     assert_instance_access,
-    allowed_instances,
     resolve_create_instance,
     user_can_access_instance,
 )

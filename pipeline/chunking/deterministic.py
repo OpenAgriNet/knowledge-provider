@@ -6,7 +6,12 @@ from dataclasses import replace
 from typing import Any, Awaitable, Callable, Optional
 
 from .base import ChunkCandidate, ChunkingConfig, ChunkingProvider, ChunkingResult, count_tokens
-from .page_units import best_page_text, is_reference_section, merge_units, normalize_text, split_page_into_units
+from .page_units import (
+    best_page_text,
+    merge_units,
+    normalize_text,
+    split_page_into_units,
+)
 
 
 def _select_overlap_units(units: list[dict], overlap_tokens: int) -> list[dict]:

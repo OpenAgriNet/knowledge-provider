@@ -4,20 +4,20 @@ FastAPI REST API for the Temporal-based OCR pipeline.
 This API provides HTTP endpoints that interact with Temporal workflows.
 """
 
-import os
-import json
 import asyncio
 import hashlib
+import json
 import logging
 import math
+import os
 import re
 import time
 from collections import Counter
+from contextlib import asynccontextmanager
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Optional
-from contextlib import asynccontextmanager
-from io import BytesIO
 
 # Load repo-root .env so KEYCLOAK_ADMIN_* etc. work without manual `source .env`
 try:
@@ -29,38 +29,21 @@ try:
 except Exception:
     pass
 
-from fastapi import FastAPI, HTTPException, Query, Path as PathParam, UploadFile, File, Header, Request
-from fastapi.responses import StreamingResponse
-from fastapi.middleware.cors import CORSMiddleware
-from temporalio.client import Client, WorkflowFailureError
-from temporalio.exceptions import ApplicationError
-from minio import Minio
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
-
 from urllib.parse import quote
 
-from .models import (
-    RegisterRequest, RegisterFolderRequest, PageUpdate, ChunkUpdate,
-    ApprovalRequest, DocumentDetail, DocumentSummary, DocumentStage, PIPELINE_STAGES,
-    PROD_ONLY_STAGES,
-    AuditLogResponse, SearchSettings, SearchSettingsUpdate, SettingsAuditResponse,
-    DocumentCohortsResponse, OperationQueueEntry, OperationQueueResponse,
-    BulkWorkflowActionRequest, BulkWorkflowActionResponse, BulkWorkflowActionResult,
-    DocumentGraph, ReindexStateRequest, SchemeMetadataUpdate,
-)
-from . import scheme_catalog
-from .instances import prod_stage_disabled
-from .workflows import (
-    DocumentPipelineWorkflow,
-    ReingestionWorkflow,
-    PromoteToProdWorkflow,
-    TranslationOnlyWorkflow,
-    OcrOnlyWorkflow,
-    ChunkingOnlyWorkflow,
-)
-from . import db
+from fastapi import FastAPI, File, Header, HTTPException, Query, Request, UploadFile
+from fastapi import Path as PathParam
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from minio import Minio
+from pydantic import BaseModel, Field
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
+from temporalio.client import Client, WorkflowFailureError
+
+from . import db, scheme_catalog
+from .auth.config import load_auth_config, validate_auth_config
 from .auth.deps import (
     CurrentUser,
     RequireAdmin,
@@ -84,20 +67,49 @@ from .auth.keycloak_admin import (
     provision_user,
     set_user_access,
 )
-from pydantic import BaseModel, Field
 from .auth.models import AuthUser
 from .auth.permissions import Permission
-from .auth.config import load_auth_config, validate_auth_config
 from .auth.tenancy import (
     PORTAL_INSTANCE,
     allowed_instances,
     assert_document_instance_access,
-    assert_instance_access,
-    default_instance,
     normalize_instance,
     resolve_create_instance,
     unrestricted,
     user_can_access_instance,
+)
+from .instances import prod_stage_disabled
+from .models import (
+    PIPELINE_STAGES,
+    PROD_ONLY_STAGES,
+    AuditLogResponse,
+    BulkWorkflowActionRequest,
+    BulkWorkflowActionResponse,
+    BulkWorkflowActionResult,
+    ChunkUpdate,
+    DocumentCohortsResponse,
+    DocumentDetail,
+    DocumentGraph,
+    DocumentStage,
+    DocumentSummary,
+    OperationQueueEntry,
+    OperationQueueResponse,
+    PageUpdate,
+    RegisterFolderRequest,
+    RegisterRequest,
+    ReindexStateRequest,
+    SchemeMetadataUpdate,
+    SearchSettings,
+    SearchSettingsUpdate,
+    SettingsAuditResponse,
+)
+from .workflows import (
+    ChunkingOnlyWorkflow,
+    DocumentPipelineWorkflow,
+    OcrOnlyWorkflow,
+    PromoteToProdWorkflow,
+    ReingestionWorkflow,
+    TranslationOnlyWorkflow,
 )
 
 TASK_QUEUE = "ocr-pipeline"
@@ -2360,7 +2372,7 @@ async def restore_document(workflow_id: str, user: RequireAdmin):
     from Marqo will NOT be automatically re-indexed. To re-index, you would
     need to re-run the ingestion process.
     """
-    doc = _require_document_for_user(workflow_id, user)
+    _require_document_for_user(workflow_id, user)
 
     db.set_document_disabled(workflow_id, False)
 
@@ -2418,7 +2430,7 @@ async def reingest_document(
     # Get chunks from SQLite
     chunks = db.get_chunks(workflow_id, include_excluded=False)
     if not chunks:
-        raise HTTPException(400, f"No chunks found for document. The document may need to be reprocessed from scratch.")
+        raise HTTPException(400, "No chunks found for document. The document may need to be reprocessed from scratch.")
 
     document_id = doc.get("document_id", "")
     filename = doc.get("filename", "")
@@ -4131,6 +4143,7 @@ async def create_marqo_index(
         }
 
     import marqo
+
     from .activities import _marqo_settings
 
     marqo_url = os.environ.get("MARQO_URL", "http://localhost:8882")

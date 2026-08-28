@@ -251,8 +251,8 @@ def main() -> int:
     for r in results:
         if r["access_type"] == "super_admin":
             print(f"  {r['email']}")
-            print(f"    Role:  BV Super Admin")
-            print(f"    Group: /global/super-admin")
+            print("    Role:  BV Super Admin")
+            print("    Group: /global/super-admin")
         else:
             print(f"  {r['email']}")
             print(f"    Role:  {r['label']} ({r['role']})")

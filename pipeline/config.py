@@ -6,7 +6,6 @@ Validates required environment variables and provides typed configuration access
 
 import os
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass
@@ -25,7 +24,7 @@ class Config:
     document_db_path: str = "/data/documents.db"
     lang_detect_url: str = "http://lang-detect:3001"
     translation_provider: str = "gemma_vllm"
-    translation_model: str = "gemma-4-31b-it"
+    translation_model: str = "google/gemma-4-31b-it"
     translation_vllm_base_url: str = "http://localhost:8020/v1"
     ocr_provider: str = "chandra"
     ocr_model: str = "chandra"
@@ -128,7 +127,7 @@ def load_config() -> Config:
         document_db_path=os.environ.get("DOCUMENT_DB_PATH", "/data/documents.db"),
         lang_detect_url=os.environ.get("LANG_DETECT_URL", "http://lang-detect:3001"),
         translation_provider=os.environ.get("TRANSLATION_PROVIDER", "gemma_vllm"),
-        translation_model=os.environ.get("TRANSLATION_MODEL", "gemma-4-31b-it"),
+        translation_model=os.environ.get("TRANSLATION_MODEL", "google/gemma-4-31b-it"),
         translation_vllm_base_url=os.environ.get("TRANSLATION_VLLM_BASE_URL", "http://localhost:8020/v1"),
         ocr_provider=os.environ.get("OCR_PROVIDER", "chandra"),
         ocr_model=os.environ.get("OCR_MODEL", "chandra"),

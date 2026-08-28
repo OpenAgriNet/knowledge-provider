@@ -9,10 +9,10 @@ Usage:
     python -m pipeline.cleanup_marqo [--dry-run] [--index-name NAME]
 """
 
-import re
 import argparse
+import re
+
 import marqo
-from typing import Optional
 
 
 def clean_translation_preamble(text: str) -> str:
@@ -85,7 +85,7 @@ def is_reference_section(text: str) -> bool:
 
     # Count citation patterns
     lines = text.split('\n')
-    total_lines = len([l for l in lines if l.strip()])
+    total_lines = len([line for line in lines if line.strip()])
     if total_lines == 0:
         return False
 
