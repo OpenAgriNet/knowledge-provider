@@ -253,7 +253,7 @@ class DocumentJob(BaseModel):
 class DocumentIndexStatus(BaseModel):
     workflow_id: str
     index_name: str
-    marqo_doc_id: Optional[str] = None
+    vector_doc_id: Optional[str] = None
     chunk_count_indexed: int = 0
     last_indexed_at: Optional[str] = None
     last_verified_at: Optional[str] = None
