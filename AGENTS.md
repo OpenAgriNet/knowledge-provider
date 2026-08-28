@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A review-driven document ingestion pipeline (product name "Bharat Vistaar Docs Pipeline"): Temporal workflows + FastAPI + SQLite + MinIO + Marqo/Qdrant. Documents move through explicit stages (OCR → review → translate → review → chunk → review → ingest DEV → Super Admin promote to PROD), with every major output persisted as an inspectable artifact rather than hidden.
+A review-driven document ingestion pipeline (product name "Bharat Vistaar Docs Pipeline"): Temporal workflows + FastAPI + SQLite + MinIO + Qdrant. Documents move through explicit stages (OCR → review → translate → review → chunk → review → ingest DEV → Super Admin promote to PROD), with every major output persisted as an inspectable artifact rather than hidden.
 
 Full narrative docs (read these before deep architectural changes, don't re-derive):
 - `README.md` — what the system does, API surface, supported inputs, auth model
@@ -16,7 +16,7 @@ Full narrative docs (read these before deep architectural changes, don't re-deri
 ## Commands
 
 ```bash
-# Run the full stack (api, worker, temporal, minio, marqo, ui, lang-detect)
+# Run the full stack (api, worker, temporal, minio, qdrant, ui, lang-detect)
 docker compose up -d --build
 docker compose down
 
@@ -39,11 +39,11 @@ cd ui && npm run build
 
 # Health checks against a running stack
 curl http://localhost:8001/health
-curl http://localhost:8882/                       # marqo
+curl http://localhost:6333/                       # qdrant
 curl http://localhost:9000/minio/health/live
 ```
 
-Local ports: UI `3000`, API `8001`, Marqo `8882`, Temporal `7233`, Temporal UI `8080`, MinIO API `9000`/console `9001`, Keycloak `8082` (path `/auth`).
+Local ports: UI `3000`, API `8001`, Qdrant `6333`, Temporal `7233`, Temporal UI `8080`, MinIO API `9000`/console `9001`, Keycloak `8082` (path `/auth`).
 
 Interactive API docs once running: `http://localhost:8001/docs`.
 
@@ -84,14 +84,14 @@ registered → ocr_processing → ocr_review → translation_processing → tran
 
 ### DEV vs PROD dual indexing
 
-`ingest_document_from_db` (activity) writes the **DEV** index (Marqo). A separate Super-Admin-only approval gate (`approve-prod` / `request-prod-ready` endpoints, `PromoteToProdWorkflow`) triggers `promote_document_to_prod_qdrant`, which promotes into the **PROD** index (Qdrant). `pipeline/vector_store/` abstracts both behind a common `VectorStore` protocol (`base.py`) — Marqo and Qdrant are not interchangeable providers of the same store, they are the DEV and PROD stores respectively.
+`ingest_document_from_db` (activity) writes the **DEV** index via `pipeline/vector_store` (`VectorStore` protocol in `base.py`, `QdrantVectorStore` the only implementation). A separate Super-Admin-only approval gate (`approve-prod` / `request-prod-ready` endpoints, `PromoteToProdWorkflow`) triggers `promote_document_to_prod_qdrant`, which promotes into the **PROD** index — a *different* Qdrant collection/deployment (`PROD_VECTOR_DB_*` env vars), reached by constructing a `QdrantVectorStore` directly rather than through the `VectorStore` protocol. DEV and PROD are both Qdrant; they're just two separate indexes, not two backends.
 
 ### Storage responsibilities (don't blur these)
 
 - **SQLite** — canonical metadata/content/review state (documents, pages, chunks, jobs, artifacts, audit, search settings). Source of truth for anything editable.
-- **MinIO** — blob storage for original uploads, normalized files, and stage artifacts (OCR/translation/chunk exports, Marqo payload snapshots).
+- **MinIO** — blob storage for original uploads, normalized files, and stage artifacts (OCR/translation/chunk exports, vector-index payload snapshots).
 - **Temporal** — orchestration/retries/review-gate signaling only; not a content store.
-- **Marqo/Qdrant** — downstream search projections of approved chunk state; never the place to edit content.
+- **Qdrant** — downstream search projections of approved chunk state; never the place to edit content.
 
 ### Auth (optional, off by default)
 
@@ -99,8 +99,8 @@ registered → ocr_processing → ocr_review → translation_processing → tran
 
 ### UI (`ui/`)
 
-React 18 + Vite + Tailwind v4 + Radix UI operator console (not a plain upload form) — dashboard, document operations (stage/artifacts/jobs/pages/chunks/Marqo state/audit in one view), search workbench, settings, audit log. `ui/src/` layout: `views/`, `components/` (+ `components/ui/` for primitives), `hooks/`, `lib/`, `auth/`, `config/`, `styles/`.
+React 18 + Vite + Tailwind v4 + Radix UI operator console (not a plain upload form) — dashboard, document operations (stage/artifacts/jobs/pages/chunks/vector-index state/audit in one view), search workbench, settings, audit log. `ui/src/` layout: `views/`, `components/` (+ `components/ui/` for primitives), `hooks/`, `lib/`, `auth/`, `config/`, `styles/`.
 
 ### Scripts (`scripts/`)
 
-Operational tools, not one-off hacks — e.g. `bulk_reingest_sqlite_to_marqo.py`, `list_failed_workflows.py`, `terminate_stuck_workflows.py`, `reset_marqo_index.py`, `keycloak_bootstrap_docs_pipeline.py`, `backfill_marqo_instance.py`. Check here before writing a new maintenance script — an equivalent likely exists.
+Operational tools, not one-off hacks — e.g. `list_failed_workflows.py`, `terminate_stuck_workflows.py`, `keycloak_bootstrap_docs_pipeline.py`, `drop_legacy_marqo_columns.py`. Check here before writing a new maintenance script — an equivalent likely exists.

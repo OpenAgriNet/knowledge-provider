@@ -100,7 +100,7 @@ flowchart TB
   subgraph Data
     SQLITE[("SQLite WAL<br/>documents.db")]
     MINIO[("MinIO<br/>objects")]
-    MARQO[("Marqo / DEV index<br/>vector + lexical")]
+    QDEV[("Qdrant DEV index<br/>vector + lexical")]
     QPROD[("Qdrant PROD<br/>production vectors")]
   end
 
@@ -114,13 +114,13 @@ flowchart TB
   API -->|JWKS| KC
   API --> SQLITE
   API --> MINIO
-  API --> MARQO
+  API --> QDEV
   API -->|start / signal| TEMP
   TEMP --> TEMPDB
   TEMP --> WORKER
   WORKER --> SQLITE
   WORKER --> MINIO
-  WORKER --> MARQO
+  WORKER --> QDEV
   WORKER -->|promote_document_to_prod_qdrant| QPROD
   WORKER --> LANG
   WORKER --> INF
@@ -131,12 +131,12 @@ flowchart TB
 
 | Container | Image / code | Responsibility | Default port |
 |---|---|---|---|
-| **ui** | `ui/` React SPA | Operator console; never talks to Temporal/Marqo directly | 3000 |
+| **ui** | `ui/` React SPA | Operator console; never talks to Temporal/Qdrant directly | 3000 |
 | **api** | `pipeline/api.py` | Auth, commands, read models, search proxy, admin | 8001 |
 | **worker** | `pipeline/worker.py` | Heavy activities; same image as API | — |
 | **temporal** | official image | Workflow durability, signals, retries | 7233 |
 | **minio** | official | Source PDF + stage artifacts | 9000 |
-| **marqo** | custom GPU image | DEV (and/or primary) search index | 8882 |
+| **qdrant** | official image | DEV search index | 6333 |
 | **qdrant (prod)** | external / env | PROD vectors after Super Admin promote | `PROD_QDRANT_URL` |
 | **sqlite** | volume file | Canonical document/page/chunk/job/audit state | path |
 | **keycloak** | official | Identity, groups `/states/{ST}/role`, `/global/super-admin` | 8082 |
@@ -176,7 +176,7 @@ read and write paths stay consistent.
                 │                             │
 ┌───────────────▼──────────────┐   ┌──────────▼────────────────────────────┐
 │  SEARCH DEV                  │   │  SEARCH PROD                          │
-│  Marqo / Qdrant DEV          │   │  Qdrant PROD                          │
+│  Qdrant DEV                  │   │  Qdrant PROD                          │
 │  after approve_ingestion     │   │  after approve_prod (Super Admin)     │
 └──────────────────────────────┘   └───────────────────────────────────────┘
 ```
@@ -205,7 +205,7 @@ read and write paths stay consistent.
 
 ### 5.3 Search
 
-- Operator search workbench hits API → Marqo/Qdrant with optional  
+- Operator search workbench hits API → Qdrant with optional  
   `instance` filter for non–super-admins.  
 - PROD consumers read the **PROD** collection only after promotion.
 
@@ -251,7 +251,7 @@ Supporting workflows: `OcrOnly`, `TranslationOnly`, `ChunkingOnly`,
 | **SQLite** | Document stage, pages, chunks, tags, jobs, audit, uploader, `instance` | Binary blobs |
 | **MinIO** | PDF originals, exports, payloads | AuthZ decisions |
 | **Temporal DB** | Workflow history & timers | Business content |
-| **Marqo / DEV** | Searchable DEV vectors | Authoritative text |
+| **Qdrant DEV** | Searchable DEV vectors | Authoritative text |
 | **Qdrant PROD** | Production vectors | Draft/unapproved content |
 
 ### 7.2 Key entities (SQLite)
@@ -328,7 +328,7 @@ Code: `pipeline/auth/{jwt,groups,permissions,tenancy,deps}.py`.
 | Approvals | `approve-ocr`, `approve-translation`, `approve-chunks`, `approve-ingestion` | `review` |
 | Prod | `POST .../approve-prod` | **`admin`** |
 | Jobs / runs | `GET /runs`, `GET /runs/{id}` | tenancy + `search` |
-| Search | Marqo/Qdrant search proxy | tenancy filter |
+| Search | Qdrant search proxy | tenancy filter |
 | Admin users | Keycloak provision list | `manage_users` |
 | Settings / indexes | platform config | `admin` |
 
@@ -357,7 +357,7 @@ Providers are **config-driven** (env URLs/models) so OCR/vLLM backends can chang
 ```mermaid
 flowchart LR
   SQLITE[(SQLite chunks)]
-  DEV[(DEV index<br/>Marqo / Qdrant)]
+  DEV[(DEV index<br/>Qdrant)]
   PROD[(PROD Qdrant)]
 
   SQLITE -->|approve_ingestion<br/>ingest_document_from_db| DEV
@@ -367,8 +367,8 @@ flowchart LR
 
 | Environment | When written | Who triggers | Env knobs |
 |---|---|---|---|
-| DEV | After pre-ingestion approve | State or SA | `MARQO_URL` / vector backend |
-| PROD | After prod approve | **Super Admin only** | `PROD_QDRANT_URL`, `PROD_QDRANT_API_KEY`, collection name |
+| DEV | After pre-ingestion approve | State or SA | `VECTOR_DB_URL` |
+| PROD | After prod approve | **Super Admin only** | `PROD_VECTOR_DB_URL`, `PROD_VECTOR_DB_API_KEY`, collection name |
 
 Prod promotion **never** auto-fires — workflow always waits on `prod_approved`.
 
@@ -391,7 +391,7 @@ Routes: Dashboard, Documents, New Document, Document Ops, Runs, Search, Users (S
 ## 13. Deployment topology
 
 ### Dev / single host (`docker-compose.yml`)
-- All control-plane + Keycloak + MinIO + Marqo + Temporal  
+- All control-plane + Keycloak + MinIO + Qdrant + Temporal  
 - Inference often on host GPUs (`host.docker.internal`)  
 - Auth can run with `AUTH_DISABLED` for local bypass  
 
@@ -427,7 +427,7 @@ Routes: Dashboard, Documents, New Document, Document Ops, Runs, Search, Users (S
 [ Browser ] --JWT--> [ API ] --internal net--> [ Worker / Temporal / MinIO / SQLite ]
                            |
                            +--JWKS--> [ Keycloak ]
-                           +--HTTP--> [ Marqo DEV ]
+                           +--HTTP--> [ Qdrant DEV ]
 [ Super Admin only ] ------> promote ----> [ Qdrant PROD ]
 ```
 
@@ -455,8 +455,7 @@ Routes: Dashboard, Documents, New Document, Document Ops, Runs, Search, Users (S
 1. Explicit **“Request PROD approval”** action (today: auto-enter queue after DEV).  
 2. SQLite → Postgres if multi-writer scale is needed.  
 3. Stricter per-state role on every mutation (not only global permission).  
-4. Dual-write DEV Qdrant + Marqo for migration.  
-5. Automated quality checks before Super Admin sees queue.  
+4. Automated quality checks before Super Admin sees queue.  
 
 ---
 
