@@ -314,21 +314,6 @@ def _compute_file_fingerprint(filepath: Path) -> str:
     return md5.hexdigest()
 
 
-def get_marqo_doc_id(document_id: str) -> str:
-    """Document identifier stored in the Marqo doc_id field."""
-    return document_id
-
-
-def get_legacy_marqo_doc_id(document_id: str) -> str:
-    """Legacy hashed doc_id used before provenance ingest alignment."""
-    return hashlib.md5(document_id.encode()).hexdigest()
-
-
-def _ignore_client_marqo_url(_client_supplied: str = "") -> str:
-    """Always resolve Marqo from MARQO_URL at ingest time; ignore client URLs (SSRF)."""
-    return ""
-
-
 def _instance_scope_for_user(user: AuthUser) -> Optional[list[str]]:
     """None = unrestricted; otherwise only these instance ids."""
     allowed = allowed_instances(user)
@@ -363,58 +348,6 @@ def _document_cohorts_payload(summary: dict, by_instance: Optional[list[dict]] =
         },
         "by_instance": by_instance or [],
     }
-
-
-def _index_has_instance_field(index) -> bool:
-    """True when the live Marqo index advertises a filterable `instance` field."""
-    try:
-        settings = index.get_settings()
-    except Exception:
-        return False
-    field_names = {
-        f.get("name")
-        for f in (settings.get("allFields") or [])
-        if isinstance(f, dict) and f.get("name")
-    }
-    return "instance" in field_names
-
-
-def _escape_marqo_filter_term(value: str) -> str:
-    return value.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
-
-
-# Log the "legacy index, skipping tenant filter" note at most once per process.
-_MARQO_INSTANCE_FILTER_SKIP_LOGGED = False
-
-
-def _marqo_instance_filter(user: AuthUser, index) -> Optional[str]:
-    """Marqo filter clause scoping search results to the caller's instances.
-
-    Forward-ready and tolerant: returns ``None`` (no filter) when the caller is
-    unrestricted (admin / bypass), and also when the live index has no
-    ``instance`` field yet (legacy single-tenant index shared with other
-    consumers). Only when the caller is restricted AND the index advertises the
-    field do we AND-in an ``instance:(...)`` clause. Never raises.
-    """
-    allowed = allowed_instances(user)
-    if allowed is None:
-        return None
-    if not _index_has_instance_field(index):
-        global _MARQO_INSTANCE_FILTER_SKIP_LOGGED
-        if not _MARQO_INSTANCE_FILTER_SKIP_LOGGED:
-            logging.debug(
-                "Marqo index has no `instance` field; skipping tenant filter "
-                "(legacy single-tenant index)."
-            )
-            _MARQO_INSTANCE_FILTER_SKIP_LOGGED = True
-        return None
-    if not allowed:
-        # Restricted user with an empty instance set: match nothing.
-        return "instance:(__none__)"
-    clauses = [
-        f"instance:({_escape_marqo_filter_term(value)})" for value in sorted(allowed)
-    ]
-    return "(" + " OR ".join(clauses) + ")"
 
 
 def _resolve_create_instance(user: AuthUser, requested: Optional[str] = None) -> str:
@@ -740,30 +673,28 @@ def _rerank_hits(query: str, hits: list[dict], rerank_mode: str) -> list[dict]:
     return rescored
 
 
-def delete_single_chunk_from_marqo(document_id: str, chunk_num: int, index_name: str = "documents-index") -> dict:
-    """Delete a single chunk from the configured vector backend by doc_id + chunk_num."""
+def delete_single_chunk_from_index(document_id: str, chunk_num: int, index_name: str = "documents-index") -> dict:
+    """Delete a single chunk from the vector index by doc_id + chunk_num."""
     from .vector_store import get_default_index_name, get_vector_store
 
     try:
         store = get_vector_store()
         resolved_index = index_name or get_default_index_name()
-        marqo_doc_id = get_marqo_doc_id(document_id)
-        return store.delete_chunk(resolved_index, marqo_doc_id, chunk_num)
+        return store.delete_chunk(resolved_index, document_id, chunk_num)
     except Exception as e:
         return {"deleted": False, "error": str(e)}
 
 
-def delete_chunks_from_marqo(document_id: str, index_name: str = "documents-index") -> dict:
-    """Delete all chunks for a document from the configured vector backend."""
+def delete_chunks_from_index(document_id: str, index_name: str = "documents-index") -> dict:
+    """Delete all chunks for a document from the vector index."""
     from .vector_store import get_default_index_name, get_vector_store
 
-    marqo_doc_id = get_marqo_doc_id(document_id)
     try:
         store = get_vector_store()
         resolved_index = index_name or get_default_index_name()
-        result = store.delete_by_doc_id(resolved_index, marqo_doc_id)
+        result = store.delete_by_doc_id(resolved_index, document_id)
         if "doc_id" not in result:
-            result["doc_id"] = marqo_doc_id
+            result["doc_id"] = document_id
         return result
     except Exception as e:
         return {"deleted": 0, "doc_id": document_id, "error": str(e)}
@@ -985,7 +916,6 @@ async def start_document_workflow(
     chunk_size: int = 450,
     chunk_overlap: int = 128,
     min_tokens: int = 100,
-    marqo_url: str = "",  # Ignored; MARQO_URL env is used at ingest (SSRF)
     index_name: str = "documents-index",
     stop_after_ocr: bool = False,
     instance: str = "",
@@ -998,15 +928,13 @@ async def start_document_workflow(
     2. Wait for approval (unless auto_approve=True)
     3. Create chunks
     4. Wait for approval (unless auto_approve=True)
-    5. Ingest to Marqo
+    5. Ingest to the vector index
 
     Note: File path must be within allowed directories (ALLOWED_FILE_PATHS env var).
     Rate limited to 10 requests/minute per IP.
-    Client-supplied marqo_url is ignored; ingest uses MARQO_URL from the environment.
     Requires permission: upload (no-op while AUTH_DISABLED=true).
     """
     create_instance = _resolve_create_instance(user, instance)
-    marqo_url = _ignore_client_marqo_url(marqo_url)
     # Validate file path to prevent path traversal attacks
     filepath = validate_file_path(data.filepath)
     source_filename = get_filename_from_path(filepath)
@@ -1057,7 +985,6 @@ async def start_document_workflow(
             chunk_size,
             chunk_overlap,
             min_tokens,
-            marqo_url,
             index_name,
             auto_approve,
             stop_after_ocr,
@@ -1141,7 +1068,6 @@ async def upload_and_process(
     chunk_size: int = 450,
     chunk_overlap: int = 128,
     min_tokens: int = 100,
-    marqo_url: str = "",
     index_name: str = "documents-index",
     stop_after_ocr: bool = False,
     instance: str = "",
@@ -1152,11 +1078,9 @@ async def upload_and_process(
     The file is stored in MinIO and then processed through the pipeline.
     Validates both file extension and PDF magic bytes for security.
     Rate limited to 10 requests/minute per IP.
-    Client-supplied marqo_url is ignored; ingest uses MARQO_URL from the environment.
     Requires permission: upload (no-op while AUTH_DISABLED=true).
     """
     create_instance = _resolve_create_instance(user, instance)
-    marqo_url = _ignore_client_marqo_url(marqo_url)
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in ALLOWED_EXTENSIONS:
         raise HTTPException(400, f"Unsupported file type: {suffix}")
@@ -1232,7 +1156,6 @@ async def upload_and_process(
             chunk_size,
             chunk_overlap,
             min_tokens,
-            marqo_url,
             index_name,
             auto_approve,
             stop_after_ocr,
@@ -2026,7 +1949,7 @@ async def disable_document(
     Remove a document — soft delete by default, hard delete with ``purge=true``.
 
     Both modes:
-    - Remove all chunks from the DEV Marqo/Qdrant search index
+    - Remove all chunks from the DEV vector index
     - Delete PROD Qdrant points too, if this document was ever promoted
       (schemes-index for scheme documents, documents-index otherwise)
     - Remove the row from the Postgres master catalog and refresh the
@@ -2078,7 +2001,7 @@ async def disable_document(
         "purged": purge,
         "workflow_cancelled": False,
         "workflow_terminated": False,
-        "marqo_deleted": 0,
+        "vector_deleted": 0,
         "scheme_qdrant_deleted": None,
         "prod_qdrant_deleted": None,
         "catalog_version": None,
@@ -2105,14 +2028,14 @@ async def disable_document(
     # this keeps the document hidden if a later step fails partway through)
     db.set_document_disabled(workflow_id, True)
 
-    # Remove from Marqo if requested
+    # Remove from the DEV vector index if requested
     if remove_from_search:
         doc_id = doc.get("document_id")
         if doc_id:
-            marqo_result = delete_chunks_from_marqo(doc_id)
-            result["marqo_deleted"] = marqo_result.get("deleted", 0)
-            if "error" in marqo_result:
-                result["marqo_error"] = marqo_result["error"]
+            vector_result = delete_chunks_from_index(doc_id)
+            result["vector_deleted"] = vector_result.get("deleted", 0)
+            if "error" in vector_result:
+                result["vector_error"] = vector_result["error"]
 
         # PROD Qdrant cleanup, if this document was ever promoted
         kind = (doc.get("document_kind") or "document").strip().lower()
@@ -2171,7 +2094,7 @@ async def disable_document(
         entity_type="document",
         metadata={
             "remove_from_search": remove_from_search,
-            "marqo_deleted": result["marqo_deleted"],
+            "vector_deleted": result["vector_deleted"],
             "scheme_qdrant_deleted": result.get("scheme_qdrant_deleted"),
             "prod_qdrant_deleted": result.get("prod_qdrant_deleted"),
             "scheme_code": doc.get("scheme_code"),
@@ -2369,8 +2292,8 @@ async def restore_document(workflow_id: str, user: RequireAdmin):
     Restore a soft-deleted (disabled) document.
 
     Note: This only restores the document in SQLite. Chunks that were removed
-    from Marqo will NOT be automatically re-indexed. To re-index, you would
-    need to re-run the ingestion process.
+    from the vector index will NOT be automatically re-indexed. To re-index,
+    you would need to re-run the ingestion process.
     """
     _require_document_for_user(workflow_id, user)
 
@@ -2391,11 +2314,10 @@ async def restore_document(workflow_id: str, user: RequireAdmin):
 async def reingest_document(
     workflow_id: str,
     user: RequirePipeline,
-    marqo_url: str = "",
     index_name: str = "documents-index",
 ):
     """
-    Re-ingest a completed document to Marqo.
+    Re-ingest a completed document to the vector index.
 
     Use this to re-ingest documents that completed but weren't properly
     indexed (e.g., due to index schema changes). This starts a lightweight
@@ -2403,9 +2325,7 @@ async def reingest_document(
 
     The document must have chunks stored in SQLite (typically from a
     completed or previously ingested document).
-    Client-supplied marqo_url is ignored; ingest uses MARQO_URL from the environment.
     """
-    marqo_url = _ignore_client_marqo_url(marqo_url)
     # Get document from SQLite
     doc = _require_document_for_user(workflow_id, user)
 
@@ -2449,7 +2369,6 @@ async def reingest_document(
             workflow_id,  # original workflow_id for SQLite updates
             page_count,
             len(chunks),
-            marqo_url,
             index_name
         ],
         id=reingest_workflow_id,
@@ -2461,7 +2380,7 @@ async def reingest_document(
         temporal_workflow_id=reingest_workflow_id,
         status="running",
         current_stage="ingesting",
-        config={"index_name": index_name, "chunk_count": len(chunks), "marqo_url": marqo_url or None},
+        config={"index_name": index_name, "chunk_count": len(chunks)},
     )
 
     # Log audit
@@ -2485,14 +2404,12 @@ async def reingest_document(
 async def retry_ingestion(
     workflow_id: str,
     user: RequirePipeline,
-    marqo_url: str = "",
     index_name: str = "documents-index",
 ):
     """Alias for reingesting a document when search is stale or missing."""
     return await reingest_document(
         workflow_id,
         user=user,
-        marqo_url=_ignore_client_marqo_url(marqo_url),
         index_name=index_name,
     )
 
@@ -2901,14 +2818,9 @@ async def bulk_approve_chunks(request: BulkWorkflowActionRequest, user: RequireR
 async def bulk_reindex_documents(
     request: BulkWorkflowActionRequest,
     user: RequirePipeline,
-    marqo_url: str = "",
     index_name: str = "documents-index",
 ):
-    """Bulk queue reingestion for completed or dirty documents.
-
-    Client-supplied marqo_url is ignored; ingest uses MARQO_URL from the environment.
-    """
-    marqo_url = _ignore_client_marqo_url(marqo_url)
+    """Bulk queue reingestion for completed or dirty documents."""
     results: list[BulkWorkflowActionResult] = []
     for workflow_id in request.workflow_ids:
         doc = _document_for_user_or_none(workflow_id, user)
@@ -2922,7 +2834,7 @@ async def bulk_reindex_documents(
             results.append(BulkWorkflowActionResult(workflow_id=workflow_id, ok=True, action="reindex", message="would_execute"))
             continue
         try:
-            await reingest_document(workflow_id, user=user, marqo_url=marqo_url, index_name=index_name)
+            await reingest_document(workflow_id, user=user, index_name=index_name)
             results.append(BulkWorkflowActionResult(workflow_id=workflow_id, ok=True, action="reindex", message="queued"))
         except Exception as exc:
             results.append(BulkWorkflowActionResult(workflow_id=workflow_id, ok=False, action="reindex", message=str(exc)))
@@ -3002,7 +2914,7 @@ async def approve_translation(workflow_id: str, user: RequireReview):
 
 @app.post("/documents/{workflow_id}/approve-ingestion")
 async def approve_ingestion(workflow_id: str, user: RequireApproveIngestion):
-    """Approve ingestion and continue to Marqo ingestion.
+    """Approve ingestion and continue to vector-index ingestion.
 
     Requires APPROVE_INGESTION, not REVIEW: a ``state_contributor`` may approve
     the OCR / translation / chunking gates but must not publish to DEV.
@@ -3583,19 +3495,19 @@ async def update_chunk(
         user=user,
         )
 
-        # If excluding a chunk and document is completed (already ingested), remove from Marqo
+        # If excluding a chunk and document is completed (already ingested), remove from the vector index
         if data.is_excluded and not old_chunk.get("is_excluded", False):
             if doc and doc.get("stage") == "completed":
                 doc_id = doc.get("document_id")
                 if doc_id:
-                    marqo_result = delete_single_chunk_from_marqo(doc_id, chunk_num)
-                    if marqo_result.get("deleted"):
+                    vector_result = delete_single_chunk_from_index(doc_id, chunk_num)
+                    if vector_result.get("deleted"):
                         _log_audit(
                             workflow_id=workflow_id,
                             action_type="chunk_removed_from_search",
                             entity_type="chunk",
                             entity_id=chunk_num,
-                            metadata={"marqo_id": marqo_result.get("chunk_id")},
+                            metadata={"vector_id": vector_result.get("chunk_id")},
         user=user,
                         )
 
@@ -3683,7 +3595,7 @@ async def export_markdown(workflow_id: str, user: RequireSearch):
 
 @app.get("/documents/{workflow_id}/export/chunks")
 async def export_chunks(workflow_id: str, user: RequireSearch, include_excluded: bool = False):
-    """Export chunks as JSON for Marqo ingestion."""
+    """Export chunks as JSON for vector-index ingestion."""
     doc = _require_document_for_user(workflow_id, user)
 
     chunks = db.get_chunks(workflow_id, include_excluded=include_excluded)
@@ -3789,44 +3701,21 @@ async def get_document_pdf(workflow_id: str, user: RequireSearch):
 async def resolve_provenance_chunk(
     request: Request,
     user: RequireSearch,
-    doc_id: Optional[str] = Query(None, description="workflow slug, SQLite document_id, or legacy Marqo doc_id"),
+    doc_id: Optional[str] = Query(None, description="workflow slug, SQLite document_id, or legacy vector-index doc_id"),
     chunk_num: Optional[int] = Query(None, alias="chunk_num"),
-    marqo_id: Optional[str] = Query(None, description="Marqo _id for a single indexed chunk"),
-    index_name: str = Query("documents-index"),
 ):
     """
     Resolve a retrieved chunk to workflow metadata and maintainer URLs.
 
-    Used by chat/retrieval clients when Marqo hits lack workflow_id (legacy rows) or for enrichment.
+    Used by chat/retrieval clients when search hits lack workflow_id (legacy rows) or for enrichment.
     """
     from .activities import _infer_section
 
     resolved_doc_id = doc_id
     resolved_chunk_num = chunk_num
 
-    if marqo_id and (resolved_doc_id is None or resolved_chunk_num is None):
-        import marqo
-
-        marqo_url = os.environ.get("MARQO_URL", "http://localhost:8882")
-        mq = marqo.Client(url=marqo_url)
-        try:
-            hit = mq.index(index_name).get_document(marqo_id)
-        except Exception as error:
-            raise HTTPException(404, f"Marqo document not found: {error}") from error
-
-        resolved_doc_id = (
-            hit.get("workflow_id")
-            or hit.get("doc_id")
-            or hit.get("filename")
-        )
-        resolved_chunk_num = hit.get("chunk_num")
-        if resolved_chunk_num is None:
-            resolved_chunk_num = hit.get("chunk_index")
-        if not resolved_doc_id or resolved_chunk_num is None:
-            raise HTTPException(404, "Marqo document is missing doc_id/workflow_id or chunk_num")
-
     if not resolved_doc_id or resolved_chunk_num is None:
-        raise HTTPException(400, "Provide doc_id and chunk_num, or marqo_id")
+        raise HTTPException(400, "Provide doc_id and chunk_num")
 
     provenance = db.resolve_chunk_provenance(doc_id=resolved_doc_id, chunk_num=int(resolved_chunk_num))
     if not provenance:
@@ -3846,21 +3735,20 @@ async def resolve_provenance_chunk(
 
 
 @app.get("/documents/{workflow_id}/qdrant")
-@app.get("/documents/{workflow_id}/marqo", include_in_schema=False)  # legacy alias
 async def get_document_qdrant_status(
     workflow_id: str,
     user: RequireSearch,
     index_name: str = Query("documents-index"),
 ):
-    """Return vector-index status/chunks for a document (Qdrant when VECTOR_BACKEND=qdrant)."""
-    from .vector_store import get_default_index_name, get_vector_backend, get_vector_store
+    """Return vector-index status/chunks for a document."""
+    from .vector_store import get_default_index_name, get_vector_store
 
     doc = _require_document_for_user(workflow_id, user)
 
-    index_doc_id = get_marqo_doc_id(doc["document_id"])
+    index_doc_id = doc["document_id"]
     resolved_index = index_name if index_name and index_name != "documents-index" else get_default_index_name()
     store = get_vector_store()
-    backend = get_vector_backend()
+    backend = store.backend
 
     try:
         raw_hits = store.list_by_doc_id(resolved_index, index_doc_id, limit=1000)
@@ -3886,8 +3774,7 @@ async def get_document_qdrant_status(
         "index_name": resolved_index,
         "backend": backend,
         "index_doc_id": index_doc_id,
-        # Backward-compatible alias used by older clients / DB column naming
-        "marqo_doc_id": index_doc_id,
+        "doc_id": index_doc_id,
         "sqlite_chunk_count": len([c for c in sqlite_chunks if not c.get("is_excluded")]),
         "indexed_chunk_count": len(hits),
         "status": "indexed" if hits else "missing",
@@ -3906,7 +3793,6 @@ async def get_document_qdrant_status(
 
 
 @app.get("/documents/{workflow_id}/qdrant/chunks")
-@app.get("/documents/{workflow_id}/marqo/chunks", include_in_schema=False)  # legacy alias
 async def list_document_qdrant_chunks(
     workflow_id: str,
     user: RequireSearch,
@@ -3943,7 +3829,7 @@ async def get_marqo_indexes_summary(
     x_include_disabled: Optional[str] = Header(None, alias="X-Include-Disabled"),
 ):
     """Summarize index coverage from SQLite-backed index status plus live vector-store stats."""
-    from .vector_store import get_vector_backend, get_vector_store
+    from .vector_store import get_vector_store
 
     include_demo = x_include_demo and x_include_demo.lower() == "true"
     include_disabled = x_include_disabled and x_include_disabled.lower() == "true"
@@ -3955,7 +3841,7 @@ async def get_marqo_indexes_summary(
         return []
 
     store = get_vector_store()
-    backend = get_vector_backend()
+    backend = store.backend
 
     results = []
     for summary in summaries:
@@ -3976,7 +3862,7 @@ async def get_marqo_indexes_summary(
 
 @app.post("/marqo/search")
 async def run_marqo_search(payload: dict, user: RequireSearch):
-    from .vector_store import get_default_index_name, get_vector_backend, get_vector_store
+    from .vector_store import get_default_index_name, get_vector_store
 
     settings = db.get_search_settings()
     index_name = payload.get("index_name") or settings.get("indexName") or get_default_index_name()
@@ -4003,11 +3889,11 @@ async def run_marqo_search(payload: dict, user: RequireSearch):
     rerank_mode = payload.get("rerank_mode") or settings.get("rerankMode") or "none"
     hybrid_rrf_k = int(payload.get("hybrid_rrf_k") or settings.get("hybridRrfK") or 60)
     expanded_query = _expand_query(query, query_expansion_profile)
-    # Qdrant embeddings apply E5 prefixes internally; strip Marqo-style pre-prefixing.
+    # Qdrant embeddings apply E5 prefixes internally; don't pre-prefix here.
     search_query = expanded_query
 
     store = get_vector_store()
-    backend = get_vector_backend()
+    backend = store.backend
     # HYBRID on Qdrant currently maps to dense tensor search (lexical is separate mode).
     store_mode = "TENSOR" if backend == "qdrant" and search_mode == "HYBRID" else search_mode
 
@@ -4081,22 +3967,22 @@ async def health():
 
 
 # =============================================================================
-# Marqo index (passage schema)
+# Vector index (passage schema)
 # =============================================================================
 
 @app.get("/admin/index/schema")
-async def get_marqo_index_schema(
+async def get_vector_index_schema(
     user: RequireAdmin,
     index_name: str = Query("documents-index", description="Vector index / collection name"),
 ):
     """Report the live vector index's field schema vs. the canonical passage schema."""
     from .activities import _passage_schema_field_names
-    from .vector_store import get_default_index_name, get_vector_backend, get_vector_store
+    from .vector_store import get_default_index_name, get_vector_store
 
     resolved = index_name or get_default_index_name()
-    backend = get_vector_backend()
+    store = get_vector_store()
     try:
-        index_settings = get_vector_store().get_settings(resolved)
+        index_settings = store.get_settings(resolved)
     except Exception as exc:
         raise HTTPException(404, f"Index '{resolved}' not found: {exc}") from exc
 
@@ -4110,7 +3996,7 @@ async def get_marqo_index_schema(
 
     return {
         "index_name": resolved,
-        "backend": backend,
+        "backend": store.backend,
         "fields": field_names,
         "canonical_passage_fields": canonical_fields,
         "missing_canonical_fields": missing_fields,
@@ -4118,67 +4004,29 @@ async def get_marqo_index_schema(
 
 
 @app.post("/admin/index/create")
-async def create_marqo_index(
+async def create_vector_index(
     user: RequireAdmin,
     index_name: str = Query("documents-index", description="Vector index / collection name"),
     recreate_if_exists: bool = Query(False, description="If true, delete existing index and create with passage schema"),
 ):
-    """
-    Create the vector index/collection with the passage schema.
-
-    For Qdrant this creates a cosine collection sized from EMBEDDING_VECTOR_SIZE.
-    For Marqo this creates the structured passage schema index.
-    """
+    """Create the vector index/collection — a cosine Qdrant collection sized from EMBEDDING_VECTOR_SIZE."""
     _ = user
-    from .vector_store import get_default_index_name, get_vector_backend, get_vector_store
+    from .vector_store import get_default_index_name, get_vector_store
 
-    backend = get_vector_backend()
     resolved = index_name or get_default_index_name()
-    if backend == "qdrant":
-        result = get_vector_store().ensure_collection(resolved, recreate=recreate_if_exists)
-        return {
-            "index_name": resolved,
-            "backend": backend,
-            **result,
-        }
-
-    import marqo
-
-    from .activities import _marqo_settings
-
-    marqo_url = os.environ.get("MARQO_URL", "http://localhost:8882")
-    mq = marqo.Client(url=marqo_url)
-    settings = _marqo_settings(use_tensor_prefix_field=True)
-
-    try:
-        mq.get_index(index_name)
-        index_exists = True
-    except Exception:
-        index_exists = False
-
-    if index_exists and not recreate_if_exists:
-        return {
-            "index": index_name,
-            "created": False,
-            "message": "Index already exists. Use recreate_if_exists=true to replace with passage schema.",
-        }
-
-    if index_exists and recreate_if_exists:
-        mq.delete_index(index_name)
-
-    mq.create_index(index_name, settings_dict=settings)
+    store = get_vector_store()
+    result = store.ensure_collection(resolved, recreate=recreate_if_exists)
     return {
-        "index": index_name,
-        "created": True,
-        "message": "Index created with passage schema (text_for_embedding, full metadata).",
-        "marqo_url": marqo_url,
+        "index_name": resolved,
+        "backend": store.backend,
+        **result,
     }
 
 
 @app.get("/admin/ingest-info")
 async def get_ingest_info(user: RequireAdmin):
     """
-    Return what the running container's ingest code would send to Marqo.
+    Return what the running container's ingest code would send to the vector index.
     Use this to verify the API/worker image has the passage schema (text_for_embedding, etc.).
     """
     from .activities import _passage_schema_field_names, _prepare_records

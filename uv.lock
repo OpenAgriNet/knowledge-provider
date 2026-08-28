@@ -1125,7 +1125,6 @@ dependencies = [
     { name = "httpx" },
     { name = "huggingface-hub" },
     { name = "langchain-text-splitters" },
-    { name = "marqo" },
     { name = "minio" },
     { name = "openpyxl" },
     { name = "pdf-inspector" },
@@ -1164,7 +1163,6 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.24.0" },
     { name = "huggingface-hub", specifier = "==0.35.3" },
     { name = "langchain-text-splitters", specifier = ">=0.0.1" },
-    { name = "marqo", specifier = ">=3.0.0" },
     { name = "minio", specifier = ">=7.0.0" },
     { name = "openpyxl", specifier = ">=3.1.0" },
     { name = "pdf-inspector", specifier = ">=1.14.0" },
@@ -1376,21 +1374,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/fb/df/5bd7a48c256faecd1d36edc13133e51397e41b73bb77e1a69deab746ebac/markupsafe-3.0.3-cp314-cp314t-win32.whl", hash = "sha256:915c04ba3851909ce68ccc2b8e2cd691618c4dc4c4232fb7982bca3f41fd8c3d", size = 14819, upload-time = "2025-09-27T18:37:26.285Z" },
     { url = "https://files.pythonhosted.org/packages/1a/8a/0402ba61a2f16038b48b39bccca271134be00c5c9f0f623208399333c448/markupsafe-3.0.3-cp314-cp314t-win_amd64.whl", hash = "sha256:4faffd047e07c38848ce017e8725090413cd80cbc23d86e55c587bf979e579c9", size = 15426, upload-time = "2025-09-27T18:37:27.316Z" },
     { url = "https://files.pythonhosted.org/packages/70/bc/6f1c2f612465f5fa89b95bead1f44dcb607670fd42891d8fdcd5d039f4f4/markupsafe-3.0.3-cp314-cp314t-win_arm64.whl", hash = "sha256:32001d6a8fc98c8cb5c947787c5d08b0a50663d139f1305bac5885d98d9b40fa", size = 14146, upload-time = "2025-09-27T18:37:28.327Z" },
-]
-
-[[package]]
-name = "marqo"
-version = "3.18.2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "packaging" },
-    { name = "pydantic" },
-    { name = "requests" },
-    { name = "urllib3" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/5d/3c/2f9d11fbfd856651f7eea736fe31311135d13719354f41da3af9c9d85985/marqo-3.18.2.tar.gz", hash = "sha256:9c330566a730c3a47fd4b3f154b36be18972223ef7fcb4d4722fb054be3fc10c", size = 28743, upload-time = "2026-05-13T00:16:56.474Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/84/b7/ca9b87ffd101dbc76cc8b7d819cfb8f94fd11d9a3249a6e407064ac11f44/marqo-3.18.2-py3-none-any.whl", hash = "sha256:24e4d0091d75d4b98601b7a7bf1f2f074514799c77759fc96fa9c8e26e94e48c", size = 33540, upload-time = "2026-05-13T00:16:55.334Z" },
 ]
 
 [[package]]

@@ -1,4 +1,4 @@
-"""Vector store protocol shared by Marqo and Qdrant backends."""
+"""Vector store protocol implemented by the Qdrant backend."""
 
 from __future__ import annotations
 
