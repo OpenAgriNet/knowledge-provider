@@ -486,7 +486,7 @@ def clean_text(text: str) -> str:
 
 
 def _infer_section(text: str, section_title: str | None = None) -> str:
-    """Best-effort section heading for Marqo provenance."""
+    """Best-effort section heading for chunk provenance."""
     if section_title and str(section_title).strip():
         return str(section_title).strip()
     if not text:
@@ -756,7 +756,7 @@ def prepare_ingestion_records(
     description: str | None = None,
     instance: str | None = None,
 ) -> list[dict]:
-    """Public helper used by tests and scripts when preparing Marqo payloads."""
+    """Public helper used by tests and scripts when preparing vector-index payloads."""
     return _prepare_records(
         document_id,
         filename,
@@ -771,16 +771,11 @@ def prepare_ingestion_records(
 
 def _passage_schema_field_names() -> set[str]:
     """Field names for the canonical passage schema (E5 text_for_embedding + full metadata)."""
-    settings = _marqo_settings(use_tensor_prefix_field=True)
+    settings = _passage_schema_definition(use_tensor_prefix_field=True)
     return {f.get("name") for f in settings.get("allFields", []) if isinstance(f, dict) and f.get("name")}
 
 
-def _core_passage_schema_field_names() -> set[str]:
-    """Required Marqo fields; optional fields like instance do not force index recreation."""
-    return _passage_schema_field_names() - {"instance", "instance_name"}
-
-
-def _marqo_settings(use_tensor_prefix_field: bool = True) -> dict:
+def _passage_schema_definition(use_tensor_prefix_field: bool = True) -> dict:
     tensor_field = "text_for_embedding" if use_tensor_prefix_field else "text"
     all_fields = [
         {"name": "doc_id", "type": "text", "features": ["filter"]},
@@ -1182,7 +1177,7 @@ async def prepare_for_ingestion(
     name_en: str = None,
     description: str = None,
 ) -> list[dict]:
-    """Prepare chunks for Marqo ingestion."""
+    """Prepare chunks for vector-index ingestion."""
     from . import db
 
     activity.logger.info(f"Preparing {len(chunks)} chunks for ingestion")
@@ -1204,134 +1199,28 @@ async def prepare_for_ingestion(
 @activity.defn
 async def ingest_to_marqo(
     records: list[dict],
-    marqo_url: str = None,
     index_name: str = "documents-index",
     batch_size: int = 10,
 ) -> dict:
-    """Ingest records to the configured vector backend (Qdrant preferred, Marqo legacy)."""
-    from .vector_store import get_default_index_name, get_vector_backend, get_vector_store
+    """Ingest records into the Qdrant vector index."""
+    from .vector_store import get_default_index_name, get_vector_store
 
-    backend = get_vector_backend()
     if not index_name or index_name == "documents-index":
         index_name = get_default_index_name() or index_name
 
-    if backend == "qdrant":
-        activity.logger.info(
-            "Ingesting %s records to Qdrant collection %s",
-            len(records),
-            index_name,
-        )
-        store = get_vector_store()
-        # store.upsert() runs CPU-bound embedding synchronously (model.encode()) —
-        # off the event loop so it doesn't stall Temporal's query/heartbeat handling.
-        result = await asyncio.to_thread(
-            store.upsert, index_name, records, batch_size=max(batch_size, 8)
-        )
-        activity.logger.info("Qdrant ingestion complete: %s", result.get("index_stats"))
-        return result
-
-    import marqo
-
-    if not marqo_url:
-        marqo_url = os.environ.get("MARQO_URL", "http://localhost:8882")
-
-    activity.logger.info(f"Ingesting {len(records)} records to Marqo at {marqo_url}")
-    mq = marqo.Client(url=marqo_url)
-
-    settings = _marqo_settings(use_tensor_prefix_field=True)
-    passage_fields = _passage_schema_field_names()
-    core_passage_fields = _core_passage_schema_field_names()
-
-    index_exists = True
-    try:
-        mq.get_index(index_name)
-    except Exception:
-        index_exists = False
-
-    if not index_exists:
-        mq.create_index(index_name, settings_dict=settings)
-        activity.logger.info(f"Created index: {index_name} (passage schema)")
-    else:
-        index = mq.index(index_name)
-        try:
-            index_settings = index.get_settings()
-            tensor_fields = set(index_settings.get("tensorFields", [])) if isinstance(index_settings, dict) else set()
-            index_field_names = {
-                f.get("name") for f in (index_settings.get("allFields") or [])
-                if isinstance(f, dict) and f.get("name")
-            }
-            has_passage_tensor = "text_for_embedding" in tensor_fields
-            has_full_schema = core_passage_fields <= index_field_names
-            if not (has_passage_tensor and has_full_schema):
-                mq.delete_index(index_name)
-                mq.create_index(index_name, settings_dict=settings)
-                activity.logger.info(
-                    f"Recreated index: {index_name} with passage schema (was missing text_for_embedding or fields)"
-                )
-        except Exception as e:
-            activity.logger.warning("Could not verify index schema, recreating: %s", e)
-            try:
-                mq.delete_index(index_name)
-            except Exception:
-                pass
-            mq.create_index(index_name, settings_dict=settings)
-            activity.logger.info(f"Recreated index: {index_name} (passage schema)")
-
-    index = mq.index(index_name)
-    allowed_fields = passage_fields
-    if allowed_fields:
-        try:
-            index_field_names = {
-                f.get("name") for f in (index.get_settings().get("allFields") or [])
-                if isinstance(f, dict) and f.get("name")
-            }
-        except Exception:
-            index_field_names = set()
-        for i, record in enumerate(records):
-            normalized = {"_id": record.get("_id")}
-            for key, value in record.items():
-                if key == "_id":
-                    continue
-                if key in allowed_fields:
-                    # Optional fields absent from a legacy index would be rejected;
-                    # skip them so the existing index needs no migration.
-                    if key == "instance" and key not in index_field_names:
-                        continue
-                    normalized[key] = value
-            records[i] = normalized
-
-    for i in range(0, len(records), batch_size):
-        batch = records[i : i + batch_size]
-        result = index.add_documents(batch)
-        if result.get("errors"):
-            errors = []
-            for item in result.get("items") or []:
-                if item.get("status") != 200:
-                    errors.append({
-                        "_id": item.get("_id"),
-                        "status": item.get("status"),
-                        "error": item.get("error"),
-                        "message": item.get("message"),
-                        "code": item.get("code"),
-                    })
-            activity.logger.error(
-                "Marqo add_documents reported errors. First few: %s. Full result keys: %s",
-                errors[:5],
-                list(result.keys()),
-            )
-            if errors:
-                raise RuntimeError(
-                    f"Marqo add_documents failed for {len(errors)} doc(s). First error: {errors[0]}"
-                )
-
-    stats = index.get_stats()
-    activity.logger.info(f"Ingestion complete: {stats}")
-
-    return {
-        "records_ingested": len(records),
-        "index_stats": stats,
-        "supports_prefixed_tensor_field": True,
-    }
+    activity.logger.info(
+        "Ingesting %s records to Qdrant collection %s",
+        len(records),
+        index_name,
+    )
+    store = get_vector_store()
+    # store.upsert() runs CPU-bound embedding synchronously (model.encode()) —
+    # off the event loop so it doesn't stall Temporal's query/heartbeat handling.
+    result = await asyncio.to_thread(
+        store.upsert, index_name, records, batch_size=max(batch_size, 8)
+    )
+    activity.logger.info("Qdrant ingestion complete: %s", result.get("index_stats"))
+    return result
 
 
 @activity.defn
@@ -1464,7 +1353,6 @@ async def ingest_document_from_db(
     workflow_id: str,
     document_id: str,
     filename: str,
-    marqo_url: str = None,
     index_name: str = "documents-index",
     batch_size: int = 10,
 ) -> dict:
@@ -1484,7 +1372,7 @@ async def ingest_document_from_db(
     payload_path = _write_json_temp(records)
     try:
         payload_uri, payload_size, payload_mime = _upload_file_to_minio(
-            payload_path, workflow_id, "marqo_payload_export", "marqo_payload.json"
+            payload_path, workflow_id, "vector_payload_export", "vector_payload.json"
         )
     finally:
         if os.path.exists(payload_path):
@@ -1493,15 +1381,15 @@ async def ingest_document_from_db(
     db.add_document_artifact(
         workflow_id=workflow_id,
         job_id=latest_job["id"] if latest_job else None,
-        artifact_type="marqo_payload_export",
+        artifact_type="vector_payload_export",
         stage="ingesting",
         storage_uri=payload_uri,
         mime_type=payload_mime,
-        filename="marqo_payload.json",
+        filename="vector_payload.json",
         size_bytes=payload_size,
         metadata={"record_count": len(records), "index_name": index_name},
     )
-    result = await ingest_to_marqo(records, marqo_url=marqo_url, index_name=index_name, batch_size=batch_size)
+    result = await ingest_to_marqo(records, index_name=index_name, batch_size=batch_size)
     db.upsert_document_index_status(
         workflow_id=workflow_id,
         index_name=index_name,

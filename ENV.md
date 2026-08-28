@@ -64,8 +64,6 @@ Root `.env` (see `.env.example`). Required by FastAPI (`pipeline/api.py`), Tempo
 | `MINIO_ENDPOINT` | `localhost:9000` | MinIO API host:port |
 | `MINIO_BUCKET` | `documents` | Object storage bucket |
 | `DOCUMENT_DB_PATH` | `/data/documents.db` | SQLite path (use `./data/documents.db` for local non-Docker) |
-| `MARQO_URL` | `http://localhost:8882` | Marqo base URL |
-| `MARQO_INDEX_NAME` | `documents-index` | Index name (compose/scripts; workflows often default to `documents-index`) |
 | `LANG_DETECT_URL` | `http://lang-detect:3000` (compose) | Language detection service |
 
 ### API HTTP surface
@@ -195,13 +193,12 @@ python scripts/mock_chandra_ocr_server.py   # same :8010 API surface as HF serve
 | `DOCUMENT_METADATA_CSV_PATH` | `/app/workspace/document_manifest.csv` | Optional manifest CSV |
 | `DOCUMENT_DESCRIPTIONS_JSONL_PATH` | `/app/workspace/document_descriptions.jsonl` | Optional descriptions JSONL |
 
-### Vector backend (Qdrant only)
+### Vector backend (Qdrant)
 
-`VECTOR_BACKEND` defaults to **`qdrant`**. Docker Compose no longer ships Marqo. Search, index status, deletes, and ingestion go through `pipeline/vector_store` → Qdrant. Legacy `VECTOR_BACKEND=marqo` still selects the Marqo store module for emergency rollback only (not in compose).
+Search, index status, deletes, and ingestion go through `pipeline/vector_store` → Qdrant.
 
 | Variable | Purpose |
 |----------|---------|
-| `VECTOR_BACKEND` | `qdrant` (default) or `marqo` (legacy emergency only) |
 | `VECTOR_DB_URL` | Vector DB base URL (e.g. `http://localhost:6333` or reverse-proxy HTTPS) |
 | `VECTOR_DB_API_KEY` | Vector DB API key (required for non-local hosts) |
 | `VECTOR_DB_COLLECTION_NAME` | Collection name (default `documents-index`) |
@@ -255,7 +252,7 @@ Separate from the SQLite/Qdrant catalog above (which tracks PROD vector publicat
 | JWT validation (`AUTH_*`, `KEYCLOAK_*`) | — | ✅ | — |
 | Temporal / MinIO / SQLite | — | ✅ | ✅ |
 | OCR / translation / chunking / domain tags | — | config / status | ✅ runs jobs |
-| Qdrant (`VECTOR_BACKEND`, `VECTOR_DB_*`) | — | ✅ | ✅ |
+| Qdrant (`VECTOR_DB_*`) | — | ✅ | ✅ |
 
 ---
 

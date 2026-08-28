@@ -23,7 +23,6 @@ dependencies = [
     "langchain-text-splitters>=0.0.1",
 
     # Vector search
-    "marqo>=3.0.0",
     "qdrant-client>=1.12.0",
     # Local embeddings (default EMBEDDING_PROVIDER=sentence_transformers).
     # Pulls torch — image will be larger. Or set EMBEDDING_PROVIDER=openai_compatible

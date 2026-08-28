@@ -109,7 +109,7 @@ class TestPrepareIngestionRecords:
 
     @pytest.mark.unit
     def test_prepare_records_basic(self):
-        """Test preparing records for Marqo ingestion."""
+        """Test preparing records for vector-index ingestion."""
         from pipeline.activities import prepare_ingestion_records
 
         chunks = [
