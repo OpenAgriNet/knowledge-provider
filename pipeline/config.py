@@ -20,7 +20,6 @@ class Config:
     temporal_host: str = "localhost:7233"
     minio_endpoint: str = "localhost:9000"
     minio_bucket: str = "documents"
-    marqo_url: str = "http://localhost:8882"
     document_db_path: str = "/data/documents.db"
     translation_provider: str = "gemma_vllm"
     translation_model: str = "google/gemma-4-31b-it"
@@ -122,7 +121,6 @@ def load_config() -> Config:
         temporal_host=os.environ.get("TEMPORAL_HOST", "localhost:7233"),
         minio_endpoint=os.environ.get("MINIO_ENDPOINT", "localhost:9000"),
         minio_bucket=os.environ.get("MINIO_BUCKET", "documents"),
-        marqo_url=os.environ.get("MARQO_URL", "http://localhost:8882"),
         document_db_path=os.environ.get("DOCUMENT_DB_PATH", "/data/documents.db"),
         translation_provider=os.environ.get("TRANSLATION_PROVIDER", "gemma_vllm"),
         translation_model=os.environ.get("TRANSLATION_MODEL", "google/gemma-4-31b-it"),
@@ -191,7 +189,6 @@ def print_config_status():
         ("TEMPORAL_HOST", "localhost:7233"),
         ("MINIO_ENDPOINT", "localhost:9000"),
         ("MINIO_BUCKET", "documents"),
-        ("MARQO_URL", "http://localhost:8882"),
         ("DOCUMENT_DB_PATH", "/data/documents.db"),
         ("TRANSLATION_PROVIDER", "gemma_vllm"),
         ("TRANSLATION_MODEL", "gemma-4"),

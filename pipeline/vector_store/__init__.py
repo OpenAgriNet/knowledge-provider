@@ -26,7 +26,7 @@ def get_vector_backend() -> str:
 
 def get_default_index_name() -> str:
     return (
-        os.environ.get("QDRANT_COLLECTION_NAME")
+        os.environ.get("VECTOR_DB_COLLECTION_NAME")
         or os.environ.get("MARQO_INDEX_NAME")
         or "documents-index"
     )

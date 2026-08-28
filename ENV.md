@@ -202,10 +202,10 @@ python scripts/mock_chandra_ocr_server.py   # same :8010 API surface as HF serve
 | Variable | Purpose |
 |----------|---------|
 | `VECTOR_BACKEND` | `qdrant` (default) or `marqo` (legacy emergency only) |
-| `QDRANT_URL` | Qdrant base URL (e.g. `http://localhost:6333` or reverse-proxy HTTPS) |
-| `QDRANT_API_KEY` | Qdrant API key (required for non-local hosts) |
-| `QDRANT_COLLECTION_NAME` | Collection name (default `documents-index`) |
-| `QDRANT_TIMEOUT_SECONDS` | Client timeout |
+| `VECTOR_DB_URL` | Vector DB base URL (e.g. `http://localhost:6333` or reverse-proxy HTTPS) |
+| `VECTOR_DB_API_KEY` | Vector DB API key (required for non-local hosts) |
+| `VECTOR_DB_COLLECTION_NAME` | Collection name (default `documents-index`) |
+| `VECTOR_DB_TIMEOUT_SECONDS` | Client timeout |
 | `EMBEDDING_PROVIDER` | `sentence_transformers` (local) or `openai_compatible` |
 | `EMBEDDING_MODEL` | Embedding model id (default `intfloat/multilingual-e5-large`) |
 | `EMBEDDING_VECTOR_SIZE` | Vector dimensions (default `1024`) |
@@ -219,12 +219,12 @@ Exposes `/catalog/v1/*` so **bharat-oan-api** and **bharat-provider-backend** ca
 |----------|---------|---------|
 | `CATALOG_SERVICE_API_KEYS` | *(empty)* | Comma-separated service keys for `X-Catalog-Service-Key` (OAN/provider warmers). When empty and `AUTH_DISABLED=true`, catalog is open to admin/search JWT bypass. |
 | `CENTRAL_INSTANCES` | `default` | Instances that default `network_visible=true` for new scheme docs |
-| `PROD_QDRANT_URL` | — | PROD Qdrant for document promote |
-| `PROD_QDRANT_API_KEY` | — | PROD Qdrant key |
-| `PROD_QDRANT_COLLECTION_NAME` | `documents-index` | PROD collection for normal documents |
-| `PROD_SCHEME_QDRANT_URL` | `PROD_QDRANT_URL` | PROD Qdrant for scheme promotes |
-| `PROD_SCHEME_QDRANT_API_KEY` | `PROD_QDRANT_API_KEY` | Scheme collection API key |
-| `PROD_SCHEME_QDRANT_COLLECTION_NAME` | `schemes-index` | Must **not** equal documents collection |
+| `PROD_VECTOR_DB_URL` | — | PROD vector DB for document promote |
+| `PROD_VECTOR_DB_API_KEY` | — | PROD vector DB key |
+| `PROD_VECTOR_DB_COLLECTION_NAME` | `documents-index` | PROD collection for normal documents |
+| `PROD_SCHEME_VECTOR_DB_URL` | `PROD_VECTOR_DB_URL` | PROD vector DB for scheme promotes |
+| `PROD_SCHEME_VECTOR_DB_API_KEY` | `PROD_VECTOR_DB_API_KEY` | Scheme collection API key |
+| `PROD_SCHEME_VECTOR_DB_COLLECTION_NAME` | `schemes-index` | Must **not** equal documents collection |
 
 **Endpoints:** `GET /catalog/v1/snapshot`, `/version`, `/schemes`, `/tool-prompt`; `POST /catalog/v1/rebuild`, `/bootstrap`; `PATCH /documents/{id}/scheme-metadata`.
 
@@ -255,7 +255,7 @@ Separate from the SQLite/Qdrant catalog above (which tracks PROD vector publicat
 | JWT validation (`AUTH_*`, `KEYCLOAK_*`) | — | ✅ | — |
 | Temporal / MinIO / SQLite | — | ✅ | ✅ |
 | OCR / translation / chunking / domain tags | — | config / status | ✅ runs jobs |
-| Qdrant (`VECTOR_BACKEND`, `QDRANT_*`) | — | ✅ | ✅ |
+| Qdrant (`VECTOR_BACKEND`, `VECTOR_DB_*`) | — | ✅ | ✅ |
 
 ---
 

@@ -203,15 +203,15 @@ def default_network_visible(instance: str | None) -> bool:
 
 def scheme_collection_name() -> str:
     return (
-        os.environ.get("PROD_SCHEME_QDRANT_COLLECTION_NAME")
+        os.environ.get("PROD_SCHEME_VECTOR_DB_COLLECTION_NAME")
         or "schemes-index"
     ).strip()
 
 
 def documents_collection_name() -> str:
     return (
-        os.environ.get("PROD_QDRANT_COLLECTION_NAME")
-        or os.environ.get("QDRANT_COLLECTION_NAME")
+        os.environ.get("PROD_VECTOR_DB_COLLECTION_NAME")
+        or os.environ.get("VECTOR_DB_COLLECTION_NAME")
         or "documents-index"
     ).strip()
 

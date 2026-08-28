@@ -1649,13 +1649,13 @@ def _delete_document_points_from_prod(doc: dict) -> dict:
     doc_id = doc.get("document_id")
     if not doc_id:
         return {"deleted": False, "reason": "no_doc_id"}
-    prod_url = (os.environ.get("PROD_QDRANT_URL") or "").strip()
+    prod_url = (os.environ.get("PROD_VECTOR_DB_URL") or "").strip()
     if not prod_url:
         return {"deleted": False, "reason": "no_prod_qdrant_url"}
-    prod_key = (os.environ.get("PROD_QDRANT_API_KEY") or "").strip() or None
+    prod_key = (os.environ.get("PROD_VECTOR_DB_API_KEY") or "").strip() or None
     collection = (
-        os.environ.get("PROD_QDRANT_COLLECTION_NAME")
-        or os.environ.get("QDRANT_COLLECTION_NAME")
+        os.environ.get("PROD_VECTOR_DB_COLLECTION_NAME")
+        or os.environ.get("VECTOR_DB_COLLECTION_NAME")
         or "documents-index"
     ).strip()
     try:
@@ -1674,18 +1674,18 @@ def _delete_scheme_points_from_prod(doc: dict) -> dict:
     if not doc_id:
         return {"deleted": False, "reason": "no_doc_id"}
     prod_url = (
-        (os.environ.get("PROD_SCHEME_QDRANT_URL") or "").strip()
-        or (os.environ.get("PROD_QDRANT_URL") or "").strip()
+        (os.environ.get("PROD_SCHEME_VECTOR_DB_URL") or "").strip()
+        or (os.environ.get("PROD_VECTOR_DB_URL") or "").strip()
     )
     if not prod_url:
         return {"deleted": False, "reason": "no_prod_qdrant_url"}
     prod_key = (
-        (os.environ.get("PROD_SCHEME_QDRANT_API_KEY") or "").strip()
-        or (os.environ.get("PROD_QDRANT_API_KEY") or "").strip()
+        (os.environ.get("PROD_SCHEME_VECTOR_DB_API_KEY") or "").strip()
+        or (os.environ.get("PROD_VECTOR_DB_API_KEY") or "").strip()
         or None
     )
     collection = (
-        os.environ.get("PROD_SCHEME_QDRANT_COLLECTION_NAME") or "schemes-index"
+        os.environ.get("PROD_SCHEME_VECTOR_DB_COLLECTION_NAME") or "schemes-index"
     ).strip()
     try:
         from .vector_store.qdrant_store import QdrantVectorStore, get_qdrant_client
