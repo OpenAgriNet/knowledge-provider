@@ -43,6 +43,10 @@ dependencies = [
     # HTTP client
     "httpx>=0.24.0",
 
+    # In-process language detection (replaces the lang-detect HTTP service for
+    # shared-script disambiguation, e.g. Devanagari -> hi/mr)
+    "pyfranc>=0.2.3",
+
     # Utilities
     "pydantic>=2.0.0",
     "python-multipart>=0.0.6",
