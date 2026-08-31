@@ -1197,7 +1197,7 @@ async def prepare_for_ingestion(
 
 
 @activity.defn
-async def ingest_to_marqo(
+async def ingest_to_vector_db(
     records: list[dict],
     index_name: str = "documents-index",
     batch_size: int = 10,
@@ -1389,7 +1389,7 @@ async def ingest_document_from_db(
         size_bytes=payload_size,
         metadata={"record_count": len(records), "index_name": index_name},
     )
-    result = await ingest_to_marqo(records, index_name=index_name, batch_size=batch_size)
+    result = await ingest_to_vector_db(records, index_name=index_name, batch_size=batch_size)
     db.upsert_document_index_status(
         workflow_id=workflow_id,
         index_name=index_name,
