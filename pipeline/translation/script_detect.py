@@ -39,18 +39,17 @@ from dataclasses import dataclass, field
 
 from pyfranc import franc
 
-from .script_config import compile_neutral, compile_scripts, extract_iso3_map, load_config
+from .script_config import load_script_config
 
-_RAW_CONFIG = load_config()
-_COMPILED = compile_scripts(_RAW_CONFIG)
-_ISO3_MAP: dict[str, str] = extract_iso3_map(_RAW_CONFIG)
-_LANG_TO_ISO3: dict[str, str] = dict(_ISO3_MAP)
-_ISO3_TO_LANG: dict[str, str] = {v: k for k, v in _LANG_TO_ISO3.items()}
+_CONFIG = load_script_config()
+_COMPILED = _CONFIG.compiled
+_LANG_TO_ISO3 = _CONFIG.lang_to_iso3
+_ISO3_TO_LANG = _CONFIG.iso3_to_lang
 # Code points that carry no language signal on their own (e.g. the Devanagari
 # danda ।/॥, the ₹ sign) and would otherwise push an otherwise-English page
 # over the detection threshold by themselves. Sourced from the same config
 # file/override as the script table — see "neutral_codepoints" there.
-_NEUTRAL = compile_neutral(_RAW_CONFIG)
+_NEUTRAL = _CONFIG.neutral
 
 
 def iso3_map() -> dict[str, str]:
@@ -60,7 +59,7 @@ def iso3_map() -> dict[str, str]:
     adding a language to an ambiguous family's ``family`` list adds its ISO
     639-3 code here too, in the same edit.
     """
-    return dict(_ISO3_MAP)
+    return dict(_LANG_TO_ISO3)
 
 
 def _family_whitelist(family: tuple[str, ...]) -> list[str]:
