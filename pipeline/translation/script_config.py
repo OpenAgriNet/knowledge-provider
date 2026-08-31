@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("script_families.json")
@@ -51,3 +52,32 @@ def compile_neutral(raw: dict) -> re.Pattern:
 def extract_iso3_map(raw: dict) -> dict[str, str]:
     """Our short language codes → ISO 639-3, straight from the "iso3" map."""
     return dict(raw.get("iso3", {}))
+
+
+@dataclass
+class ScriptConfig:
+    """Fully assembled, ready-to-use script-detection config — everything
+    script_detect.py needs, already loaded and compiled."""
+
+    compiled: tuple[tuple[str, str, re.Pattern, tuple[str, ...]], ...]
+    lang_to_iso3: dict[str, str]
+    iso3_to_lang: dict[str, str]
+    neutral: re.Pattern
+
+
+def load_script_config() -> ScriptConfig:
+    """Load, compile, and assemble the full config in one call.
+
+    This is the only function script_detect.py needs — it doesn't call
+    load_config()/compile_scripts()/etc. itself, so it never has to know how
+    raw config becomes usable structures, only that this function gives it
+    some.
+    """
+    raw = load_config()
+    lang_to_iso3 = extract_iso3_map(raw)
+    return ScriptConfig(
+        compiled=compile_scripts(raw),
+        lang_to_iso3=lang_to_iso3,
+        iso3_to_lang={v: k for k, v in lang_to_iso3.items()},
+        neutral=compile_neutral(raw),
+    )
