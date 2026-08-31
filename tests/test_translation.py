@@ -203,8 +203,11 @@ class TestScriptGate:
     @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_gate_skips_pyfranc_for_english_pages(self, monkeypatch):
-        """No disambiguation call at all when every page is Latin script."""
-        from pipeline.translation import service
+        """No disambiguation call at all when every page is Latin script.
+
+        pyfranc lives in script_detect now, not service — patch it there.
+        """
+        from pipeline.translation import script_detect, service
         from pipeline.translation.base import TranslationConfig
 
         pages = [
@@ -215,7 +218,7 @@ class TestScriptGate:
         def explode(*args, **kwargs):
             raise AssertionError("pyfranc must not be called for Latin-script pages")
 
-        monkeypatch.setattr(service.franc, "lang_detect", explode)
+        monkeypatch.setattr(script_detect.franc, "lang_detect", explode)
 
         config = TranslationConfig(provider="gemma_vllm", model="gemma-4")
         detected = await service.detect_page_languages(pages, config=config)
@@ -247,12 +250,13 @@ class TestScriptGate:
         assert "1/2 page(s) need translation" in joined
 
 
-class TestPyfrancDisambiguation:
-    """pyfranc winner-vote logic for shared-script families (Devanagari, Bengali, Arabic)."""
+class TestScriptDetectDisambiguation:
+    """pyfranc winner-vote logic — lives entirely in script_detect now
+    (service.py never imports pyfranc, per the Tell-Don't-Ask split)."""
 
     @pytest.mark.unit
     def test_family_whitelist_maps_to_iso3(self):
-        from pipeline.translation.service import _family_whitelist
+        from pipeline.translation.script_detect import _family_whitelist
 
         whitelist = _family_whitelist(("hi", "mr", "ne", "sa", "kok"))
         assert whitelist == ["hin", "mar", "nep", "san", "kok"]
@@ -262,99 +266,145 @@ class TestPyfrancDisambiguation:
         """A family member missing from script_families.json's iso3 map must be
         dropped silently, not raise — mirrors the exact gap found and fixed
         earlier (a language added to 'family' but not to 'iso3')."""
-        from pipeline.translation.service import _family_whitelist
+        from pipeline.translation.script_detect import _family_whitelist
 
         whitelist = _family_whitelist(("hi", "mr", "not-a-configured-code"))
         assert whitelist == ["hin", "mar"]
 
     @pytest.mark.unit
-    def test_iso3_map_sourced_from_script_families_json(self):
-        """LANG_TO_ISO3/ISO3_TO_LANG in service.py must come from
-        script_detect.iso3_map(), not a hardcoded copy — this is what makes
-        adding a language to an existing family a JSON-only edit."""
+    def test_iso3_map_matches_script_families_json(self):
         from pipeline.translation.script_detect import iso3_map
-        from pipeline.translation.service import ISO3_TO_LANG, LANG_TO_ISO3
 
-        config_map = iso3_map()
-        assert LANG_TO_ISO3 == config_map
-        assert ISO3_TO_LANG["hin"] == "hi"
-        assert ISO3_TO_LANG["mar"] == "mr"
+        m = iso3_map()
+        assert m["hi"] == "hin"
+        assert m["mr"] == "mar"
+
+    @pytest.mark.unit
+    def test_disambiguate_flips_hindi_default_to_marathi(self):
+        """Real pyfranc call (no mocking): genuine Marathi text on a page the
+        regex gate defaulted to Hindi must get corrected to 'mr'."""
+        from pipeline.translation.script_detect import disambiguate
+
+        marathi_text = "राज्यातील शेतकऱ्यांना या योजनेअंतर्गत आर्थिक मदत दिली जाईल आणि लाभ मिळेल."
+        result = disambiguate("hi", [marathi_text])
+
+        assert result.winner == "mr"
+        assert result.attempted is True
+
+    @pytest.mark.unit
+    def test_disambiguate_keeps_hindi_default_for_hindi_text(self):
+        """Real pyfranc call: genuine Hindi text must NOT get flipped away
+        from the regex gate's own correct default — winner stays None."""
+        from pipeline.translation.script_detect import disambiguate
+
+        hindi_text = "राष्ट्रीय खाद्य तेल मिशन के अंतर्गत किसानों को सहायता दी जाएगी।"
+        result = disambiguate("hi", [hindi_text])
+
+        assert result.winner is None
+
+    @pytest.mark.unit
+    def test_disambiguate_keeps_default_when_pyfranc_errors(self, monkeypatch):
+        """A pyfranc failure on a line must not raise or block the pipeline —
+        it keeps the script gate's default language (winner=None)."""
+        from pipeline.translation import script_detect
+
+        def explode(*args, **kwargs):
+            raise RuntimeError("pyfranc boom")
+
+        monkeypatch.setattr(script_detect.franc, "lang_detect", explode)
+
+        result = script_detect.disambiguate(
+            "hi", ["राष्ट्रीय खाद्य तेल मिशन के अंतर्गत किसानों को सहायता दी जाएगी।"]
+        )
+
+        assert result.winner is None
+        assert result.votes == {}
+
+    @pytest.mark.unit
+    def test_disambiguate_keeps_default_when_votes_outside_family(self, monkeypatch):
+        """If pyfranc's top pick isn't a member of the script's family, the
+        default must be kept rather than overwritten with a nonsense value."""
+        from pipeline.translation import script_detect
+
+        monkeypatch.setattr(script_detect.franc, "lang_detect", lambda *a, **kw: [("fra", 1.0)])
+
+        result = script_detect.disambiguate(
+            "hi", ["राष्ट्रीय खाद्य तेल मिशन के अंतर्गत किसानों को सहायता दी जाएगी।"]
+        )
+
+        assert result.winner is None
+        assert result.votes == {}
+
+    @pytest.mark.unit
+    def test_disambiguate_not_attempted_for_unambiguous_script(self):
+        """A language with no shared-script family (e.g. Gujarati) has
+        nothing to disambiguate — must be a safe no-op, attempted=False."""
+        from pipeline.translation.script_detect import disambiguate
+
+        result = disambiguate("gu", ["ખેડૂતોને આ યોજના હેઠળ સહાય આપવામાં આવશે."])
+
+        assert result.attempted is False
+        assert result.winner is None
+
+    @pytest.mark.unit
+    def test_detect_any_returns_short_code(self):
+        from pipeline.translation.script_detect import detect_any
+
+        assert detect_any("This is a normal English sentence used for testing detection.") in {
+            "en",
+            None,
+        }
+
+    @pytest.mark.unit
+    def test_detect_any_returns_none_on_pyfranc_error(self, monkeypatch):
+        from pipeline.translation import script_detect
+
+        monkeypatch.setattr(
+            script_detect.franc,
+            "lang_detect",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+
+        assert script_detect.detect_any("some text here") is None
+
+
+class TestServiceDisambiguationWiring:
+    """service.py's _disambiguate_languages() only orchestrates pages/logging
+    now — the actual pyfranc decision comes from script_detect.disambiguate().
+    These confirm that wiring, not the winner-vote logic itself."""
 
     @pytest.mark.unit
     @pytest.mark.asyncio
-    async def test_disambiguate_flips_hindi_default_to_marathi(self):
-        """Real pyfranc call (no mocking): genuine Marathi text on a page the
-        regex gate defaulted to Hindi must get corrected to 'mr'."""
+    async def test_applies_winner_and_logs_it(self):
         from pipeline.translation import service
 
         marathi_text = "राज्यातील शेतकऱ्यांना या योजनेअंतर्गत आर्थिक मदत दिली जाईल आणि लाभ मिळेल."
         pages = [{"page_number": 1, "original_markdown": marathi_text}]
         detected_languages = {0: "hi"}
+        messages = []
 
-        await service._disambiguate_languages(pages, [0], detected_languages)
+        def log(msg, *args):
+            messages.append(msg % args if args else msg)
+
+        await service._disambiguate_languages(pages, [0], detected_languages, log=log)
 
         assert detected_languages[0] == "mr"
+        assert any("refined hi → mr" in m for m in messages)
 
     @pytest.mark.unit
     @pytest.mark.asyncio
-    async def test_disambiguate_keeps_hindi_default_for_hindi_text(self):
-        """Real pyfranc call: genuine Hindi text must NOT get flipped away
-        from the regex gate's own correct default."""
+    async def test_keeps_default_and_does_not_log_refinement(self):
         from pipeline.translation import service
 
         hindi_text = "राष्ट्रीय खाद्य तेल मिशन के अंतर्गत किसानों को सहायता दी जाएगी।"
         pages = [{"page_number": 1, "original_markdown": hindi_text}]
         detected_languages = {0: "hi"}
+        messages = []
 
-        await service._disambiguate_languages(pages, [0], detected_languages)
+        def log(msg, *args):
+            messages.append(msg % args if args else msg)
 
-        assert detected_languages[0] == "hi"
-
-    @pytest.mark.unit
-    @pytest.mark.asyncio
-    async def test_disambiguate_keeps_default_when_pyfranc_errors(self, monkeypatch):
-        """A pyfranc failure on a line must not raise or block the pipeline —
-        it keeps the script gate's default language."""
-        from pipeline.translation import service
-
-        def explode(*args, **kwargs):
-            raise RuntimeError("pyfranc boom")
-
-        monkeypatch.setattr(service.franc, "lang_detect", explode)
-
-        pages = [{"page_number": 1, "original_markdown": "राष्ट्रीय खाद्य तेल मिशन के अंतर्गत किसानों को सहायता दी जाएगी।"}]
-        detected_languages = {0: "hi"}
-
-        await service._disambiguate_languages(pages, [0], detected_languages)
+        await service._disambiguate_languages(pages, [0], detected_languages, log=log)
 
         assert detected_languages[0] == "hi"
-
-    @pytest.mark.unit
-    @pytest.mark.asyncio
-    async def test_disambiguate_keeps_default_when_votes_outside_family(self, monkeypatch):
-        """If pyfranc's top pick isn't a member of the script's family, the
-        default must be kept rather than overwritten with a nonsense value."""
-        from pipeline.translation import service
-
-        monkeypatch.setattr(service.franc, "lang_detect", lambda *a, **kw: [("fra", 1.0)])
-
-        pages = [{"page_number": 1, "original_markdown": "राष्ट्रीय खाद्य तेल मिशन के अंतर्गत किसानों को सहायता दी जाएगी।"}]
-        detected_languages = {0: "hi"}
-
-        await service._disambiguate_languages(pages, [0], detected_languages)
-
-        assert detected_languages[0] == "hi"
-
-    @pytest.mark.unit
-    @pytest.mark.asyncio
-    async def test_disambiguate_skips_pages_with_no_family(self):
-        """A page whose default language has no shared-script family (e.g.
-        Gujarati) has nothing to disambiguate — must be a safe no-op."""
-        from pipeline.translation import service
-
-        pages = [{"page_number": 1, "original_markdown": "ખેડૂતોને આ યોજના હેઠળ સહાય આપવામાં આવશે."}]
-        detected_languages = {0: "gu"}
-
-        await service._disambiguate_languages(pages, [0], detected_languages)
-
-        assert detected_languages[0] == "gu"
+        assert not any("refined" in m for m in messages)
