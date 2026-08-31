@@ -1,5 +1,9 @@
 {
   "$comment": "Default script → language table for the regex script gate (pipeline/translation/script_detect.py). Each entry is one Unicode script block. 'lang' is the default/primary language for that script; 'family' lists every language that shares the script (leave empty if the script maps 1:1 to a language) — the gate flags the page as non-English but only calls out to disambiguation (pyfranc) when 'family' has more than one entry. 'ranges' are inclusive Unicode code point ranges (hex, no 0x/U+ prefix) that belong to the script; most scripts are one contiguous block, a few (e.g. Arabic) are split across more than one. To add a new unambiguous script (single language, empty family): append an entry with the language's ISO 639-1 (or 639-3 if no 639-1 code exists, e.g. 'kok' for Konkani) and its Unicode block range(s) from unicode.org/charts — that's the whole change. To add a new language to an EXISTING family (e.g. a third Devanagari language): add its code to that entry's 'family' list AND add a 'yourcode: iso3code' pair to the 'iso3' map below — pyfranc (the disambiguation library) needs the ISO 639-3 code to know what to look for; without it the new family member is silently never chosen. To fully replace this table at deploy time instead of editing it in place, set SCRIPT_FAMILIES_CONFIG_PATH to a JSON file with this same shape.",
+  "neutral_codepoints": {
+    "$comment": "Individual code points (hex) that carry no language signal on their own and are stripped before script counting — e.g. Devanagari danda punctuation (।॥) or a currency symbol (₹) that can show up inside otherwise-English text and would push a page over the detection threshold by itself. Add a code point here if a new deployment hits the same problem with a different symbol.",
+    "points": ["0964", "0965", "20B9"]
+  },
   "iso3": {
     "en": "eng",
     "hi": "hin",
