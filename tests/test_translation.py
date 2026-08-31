@@ -204,8 +204,8 @@ class TestScriptGate:
     @pytest.mark.asyncio
     async def test_gate_skips_pyfranc_for_english_pages(self, monkeypatch):
         """No disambiguation call at all when every page is Latin script."""
-        from pipeline.translation.base import TranslationConfig
         from pipeline.translation import service
+        from pipeline.translation.base import TranslationConfig
 
         pages = [
             {"page_number": 1, "original_markdown": "Operational guidelines for oil palm."},
