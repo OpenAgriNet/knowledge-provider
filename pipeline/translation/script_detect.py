@@ -16,6 +16,13 @@ Script → language is 1:1 except Devanagari (Hindi/Marathi/…) and Bengali
 (Bengali/Assamese); those stay ambiguous here and are handed to pyfranc to
 disambiguate, but only for pages this gate has already flagged.
 
+pyfranc itself — the import, the whitelist it needs, and interpreting its
+raw ISO-639-3 output — lives entirely in this module too (``disambiguate()``,
+``detect_any()``). ``service.py`` never touches pyfranc directly: it passes
+in page lines and a default language, and gets back our own short codes.
+That's deliberate — swapping pyfranc for a different detector later should
+only mean editing this file, not any of its callers.
+
 The script → language table itself lives in ``script_families.json`` next to
 this file, not in code: adding a new unambiguous script (say, Myanmar for
 Burmese) is a JSON edit, not a Python change. Adding a language to an
@@ -30,11 +37,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from pyfranc import franc
+
 from .script_config import compile_neutral, compile_scripts, extract_iso3_map, load_config
 
 _RAW_CONFIG = load_config()
 _COMPILED = compile_scripts(_RAW_CONFIG)
 _ISO3_MAP: dict[str, str] = extract_iso3_map(_RAW_CONFIG)
+_LANG_TO_ISO3: dict[str, str] = dict(_ISO3_MAP)
+_ISO3_TO_LANG: dict[str, str] = {v: k for k, v in _LANG_TO_ISO3.items()}
 # Code points that carry no language signal on their own (e.g. the Devanagari
 # danda ।/॥, the ₹ sign) and would otherwise push an otherwise-English page
 # over the detection threshold by themselves. Sourced from the same config
@@ -50,6 +61,12 @@ def iso3_map() -> dict[str, str]:
     639-3 code here too, in the same edit.
     """
     return dict(_ISO3_MAP)
+
+
+def _family_whitelist(family: tuple[str, ...]) -> list[str]:
+    """Map a script_family() result to the ISO 639-3 codes pyfranc expects."""
+    return [_LANG_TO_ISO3[code] for code in family if code in _LANG_TO_ISO3]
+
 
 DEFAULT_MIN_CHARS = 15
 DEFAULT_MIN_RATIO = 0.05
@@ -160,3 +177,74 @@ def script_family(language: str) -> tuple[str, ...]:
         if lang == language:
             return family
     return ()
+
+
+@dataclass
+class DisambiguationResult:
+    """Outcome of disambiguate() for one page — everything a caller needs to
+    log a decision, without needing to know how pyfranc got there."""
+
+    family: tuple[str, ...]
+    attempted: bool
+    votes: dict[str, int] = field(default_factory=dict)
+    winner: str | None = None
+
+
+def disambiguate(default_lang: str, lines: list[str]) -> DisambiguationResult:
+    """Refine a shared-script page's language via pyfranc, restricted to the
+    script's family (e.g. Devanagari → hi vs mr vs ne vs sa vs kok).
+
+    ``winner`` is set only when pyfranc's per-line majority vote picks a
+    language other than ``default_lang``; otherwise the script-derived
+    default should be kept — including on a pyfranc failure, which is
+    non-fatal here since the default already translates correctly.
+    """
+    family = script_family(default_lang)
+    whitelist = _family_whitelist(family)
+    if not lines or not whitelist:
+        return DisambiguationResult(family=family, attempted=False)
+
+    votes: dict[str, int] = {}
+    for line in lines:
+        try:
+            results = franc.lang_detect(line, whitelist=whitelist)
+        except Exception:
+            continue
+        if not results:
+            continue
+        candidate = _ISO3_TO_LANG.get(results[0][0])
+        if candidate in family:
+            votes[candidate] = votes.get(candidate, 0) + 1
+
+    if not votes:
+        return DisambiguationResult(family=family, attempted=True)
+
+    winner = max(votes, key=lambda k: votes[k])
+    return DisambiguationResult(
+        family=family,
+        attempted=True,
+        votes=votes,
+        winner=winner if winner != default_lang else None,
+    )
+
+
+def detect_any(line: str) -> str | None:
+    """Unrestricted single-line detection across every language pyfranc
+    knows (no whitelist) — used only by the legacy
+    TRANSLATION_SCRIPT_GATE_ENABLED=false fallback path.
+
+    Returns our short code, the raw ISO 639-3 code if pyfranc found a
+    language outside our configured set, or None if it errored or found
+    nothing usable.
+    """
+    try:
+        results = franc.lang_detect(line)
+    except Exception:
+        return None
+    if not results:
+        return None
+    top_iso3 = results[0][0]
+    # Fall back to the raw code (already <=3 chars, ISO 639-3) rather than
+    # truncating to 2 — a blind [:2] slice can collide with a DIFFERENT
+    # real language's actual ISO 639-1 code for an unmapped input.
+    return _ISO3_TO_LANG.get(top_iso3, top_iso3[:3] if top_iso3 else None)

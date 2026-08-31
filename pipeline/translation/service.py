@@ -8,11 +8,9 @@ import re
 from datetime import datetime
 from typing import Callable, Optional
 
-from pyfranc import franc
-
 from .base import TranslationConfig, TranslationProvider
 from .gemma_vllm import GemmaVllmTranslationProvider
-from .script_detect import analyze_script, iso3_map, script_family
+from .script_detect import analyze_script, detect_any, disambiguate
 
 PROVIDERS: dict[str, type[TranslationProvider]] = {
     "gemma_vllm": GemmaVllmTranslationProvider,
@@ -36,19 +34,6 @@ LANG_MAP = {
     # Observed noisy code from the old lang-detect service for Gujarati pages.
     "zl": "gu",
 }
-
-# ISO 639-3 codes pyfranc returns → our short codes, sourced from
-# script_families.json's "iso3" map (not hardcoded here) so that adding a
-# language to an existing ambiguous family is a JSON-only edit — see that
-# file's $comment and script_detect.iso3_map() for the full explanation.
-LANG_TO_ISO3 = iso3_map()
-ISO3_TO_LANG = {v: k for k, v in LANG_TO_ISO3.items()}
-
-
-def _family_whitelist(family: tuple[str, ...]) -> list[str]:
-    """Map a script_family() result to the ISO 639-3 codes pyfranc expects."""
-    return [LANG_TO_ISO3[code] for code in family if code in LANG_TO_ISO3]
-
 
 def _gemma_endpoint() -> str:
     """Resolve OpenAI-compatible Gemma base URL (AGRINET preferred)."""
@@ -268,53 +253,28 @@ async def _disambiguate_languages(
         page = pages[i]
         page_no = page.get("page_number", i + 1)
         default_lang = detected_languages[i]
-        family = script_family(default_lang)
-        whitelist = _family_whitelist(family)
         text = page.get("edited_markdown") or page.get("original_markdown", "")
         lines = [line.strip() for line in text.split("\n") if len(line.strip()) >= 10]
-        if not lines or not whitelist:
-            continue
 
-        votes: dict[str, int] = {}
-        for line in lines:
-            try:
-                results = franc.lang_detect(line, whitelist=whitelist)
-            except Exception as exc:
-                if log:
-                    log(
-                        "Page %s: pyfranc error on a line (%s: %s), skipping it",
-                        page_no,
-                        type(exc).__name__,
-                        exc,
-                    )
-                continue
-            if not results:
-                continue
-            candidate = ISO3_TO_LANG.get(results[0][0])
-            if candidate in family:
-                votes[candidate] = votes.get(candidate, 0) + 1
+        result = disambiguate(default_lang, lines)
 
-        if not votes:
-            if log:
-                log(
-                    "Page %s: pyfranc found nothing in the %s family, keeping %s",
-                    page_no,
-                    "/".join(family),
-                    default_lang,
-                )
-            continue
-
-        winner = max(votes, key=lambda k: votes[k])
-        if winner != default_lang:
-            detected_languages[i] = winner
+        if result.winner:
+            detected_languages[i] = result.winner
             if log:
                 log(
                     "Page %s: pyfranc refined %s → %s (votes=%s)",
                     page_no,
                     default_lang,
-                    winner,
-                    votes,
+                    result.winner,
+                    result.votes,
                 )
+        elif result.attempted and not result.votes and log:
+            log(
+                "Page %s: pyfranc found nothing in the %s family, keeping %s",
+                page_no,
+                "/".join(result.family),
+                default_lang,
+            )
 
 
 async def _detect_via_lang_detect(
@@ -344,24 +304,8 @@ async def _detect_via_lang_detect(
 
         non_english_lang = None
         for line in lines:
-            try:
-                results = franc.lang_detect(line)
-            except Exception as exc:
-                if log:
-                    log(
-                        "Page %s: pyfranc error on a line: %s: %s",
-                        page.get("page_number"),
-                        type(exc).__name__,
-                        exc,
-                    )
-                continue
-            if not results:
-                continue
-            top_iso3 = results[0][0]
-            # Same reasoning as normalize_detected_language: fall back to the
-            # raw 3-letter code, not a truncated (and possibly colliding) one.
-            lang = ISO3_TO_LANG.get(top_iso3, top_iso3[:3] if top_iso3 else "en")
-            if lang not in {"en", "und"}:
+            lang = detect_any(line)
+            if lang and lang not in {"en", "und"}:
                 non_english_lang = lang
                 if log:
                     log(
