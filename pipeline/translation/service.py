@@ -158,7 +158,10 @@ def _contains_gujarati_script(text: str) -> bool:
 
 def normalize_detected_language(detected_lang: str | None, page_text: str) -> str:
     lowered = (detected_lang or "en").lower()
-    normalized = LANG_MAP.get(lowered, lowered[:2] if lowered else "en")
+    # Fall back to the raw code (already <=3 chars, ISO 639-3) rather than
+    # truncating to 2 — a blind [:2] slice can collide with a DIFFERENT
+    # real language's actual ISO 639-1 code for an unmapped input.
+    normalized = LANG_MAP.get(lowered, lowered[:3] if lowered else "en")
     if normalized in {"unknown", "un", "und", "xx", "zl"}:
         if _contains_gujarati_script(page_text):
             return "gu"
@@ -355,7 +358,9 @@ async def _detect_via_lang_detect(
             if not results:
                 continue
             top_iso3 = results[0][0]
-            lang = ISO3_TO_LANG.get(top_iso3, top_iso3[:2] if top_iso3 else "en")
+            # Same reasoning as normalize_detected_language: fall back to the
+            # raw 3-letter code, not a truncated (and possibly colliding) one.
+            lang = ISO3_TO_LANG.get(top_iso3, top_iso3[:3] if top_iso3 else "en")
             if lang not in {"en", "und"}:
                 non_english_lang = lang
                 if log:

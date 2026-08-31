@@ -28,38 +28,18 @@ file (same shape) to replace the table entirely without touching this repo.
 
 from __future__ import annotations
 
-import json
-import os
-import re
 from dataclasses import dataclass, field
-from pathlib import Path
 
-_DEFAULT_CONFIG_PATH = Path(__file__).with_name("script_families.json")
+from .script_config import compile_neutral, compile_scripts, extract_iso3_map, load_config
 
-
-def _load_config() -> dict:
-    """Read the script → language config JSON (bundled default, or the
-    SCRIPT_FAMILIES_CONFIG_PATH override — see module docstring)."""
-    override = os.environ.get("SCRIPT_FAMILIES_CONFIG_PATH", "").strip()
-    path = Path(override) if override else _DEFAULT_CONFIG_PATH
-    with path.open("r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def _compile_scripts(raw: dict) -> tuple[tuple[str, str, re.Pattern, tuple[str, ...]], ...]:
-    compiled = []
-    for entry in raw["scripts"]:
-        char_ranges = "".join(
-            f"{chr(int(start, 16))}-{chr(int(end, 16))}" for start, end in entry["ranges"]
-        )
-        pattern = re.compile(f"[{char_ranges}]")
-        compiled.append((entry["lang"], entry["script"], pattern, tuple(entry.get("family", ()))))
-    return tuple(compiled)
-
-
-_RAW_CONFIG = _load_config()
-_COMPILED = _compile_scripts(_RAW_CONFIG)
-_ISO3_MAP: dict[str, str] = dict(_RAW_CONFIG.get("iso3", {}))
+_RAW_CONFIG = load_config()
+_COMPILED = compile_scripts(_RAW_CONFIG)
+_ISO3_MAP: dict[str, str] = extract_iso3_map(_RAW_CONFIG)
+# Code points that carry no language signal on their own (e.g. the Devanagari
+# danda ।/॥, the ₹ sign) and would otherwise push an otherwise-English page
+# over the detection threshold by themselves. Sourced from the same config
+# file/override as the script table — see "neutral_codepoints" there.
+_NEUTRAL = compile_neutral(_RAW_CONFIG)
 
 
 def iso3_map() -> dict[str, str]:
@@ -70,11 +50,6 @@ def iso3_map() -> dict[str, str]:
     639-3 code here too, in the same edit.
     """
     return dict(_ISO3_MAP)
-
-# Script code points that carry no language signal on their own: the Devanagari
-# danda (।/॥) and the rupee sign show up inside otherwise-English government
-# text, and would otherwise push a page over the threshold by themselves.
-_NEUTRAL = re.compile(r"[।॥₹]")
 
 DEFAULT_MIN_CHARS = 15
 DEFAULT_MIN_RATIO = 0.05
