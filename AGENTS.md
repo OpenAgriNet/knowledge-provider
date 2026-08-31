@@ -16,7 +16,7 @@ Full narrative docs (read these before deep architectural changes, don't re-deri
 ## Commands
 
 ```bash
-# Run the full stack (api, worker, temporal, minio, marqo, ui, lang-detect)
+# Run the full stack (api, worker, temporal, minio, marqo, ui)
 docker compose up -d --build
 docker compose down
 
