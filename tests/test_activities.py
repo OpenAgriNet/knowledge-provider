@@ -366,3 +366,82 @@ class TestOCRActivity:
         assert pages[0]["page_number"] == 1
         assert "# Page 1 content" in pages[0]["original_markdown"]
         mock_run_ocr_pdf.assert_called_once()
+
+
+class TestPublishCatalogToNetworkActivity:
+    """Tests for the publish_catalog_to_network activity (thin wrapper over DiscoveryPublishService)."""
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_publish_records_artifact_on_success(self, monkeypatch):
+        import pipeline.activities as activities
+        import pipeline.db as db
+
+        fake_result = {
+            "envelope": {
+                "context": {
+                    "action": "catalog/publish",
+                    "messageId": "msg-1",
+                    "transactionId": "txn-1",
+                    "timestamp": "2026-03-04T10:00:00.000Z",
+                    "senderId": "docs-pipeline-bv",
+                },
+                "message": {"catalogs": []},
+            },
+            "status_code": 200,
+            "response_body": '{"ack": true}',
+        }
+
+        class FakeService:
+            def __init__(self):
+                pass
+
+            def publish(self, transaction_id):
+                assert transaction_id == "txn-1"
+                return fake_result
+
+        monkeypatch.setattr(activities, "DiscoveryPublishService", FakeService)
+        monkeypatch.setattr(
+            activities,
+            "_upload_file_to_minio",
+            lambda *a, **k: ("minio://documents/network_publish.json", 123, "application/json"),
+        )
+        monkeypatch.setattr(db, "get_latest_document_job", lambda workflow_id: {"id": 42})
+
+        recorded = {}
+
+        def fake_add_artifact(**kwargs):
+            recorded.update(kwargs)
+            return 1
+
+        monkeypatch.setattr(db, "add_document_artifact", fake_add_artifact)
+
+        result = await activities.publish_catalog_to_network("wf-1", "txn-1")
+
+        assert result == {"status": "published", "transaction_id": "txn-1", "message_id": "msg-1"}
+        assert recorded["workflow_id"] == "wf-1"
+        assert recorded["job_id"] == 42
+        assert recorded["artifact_type"] == "network_publish_payload"
+        assert recorded["stage"] == "publishing_to_network"
+        assert recorded["metadata"]["request"] == fake_result["envelope"]
+        assert recorded["metadata"]["response_status"] == 200
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_publish_failure_propagates_and_records_nothing(self, monkeypatch):
+        import pipeline.activities as activities
+        import pipeline.db as db
+
+        class FakeService:
+            def publish(self, transaction_id):
+                raise RuntimeError("discovery service unreachable")
+
+        monkeypatch.setattr(activities, "DiscoveryPublishService", FakeService)
+
+        add_artifact_calls = []
+        monkeypatch.setattr(db, "add_document_artifact", lambda **kwargs: add_artifact_calls.append(kwargs))
+
+        with pytest.raises(RuntimeError, match="discovery service unreachable"):
+            await activities.publish_catalog_to_network("wf-1", "txn-1")
+
+        assert add_artifact_calls == []

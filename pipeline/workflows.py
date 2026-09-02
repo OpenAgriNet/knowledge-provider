@@ -18,6 +18,7 @@ with workflow.unsafe.imports_passed_through():
         detect_and_translate_pages_from_db,
         ingest_document_from_db,
         promote_document_to_prod_qdrant,
+        publish_catalog_to_network,
         run_ocr_and_store,
         update_document_state,
     )
@@ -62,6 +63,16 @@ TRANSLATION_RETRY = RetryPolicy(
     backoff_coefficient=2.0,
     maximum_interval=timedelta(minutes=15),
     maximum_attempts=20,
+)
+
+# Shorter than INGEST_RETRY: the Discovery Service is a new, unproven external
+# dependency, so we fail the document faster rather than holding it in-flight
+# for hours.
+NETWORK_PUBLISH_RETRY = RetryPolicy(
+    initial_interval=timedelta(seconds=30),
+    backoff_coefficient=2.0,
+    maximum_interval=timedelta(minutes=5),
+    maximum_attempts=5,
 )
 
 
@@ -259,6 +270,26 @@ class DocumentPipelineWorkflow:
 
             self.state.ingested_at = _now_iso()
 
+            self.state.stage = DocumentStage.PUBLISHING_TO_NETWORK
+            await _mirror_state(
+                workflow.info().workflow_id,
+                "publishing_to_network",
+                self.state.page_count,
+                self.state.chunk_count,
+                None,
+            )
+
+            # transactionId is generated once here (workflow.uuid4() is
+            # replay-safe) and reused across activity retries; the activity
+            # generates a fresh messageId on every attempt.
+            network_transaction_id = str(workflow.uuid4())
+            await workflow.execute_activity(
+                publish_catalog_to_network,
+                args=[workflow.info().workflow_id, network_transaction_id],
+                start_to_close_timeout=timedelta(minutes=10),
+                retry_policy=NETWORK_PUBLISH_RETRY,
+            )
+
             # DISABLE_PROD_SETTING: finish at DEV ingest. Decided when the
             # workflow was started and passed in as an argument, so a replay
             # always takes the same branch as the original run.
@@ -434,6 +465,20 @@ class ReingestionWorkflow:
             )
 
             self.state.records_ingested = result.get("records_ingested", 0)
+
+            self.state.stage = DocumentStage.PUBLISHING_TO_NETWORK
+            await _mirror_state(original_workflow_id, "publishing_to_network", page_count, chunk_count, None)
+
+            # Content changed on reingest, so the network gets a fresh publish
+            # with a new transactionId (same replay-safety rule as above).
+            network_transaction_id = str(workflow.uuid4())
+            await workflow.execute_activity(
+                publish_catalog_to_network,
+                args=[original_workflow_id, network_transaction_id],
+                start_to_close_timeout=timedelta(minutes=10),
+                retry_policy=NETWORK_PUBLISH_RETRY,
+            )
+
             # Reingest lands in prod-approval gate; PromoteToProdWorkflow finishes promotion.
             self.state.stage = DocumentStage.APPROVAL_FOR_PROD
 
