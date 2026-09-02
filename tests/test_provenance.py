@@ -75,7 +75,7 @@ def test_find_document_by_legacy_doc_id_hash(db_connection):
     db.upsert_document_index_status(
         workflow_id=workflow_id,
         index_name="documents-index",
-        vector_doc_id=legacy_doc_id_hash,
+        doc_id=legacy_doc_id_hash,
         chunk_count_indexed=1,
         status="indexed",
     )

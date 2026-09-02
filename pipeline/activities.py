@@ -1505,7 +1505,7 @@ async def ingest_document_from_db(
     db.upsert_document_index_status(
         workflow_id=workflow_id,
         index_name=index_name,
-        vector_doc_id=document_id,
+        doc_id=document_id,
         chunk_count_indexed=result.get("records_ingested", 0),
         last_indexed_at=datetime.utcnow().isoformat(),
         last_verified_at=datetime.utcnow().isoformat(),
