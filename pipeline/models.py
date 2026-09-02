@@ -21,6 +21,7 @@ class DocumentStage(str, Enum):
     CHUNK_REVIEW = "chunk_review"                # Waiting for user to review/approve chunks
     READY_FOR_INGESTION = "ready_for_ingestion"  # Final review before ingestion
     INGESTING = "ingesting"                      # Ingesting into DEV vector index
+    PUBLISHING_TO_NETWORK = "publishing_to_network"  # Publishing catalog to the discovery network
     APPROVAL_FOR_PROD = "approval_for_prod"      # Waiting for superadmin prod promotion
     INGESTING_PROD = "ingesting_prod"            # Promoting / ingesting into PROD vector index
     COMPLETED = "completed"
@@ -38,14 +39,16 @@ PIPELINE_STAGES = [
     ("chunk_review", "Chunk Review", "Review chunks"),
     ("ready_for_ingestion", "Pre-Ingestion", "Final review before DEV ingest"),
     ("ingesting", "Ingesting in Dev", "Uploading to DEV vector index"),
+    ("publishing_to_network", "Publish to Network", "Publishing catalog to the discovery network"),
     ("approval_for_prod", "Approval for Prod", "Superadmin approval to promote to PROD"),
     ("ingesting_prod", "Ingesting to Prod", "Promoting vectors into PROD index"),
     ("completed", "Completed", "Processing complete"),
 ]
 
 # Stages that only exist when PROD promotion is enabled. With
-# DISABLE_PROD_SETTING=true a document goes straight from `ingesting` to
-# `completed` and never enters these.
+# DISABLE_PROD_SETTING=true a document goes from `ingesting` through
+# `publishing_to_network` straight to `completed` and never enters these.
+# publishing_to_network itself is NOT prod-only: it runs for every document.
 PROD_ONLY_STAGES = frozenset({"approval_for_prod", "ingesting_prod"})
 
 
