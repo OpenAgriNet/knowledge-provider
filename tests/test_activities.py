@@ -445,3 +445,33 @@ class TestPublishCatalogToNetworkActivity:
             await activities.publish_catalog_to_network("wf-1", "txn-1")
 
         assert add_artifact_calls == []
+
+
+class TestWorkerActivityRegistration:
+    """
+    Every @activity.defn in activities.py must be registered on the worker
+    (pipeline/worker.py), or Temporal fails at runtime with a NotFoundError
+    when a workflow tries to run it - a silent gap that unit tests calling
+    activity functions directly (like the tests above) can't catch on their
+    own, since they invoke the function directly rather than through a
+    registered worker.
+    """
+
+    @pytest.mark.unit
+    def test_every_defined_activity_is_registered_on_the_worker(self):
+        import inspect
+
+        from temporalio.activity import _Definition
+
+        from pipeline import activities, worker
+
+        defined_activities = {
+            name
+            for name, obj in vars(activities).items()
+            if inspect.isfunction(obj) and _Definition.from_callable(obj)
+        }
+
+        worker_source = inspect.getsource(worker)
+        missing = {name for name in defined_activities if name not in worker_source}
+
+        assert not missing, f"Activities defined but never registered on the worker: {missing}"
