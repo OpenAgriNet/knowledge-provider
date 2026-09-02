@@ -60,6 +60,12 @@ export const stageMeta = {
     shortLabel: 'Publishing to dev',
     description: 'Publishing the document to the dev search index',
   },
+  publishing_to_network: {
+    label: 'Publish to Network',
+    tone: 'warning',
+    shortLabel: 'Publish to Network',
+    description: 'Publishing the catalog to the discovery network',
+  },
   approval_for_prod: {
     label: 'Approve for Prod',
     tone: 'accent',
@@ -123,6 +129,7 @@ export const PIPELINE_STAGES = [
   { id: 'chunk_review', label: 'Approve content', shortLabel: 'Approve content' },
   { id: 'ready_for_ingestion', label: 'Ready to ingest', shortLabel: 'Ready to ingest' },
   { id: 'ingesting', label: 'Publishing to dev', shortLabel: 'Publishing to dev' },
+  { id: 'publishing_to_network', label: 'Publish to Network', shortLabel: 'Publish to Network' },
   { id: 'approval_for_prod', label: 'Approve for production', shortLabel: 'Approve for production' },
   { id: 'ingesting_prod', label: 'Publishing to prod', shortLabel: 'Publishing to prod' },
   { id: 'completed', label: 'Completed', shortLabel: 'Completed' },
@@ -142,6 +149,7 @@ export const USER_PIPELINE_STAGES = [
   { id: 'chunk_review', label: 'Approve content' },
   { id: 'ready_for_ingestion', label: 'Ready to ingest' },
   { id: 'ingesting', label: 'Publishing to dev' },
+  { id: 'publishing_to_network', label: 'Publish to Network' },
   { id: 'approval_for_prod', label: 'Approve for production' },
   { id: 'ingesting_prod', label: 'Publishing to prod' },
   { id: 'completed', label: 'Completed' },
@@ -159,6 +167,7 @@ export function mapStageToUserStep(stage) {
     chunk_review: 'chunk_review',
     ready_for_ingestion: 'ready_for_ingestion',
     ingesting: 'ingesting',
+    publishing_to_network: 'publishing_to_network',
     approval_for_prod: 'approval_for_prod',
     ingesting_prod: 'ingesting_prod',
     completed: 'completed',
@@ -173,6 +182,7 @@ export const RUNNING_BACKEND_STAGES = new Set([
   'translation_processing',
   'chunking',
   'ingesting',
+  'publishing_to_network',
   'ingesting_prod',
 ])
 
