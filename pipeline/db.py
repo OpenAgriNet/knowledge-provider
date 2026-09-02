@@ -307,14 +307,14 @@ def init_db():
                     PRIMARY KEY (workflow_id, index_name)
                 )
             """)
-            # vector_doc_id supersedes the legacy marqo_doc_id column (generic
+            # doc_id supersedes the legacy marqo_doc_id column (generic
             # naming, no DB name baked into the schema). marqo_doc_id is left in
             # place, unwritten, until scripts/drop_legacy_marqo_columns.py is run.
-            _add_column_if_missing(conn, "document_index_status", "vector_doc_id", "TEXT")
+            _add_column_if_missing(conn, "document_index_status", "doc_id", "TEXT")
             conn.execute("""
                 UPDATE document_index_status
-                SET vector_doc_id = marqo_doc_id
-                WHERE vector_doc_id IS NULL AND marqo_doc_id IS NOT NULL
+                SET doc_id = marqo_doc_id
+                WHERE doc_id IS NULL AND marqo_doc_id IS NOT NULL
             """)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS document_manifest_entries (
@@ -1765,7 +1765,7 @@ def get_document_artifact(workflow_id: str, artifact_id: int) -> Optional[dict]:
 def upsert_document_index_status(
     workflow_id: str,
     index_name: str,
-    vector_doc_id: Optional[str] = None,
+    doc_id: Optional[str] = None,
     chunk_count_indexed: Optional[int] = None,
     last_indexed_at: Optional[str] = None,
     last_verified_at: Optional[str] = None,
@@ -1778,11 +1778,11 @@ def upsert_document_index_status(
         with get_connection() as conn:
             conn.execute("""
                 INSERT INTO document_index_status (
-                    workflow_id, index_name, vector_doc_id, chunk_count_indexed,
+                    workflow_id, index_name, doc_id, chunk_count_indexed,
                     last_indexed_at, last_verified_at, schema_version, status, details_json
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(workflow_id, index_name) DO UPDATE SET
-                    vector_doc_id = COALESCE(excluded.vector_doc_id, document_index_status.vector_doc_id),
+                    doc_id = COALESCE(excluded.doc_id, document_index_status.doc_id),
                     chunk_count_indexed = COALESCE(excluded.chunk_count_indexed, document_index_status.chunk_count_indexed),
                     last_indexed_at = COALESCE(excluded.last_indexed_at, document_index_status.last_indexed_at),
                     last_verified_at = COALESCE(excluded.last_verified_at, document_index_status.last_verified_at),
@@ -1790,7 +1790,7 @@ def upsert_document_index_status(
                     status = excluded.status,
                     details_json = COALESCE(excluded.details_json, document_index_status.details_json)
             """, (
-                workflow_id, index_name, vector_doc_id, chunk_count_indexed,
+                workflow_id, index_name, doc_id, chunk_count_indexed,
                 last_indexed_at, last_verified_at, schema_version, status, details_json
             ))
             conn.commit()
@@ -1848,7 +1848,7 @@ def find_document_by_doc_identifier(identifier: str) -> Optional[dict]:
             SELECT d.*
             FROM document_index_status s
             JOIN documents d ON d.workflow_id = s.workflow_id
-            WHERE s.vector_doc_id = ?
+            WHERE s.doc_id = ?
             LIMIT 1
             """,
             (identifier,),
@@ -1863,7 +1863,7 @@ def find_document_by_doc_identifier(identifier: str) -> Optional[dict]:
                 SELECT d.*
                 FROM document_index_status s
                 JOIN documents d ON d.workflow_id = s.workflow_id
-                WHERE s.vector_doc_id = ?
+                WHERE s.doc_id = ?
                 LIMIT 1
                 """,
                 (legacy_doc_id_hash,),
