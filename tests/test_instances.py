@@ -100,4 +100,16 @@ class TestProdOnlyStages:
         remaining = [s[0] for s in PIPELINE_STAGES if s[0] not in PROD_ONLY_STAGES]
 
         assert remaining[-1] == "completed"
-        assert remaining[-2] == "ingesting"  # DEV ingest flows straight to completed
+        assert remaining[-2] == "publishing_to_network"
+        assert remaining[-3] == "ingesting"  # DEV ingest flows to network publish, then completed
+
+    @pytest.mark.unit
+    def test_publishing_to_network_is_not_prod_only(self):
+        """It must run for every document, regardless of DISABLE_PROD_SETTING."""
+        from pipeline.models import PIPELINE_STAGES, PROD_ONLY_STAGES
+
+        assert "publishing_to_network" not in PROD_ONLY_STAGES
+
+        stage_ids = [s[0] for s in PIPELINE_STAGES]
+        assert stage_ids.index("publishing_to_network") == stage_ids.index("ingesting") + 1
+        assert stage_ids.index("publishing_to_network") == stage_ids.index("approval_for_prod") - 1
