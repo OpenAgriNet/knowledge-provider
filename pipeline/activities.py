@@ -24,6 +24,7 @@ from temporalio import activity
 
 from . import scheme_catalog
 from .chunking import chunk_pages, load_chunking_config
+from .discovery_publish_service import DiscoveryPublishService
 from .instances import instance_display_name
 from .ocr import ocr_pdf as run_ocr_pdf
 from .ocr import ocr_pdf_in_segments as run_ocr_pdf_in_segments
@@ -1408,6 +1409,53 @@ async def ingest_document_from_db(
     except Exception as exc:
         activity.logger.warning("Master catalog (Postgres/Redis) sync after DEV ingest failed: %s", exc)
     return result
+
+
+@activity.defn
+async def publish_catalog_to_network(workflow_id: str, transaction_id: str) -> dict:
+    """POST a catalog/publish envelope to the Discovery Service and record the exchange."""
+    from . import db
+
+    service = DiscoveryPublishService()
+    result = await asyncio.to_thread(service.publish, transaction_id)
+
+    exchange_path = _write_json_temp(
+        {
+            "request": result["envelope"],
+            "response_status": result["status_code"],
+            "response_body": result["response_body"],
+        }
+    )
+    try:
+        exchange_uri, exchange_size, exchange_mime = _upload_file_to_minio(
+            exchange_path, workflow_id, "network_publish_payload", "network_publish.json"
+        )
+    finally:
+        if os.path.exists(exchange_path):
+            os.remove(exchange_path)
+
+    latest_job = db.get_latest_document_job(workflow_id)
+    db.add_document_artifact(
+        workflow_id=workflow_id,
+        job_id=latest_job["id"] if latest_job else None,
+        artifact_type="network_publish_payload",
+        stage="publishing_to_network",
+        storage_uri=exchange_uri,
+        mime_type=exchange_mime,
+        filename="network_publish.json",
+        size_bytes=exchange_size,
+        metadata={
+            "request": result["envelope"],
+            "response_status": result["status_code"],
+            "response_body": result["response_body"],
+        },
+    )
+
+    return {
+        "status": "published",
+        "transaction_id": transaction_id,
+        "message_id": result["envelope"]["context"]["messageId"],
+    }
 
 
 @activity.defn
