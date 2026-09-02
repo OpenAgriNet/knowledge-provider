@@ -242,6 +242,15 @@ Separate from the SQLite/Qdrant catalog above (which tracks PROD vector publicat
 
 **Redis keys:** `master-catalog:dev:snapshot` (dev + live entries — what the dev chatbot reads), `master-catalog:live:snapshot` (live only — what prod reads). Plain JSON via raw `redis-py`, not routed through bharat-oan-api's `aiocache` layer, since it's an external write contract rather than an internal cache value.
 
+### Publish to Network
+
+First piece of the network-discovery push architecture: right after DEV ingest, the `publishing_to_network` pipeline stage POSTs a Beckn-shaped `catalog/publish` envelope to an external Discovery Service. This is going to be the only way the experience layer discovers schemas going forward — the Master Scheme Catalog pull API above stays in place for backward compatibility. The catalog payload is currently an empty stub (`"catalogs": []`). Both variables are **required** — there is no feature flag to disable this stage, so every environment running the pipeline needs them set.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `DISCOVERY_SERVICE_ENDPOINT` | *(empty — required)* | Base URL of the external Discovery Service; the pipeline POSTs to `{DISCOVERY_SERVICE_ENDPOINT}/publish` |
+| `NETWORK_SENDER_ID` | *(empty — required)* | This instance's Beckn `senderId`, sent in every publish envelope's `context` |
+
 ---
 
 ## Who consumes what
@@ -253,6 +262,7 @@ Separate from the SQLite/Qdrant catalog above (which tracks PROD vector publicat
 | Temporal / MinIO / SQLite | — | ✅ | ✅ |
 | OCR / translation / chunking / domain tags | — | config / status | ✅ runs jobs |
 | Qdrant (`VECTOR_DB_*`) | — | ✅ | ✅ |
+| Publish to Network (`DISCOVERY_SERVICE_ENDPOINT`, `NETWORK_SENDER_ID`) | — | — | ✅ runs the publish activity |
 
 ---
 
