@@ -1,9 +1,15 @@
-# Unified docker-compose — dev and prod use the same file.
-# Behaviour is controlled entirely by the .env file you pass at runtime.
+# Unified docker-compose — dev and prod use the same file. Every app
+# service (api/worker/ui/keycloak) declares both build: and image: — pick
+# which one wins with the command you run:
 #
-# Usage:
-#   cp .env.example .env    # fill all secrets
-#   docker compose --env-file .env up -d --build
+#   Dev (build from source):
+#     cp .env.example .env    # fill all secrets
+#     docker compose --env-file .env up -d --build
+#
+#   Deploy (pull pre-built GHCR images, no source checkout needed):
+#     cp .env.example .env    # fill all secrets, set IMAGE_TAG
+#     docker compose --env-file .env pull
+#     docker compose --env-file .env up -d
 #
 # Profiles:
 #   (default) — all core services
@@ -25,7 +31,6 @@ services:
   # ---------------------------------------------------------------------------
   temporal-db:
     image: postgres:15-alpine
-    pull_policy: never
     platform: linux/amd64
     environment:
       POSTGRES_USER: temporal
@@ -41,7 +46,6 @@ services:
 
   temporal:
     image: temporalio/auto-setup:latest
-    pull_policy: never
     platform: linux/amd64
     depends_on:
       temporal-db:
@@ -64,7 +68,6 @@ services:
 
   temporal-ui:
     image: temporalio/ui:latest
-    pull_policy: never
     platform: linux/amd64
     depends_on:
       - temporal
@@ -81,7 +84,6 @@ services:
   # ---------------------------------------------------------------------------
   minio:
     image: minio/minio:latest
-    pull_policy: never
     platform: linux/amd64
     command: server /data --console-address ":9001"
     environment:
@@ -102,7 +104,6 @@ services:
   # Creates the default bucket on first boot then exits.
   minio-init:
     image: minio/mc:latest
-    pull_policy: never
     platform: linux/amd64
     depends_on:
       minio:
@@ -130,8 +131,7 @@ services:
   # Subsequent boots: the flag is a no-op when the realm already exists.
   # ---------------------------------------------------------------------------
   keycloak:
-    image: docs-pipeline-keycloak
-    pull_policy: never
+    image: ghcr.io/openagrinet/knowledge-provider-keycloak:${IMAGE_TAG:-latest}
     platform: linux/amd64
     build:
       context: ./keycloak
@@ -185,8 +185,7 @@ services:
   # addresses and container paths (these must win over localhost values in .env).
   # ---------------------------------------------------------------------------
   api:
-    image: docs-pipeline-api
-    pull_policy: never
+    image: ghcr.io/openagrinet/knowledge-provider:${IMAGE_TAG:-latest}
     platform: linux/amd64
     build:
       context: .
@@ -225,8 +224,7 @@ services:
   # Pipeline Worker
   # ---------------------------------------------------------------------------
   worker:
-    image: docs-pipeline-worker
-    pull_policy: never
+    image: ghcr.io/openagrinet/knowledge-provider:${IMAGE_TAG:-latest}
     platform: linux/amd64
     build:
       context: .
@@ -263,8 +261,7 @@ services:
   # Dockerfile.prod builds a static nginx image; VITE_* args come from .env.
   # ---------------------------------------------------------------------------
   ui:
-    image: docs-pipeline-ui
-    pull_policy: never
+    image: ghcr.io/openagrinet/knowledge-provider-ui:${IMAGE_TAG:-latest}
     platform: linux/amd64
     build:
       context: ./ui
