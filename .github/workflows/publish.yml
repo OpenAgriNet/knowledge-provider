@@ -16,6 +16,9 @@ permissions:
 jobs:
   build:
     strategy:
+      # These are 3 unrelated images (api/worker, ui, keycloak) sharing one
+      # matrix — a failure in one shouldn't cancel the other two mid-build.
+      fail-fast: false
       matrix:
         include:
           # api + worker are the same image, different entrypoint (see
