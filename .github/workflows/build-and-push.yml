@@ -1,13 +1,13 @@
 name: Build and Push
 
-# Annotated tags only, per OAN convention: v{SemVer} (e.g. v0.0.1), with an
-# optional -rcN pre-release suffix (e.g. v0.1.1-rc3). Anything else (-test,
-# -beta, ...) does not match, on purpose.
+# Branch-triggered, not tag-triggered: every push to main or feat/ghcr-deploy
+# builds and publishes. feat/ghcr-deploy is here only while this work is
+# being validated pre-merge — drop it once merged to main.
 on:
   push:
-    tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
-      - "v[0-9]+.[0-9]+.[0-9]+-rc[0-9]+"
+    branches:
+      - main
+      - feat/ghcr-deploy
 
 permissions:
   contents: read
@@ -91,6 +91,22 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
+      # Base images (python/node/nginx/etc.) come from Docker Hardened
+      # Images, not the plain public tags — this authenticates the pull.
+      # TODO: each Dockerfile's FROM line still points at the plain public
+      # image (python:3.10-slim, node:20-alpine, nginx:1.27-alpine,
+      # quay.io/keycloak/keycloak) — swap in the actual dhi.io repository
+      # path once confirmed from the org's DHI catalog. Keycloak likely has
+      # no DHI equivalent at all (DHI covers Docker's own curated common
+      # images, not third-party vendor images like quay.io/keycloak) — needs
+      # its own decision.
+      - name: Log in to dhi.io
+        uses: docker/login-action@v3
+        with:
+          registry: dhi.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       # GITHUB_TOKEN can be denied write_package when creating a brand-new
       # package under a namespace it doesn't already own — a documented GHCR
       # quirk. GHCR_PAT (classic PAT, write:packages, owned by an account
@@ -105,9 +121,14 @@ jobs:
 
       # GHCR image refs must be lowercase; github.repository_owner preserves
       # the owner's real case, so it can't be used as-is. Resolves to
-      # whichever account or org owns the repo the tag was pushed to.
+      # whichever account or org owns the repo the branch was pushed to.
       - name: Set image owner
         run: echo "OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+      # Docker tags can't contain "/" (branch names can, e.g.
+      # feat/ghcr-deploy) — sanitize before using github.ref_name in any tag.
+      - name: Set image tag
+        run: echo "TAG=$(echo '${{ github.ref_name }}' | tr '/' '-')" >> "$GITHUB_ENV"
 
       # One local, unpushed tag per image+arch — the manifest job below
       # stitches amd64 and arm64 into the single tag users actually pull.
@@ -122,7 +143,7 @@ jobs:
           file: ${{ matrix.context }}/${{ matrix.dockerfile }}
           platforms: ${{ matrix.platform }}
           load: true
-          tags: ${{ matrix.image }}:${{ github.ref_name }}-${{ matrix.arch }}
+          tags: ${{ matrix.image }}:${{ env.TAG }}-${{ matrix.arch }}
 
       # Report-only for now (exit-code 0): prints HIGH/CRITICAL findings to
       # the log but never blocks the build/push. Base-image CVEs (e.g. an
@@ -138,14 +159,14 @@ jobs:
             --severity HIGH,CRITICAL \
             --ignore-unfixed \
             --no-progress \
-            "${{ matrix.image }}:${{ github.ref_name }}-${{ matrix.arch }}"
+            "${{ matrix.image }}:${{ env.TAG }}-${{ matrix.arch }}"
 
       # Re-tag the already-scanned local image for GHCR and push it. No
       # rebuild, no re-scan.
       - name: Tag and push
         run: |
-          LOCAL="${{ matrix.image }}:${{ github.ref_name }}-${{ matrix.arch }}"
-          DEST="ghcr.io/${OWNER}/${{ matrix.image }}:${{ github.ref_name }}-${{ matrix.arch }}"
+          LOCAL="${{ matrix.image }}:${{ env.TAG }}-${{ matrix.arch }}"
+          DEST="ghcr.io/${OWNER}/${{ matrix.image }}:${{ env.TAG }}-${{ matrix.arch }}"
           docker tag "$LOCAL" "$DEST"
           docker push "$DEST"
 
@@ -171,14 +192,23 @@ jobs:
       - name: Set image owner
         run: echo "OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
 
+      - name: Set image tag
+        run: echo "TAG=$(echo '${{ github.ref_name }}' | tr '/' '-')" >> "$GITHUB_ENV"
+
       # imagetools create makes one manifest list from the two arch-specific
       # images the build job just pushed — this is what lets `docker pull`
       # resolve the right arch automatically on either amd64 or arm64.
+      # :latest is only ever written from main — a feat/ghcr-deploy build
+      # must never clobber what main last published.
       - name: Create multi-arch manifest
         run: |
           BASE="ghcr.io/${OWNER}/${{ matrix.image }}"
+          EXTRA_TAGS=()
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            EXTRA_TAGS=(-t "${BASE}:latest")
+          fi
           docker buildx imagetools create \
-            -t "${BASE}:${{ github.ref_name }}" \
-            -t "${BASE}:latest" \
-            "${BASE}:${{ github.ref_name }}-amd64" \
-            "${BASE}:${{ github.ref_name }}-arm64"
+            -t "${BASE}:${TAG}" \
+            "${EXTRA_TAGS[@]}" \
+            "${BASE}:${TAG}-amd64" \
+            "${BASE}:${TAG}-arm64"

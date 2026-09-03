@@ -46,9 +46,9 @@ echo ""
 # ── 1. Pull images that are not built locally ─────────────────────────────────
 echo "===> Pulling base images..."
 docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" pull \
-  temporal temporal-db temporal-ui minio minio-init keycloak-db 2>/dev/null || true
+  temporal temporal-db temporal-ui minio minio-init 2>/dev/null || true
 
-# ── 2. Build application images ───────────────────────────────────────────────
+# ── 2. Build or pull application images ───────────────────────────────────────
 if [[ ${#BUILD_FLAG[@]} -gt 0 ]]; then
   echo "===> Building application images..."
   # Layer cache is kept by default — most redeploys only change pipeline/ or
@@ -61,6 +61,10 @@ if [[ ${#BUILD_FLAG[@]} -gt 0 ]]; then
   fi
   docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" build \
     "${NO_CACHE_FLAG[@]}" keycloak api worker ui
+else
+  echo "===> Pulling application images (IMAGE_TAG=${IMAGE_TAG:-latest})..."
+  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" pull \
+    keycloak api worker ui
 fi
 
 # ── 3. Bring the stack up ─────────────────────────────────────────────────────

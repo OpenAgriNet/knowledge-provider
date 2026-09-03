@@ -1,0 +1,53 @@
+name: Security
+
+# Dependency vulnerability scan — checks what's already declared in the
+# lockfiles (uv.lock, ui/package-lock.json) against known CVEs, before
+# anything is built into an image. Distinct from build-and-push.yml's own
+# Trivy step, which scans the final built image on a release tag.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trivy cache date
+        id: trivy-date
+        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Trivy binary and vulnerability DB
+        uses: actions/cache@v4
+        with:
+          path: |
+            bin/trivy
+            ~/.cache/trivy
+          key: trivy-${{ runner.os }}-${{ runner.arch }}-${{ steps.trivy-date.outputs.date }}
+          restore-keys: |
+            trivy-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Install Trivy (if not cached)
+        run: |
+          if [ ! -x bin/trivy ]; then
+            mkdir -p bin
+            curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b bin
+          fi
+
+      # Report-only (exit-code 0), same reasoning as build-and-push.yml's
+      # image scan: real findings here (e.g. transformers, wheel) need a
+      # dependency bump and compatibility check, not a same-day fix.
+      - name: Trivy dependency scan (report)
+        run: |
+          ./bin/trivy fs \
+            --scanners vuln \
+            --exit-code 0 \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --no-progress \
+            .
