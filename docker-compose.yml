@@ -121,6 +121,30 @@ services:
     restart: "no"
 
   # ---------------------------------------------------------------------------
+  # Keycloak's database — bundled by default so the stack works out of the
+  # box with no external infra required. A deployment that wants to point at
+  # its own/shared Postgres instead (e.g. OAN prod, which shares one Postgres
+  # host with oan-notification-service) can still do so: just set KC_DB_HOST
+  # (and KC_DB_SSLMODE=require) in .env to override this service entirely —
+  # nothing here forces you onto the bundled one, it's only the default.
+  # ---------------------------------------------------------------------------
+  keycloak-db:
+    image: postgres:15-alpine
+    platform: linux/amd64
+    environment:
+      POSTGRES_USER: ${KC_DB_USERNAME:-keycloak}
+      POSTGRES_PASSWORD: ${KC_DB_PASSWORD:-keycloak}
+      POSTGRES_DB: ${KC_DB_NAME:-keycloak}
+    volumes:
+      - keycloak-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${KC_DB_USERNAME:-keycloak}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
   # Keycloak (auth) — built from keycloak/Dockerfile which pre-installs the
   # email-OTP 2FA plugin (mesutpiskin/keycloak-2fa-email-authenticator).
   #
@@ -137,15 +161,19 @@ services:
       context: ./keycloak
       dockerfile: Dockerfile
       # No ARGs that reference secrets — JAR URL is a public GitHub URL.
+    depends_on:
+      keycloak-db:
+        condition: service_healthy
     env_file:
       - .env
     environment:
-      # DB connection — external Postgres server (shared host also running
-      # the oan-notification-service DB). KC_DB_HOST/PORT/NAME come from .env.
+      # DB connection — defaults to the bundled keycloak-db above.
+      # KC_DB_HOST/PORT/NAME/SSLMODE in .env override to point elsewhere
+      # (e.g. an external shared Postgres in production).
       KC_DB: postgres
-      KC_DB_URL: jdbc:postgresql://${KC_DB_HOST}:${KC_DB_PORT:-5432}/${KC_DB_NAME:-keycloak}?sslmode=require
+      KC_DB_URL: jdbc:postgresql://${KC_DB_HOST:-keycloak-db}:${KC_DB_PORT:-5432}/${KC_DB_NAME:-keycloak}?sslmode=${KC_DB_SSLMODE:-disable}
       KC_DB_USERNAME: ${KC_DB_USERNAME:-keycloak}
-      KC_DB_PASSWORD: ${KC_DB_PASSWORD}
+      KC_DB_PASSWORD: ${KC_DB_PASSWORD:-keycloak}
       # Admin account bootstrap (Keycloak 26.x var names).
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_ADMIN:-admin}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD}
@@ -287,6 +315,7 @@ services:
 
 volumes:
   temporal-db-data:
+  keycloak-db-data:
   keycloak-data:
   minio-data:
   sqlite-data:
