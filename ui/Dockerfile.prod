@@ -1,8 +1,5 @@
 # syntax=docker/dockerfile:1
 # Production UI: multi-stage Vite build + nginx static host
-# TODO: swap both FROM lines below for the org's Docker Hardened Images
-# equivalents (dhi.io/...) once the exact repository paths are confirmed —
-# see build-and-push.yml's "Log in to dhi.io" step.
 FROM node:20-alpine AS build
 
 WORKDIR /app
