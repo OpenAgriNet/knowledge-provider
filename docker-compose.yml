@@ -121,6 +121,30 @@ services:
     restart: "no"
 
   # ---------------------------------------------------------------------------
+  # Qdrant — DEV vector index (see docs/SYSTEM_DESIGN.md's DEV vs PROD dual
+  # indexing). api/worker's QDRANT_URL is always pointed at this bundled
+  # instance below (same as TEMPORAL_HOST/MINIO_ENDPOINT) — there's no
+  # external-DEV-Qdrant override inside Docker; run the app outside Docker
+  # entirely if you need QDRANT_URL to mean something else.
+  # PROD_QDRANT_URL is never bundled — promotion to PROD always targets a
+  # real, separately-managed deployment, on purpose.
+  # ---------------------------------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:latest
+    platform: linux/amd64
+    volumes:
+      - qdrant-data:/qdrant/storage
+    ports:
+      - "127.0.0.1:6333:6333"
+    healthcheck:
+      # No curl/wget in this image — bash's /dev/tcp is a builtin, works without one.
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333' 2>/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
   # Keycloak's database — bundled by default so the stack works out of the
   # box with no external infra required. A deployment that wants to point at
   # its own/shared Postgres instead (e.g. OAN prod, which shares one Postgres
@@ -224,6 +248,7 @@ services:
       # Docker-network overrides — these replace the localhost values in .env
       TEMPORAL_HOST: temporal:7233
       MINIO_ENDPOINT: minio:9000
+      QDRANT_URL: http://qdrant:6333
       DOCUMENT_DB_PATH: /data/documents.db
       ALLOWED_FILE_PATHS: /app/books,/data/documents
       # HF cache path propagated into the container
@@ -235,6 +260,8 @@ services:
       temporal:
         condition: service_healthy
       minio:
+        condition: service_healthy
+      qdrant:
         condition: service_healthy
       keycloak:
         condition: service_started
@@ -263,6 +290,7 @@ services:
       PYTHONUNBUFFERED: "1"
       TEMPORAL_HOST: temporal:7233
       MINIO_ENDPOINT: minio:9000
+      QDRANT_URL: http://qdrant:6333
       DOCUMENT_DB_PATH: /data/documents.db
       ALLOWED_FILE_PATHS: /app/books,/data/documents
       HF_HOME: ${HF_HOME:-/opt/hf-cache}
@@ -271,6 +299,8 @@ services:
       temporal:
         condition: service_healthy
       minio:
+        condition: service_healthy
+      qdrant:
         condition: service_healthy
       api:
         condition: service_started
@@ -315,6 +345,7 @@ services:
 
 volumes:
   temporal-db-data:
+  qdrant-data:
   keycloak-db-data:
   keycloak-data:
   minio-data:

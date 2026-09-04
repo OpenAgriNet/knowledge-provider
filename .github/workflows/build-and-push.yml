@@ -1,13 +1,16 @@
 name: Build and Push
 
-# Branch-triggered, not tag-triggered: every push to main or feat/ghcr-deploy
-# builds and publishes. feat/ghcr-deploy is here only while this work is
-# being validated pre-merge — drop it once merged to main.
+# Triggers on push to main, or on an annotated release tag, per OAN
+# convention: v{SemVer} (e.g. v0.0.1), optionally with an -rcN pre-release
+# suffix (e.g. v0.1.1-rc3). Anything else (-test, -beta, ...) does not match,
+# on purpose.
 on:
   push:
     branches:
       - main
-      - feat/ghcr-deploy
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-rc[0-9]+"
 
 permissions:
   contents: read
@@ -125,8 +128,10 @@ jobs:
       - name: Set image owner
         run: echo "OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
 
-      # Docker tags can't contain "/" (branch names can, e.g.
-      # feat/ghcr-deploy) — sanitize before using github.ref_name in any tag.
+      # Docker tags can't contain "/" (branch names can, unlike version tags)
+      # — sanitize before using github.ref_name in any tag. A no-op for the
+      # main trigger and for version tags, both slash-free; only matters if
+      # a branch trigger with a "/" in its name is ever added.
       - name: Set image tag
         run: echo "TAG=$(echo '${{ github.ref_name }}' | tr '/' '-')" >> "$GITHUB_ENV"
 
@@ -198,17 +203,13 @@ jobs:
       # imagetools create makes one manifest list from the two arch-specific
       # images the build job just pushed — this is what lets `docker pull`
       # resolve the right arch automatically on either amd64 or arm64.
-      # :latest is only ever written from main — a feat/ghcr-deploy build
-      # must never clobber what main last published.
+      # :latest is written unconditionally — both triggers (main, a version
+      # tag) are legitimate releases, so both should update it.
       - name: Create multi-arch manifest
         run: |
           BASE="ghcr.io/${OWNER}/${{ matrix.image }}"
-          EXTRA_TAGS=()
-          if [ "${{ github.ref_name }}" = "main" ]; then
-            EXTRA_TAGS=(-t "${BASE}:latest")
-          fi
           docker buildx imagetools create \
             -t "${BASE}:${TAG}" \
-            "${EXTRA_TAGS[@]}" \
+            -t "${BASE}:latest" \
             "${BASE}:${TAG}-amd64" \
             "${BASE}:${TAG}-arm64"
