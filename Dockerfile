@@ -1,7 +1,4 @@
 # syntax=docker/dockerfile:1
-# TODO: swap for the org's Docker Hardened Images equivalent (dhi.io/...)
-# once the exact repository path is confirmed — see build-and-push.yml's
-# "Log in to dhi.io" step.
 FROM python:3.10-slim
 
 WORKDIR /app
