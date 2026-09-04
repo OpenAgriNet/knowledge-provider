@@ -26,10 +26,15 @@ COPY public ./public
 COPY src ./src
 
 # Subpath deploy on registry host
+# Keycloak defaults point at the bundled local Keycloak (docker-compose.yml's
+# KEYCLOAK_HOST_PORT default 8081, realm/client from keycloak/import/
+# docs-pipeline-realm.json) — not the real bharat-vistaar production
+# Keycloak. Per PR discussion: localhost for now, pointed at the EC2 demo
+# instance's address once that's where this gets shown from.
 ARG VITE_API_BASE=/docs-pipeline-api
-ARG VITE_KEYCLOAK_URL=https://auth-vistaar.da.gov.in/auth
-ARG VITE_KEYCLOAK_REALM=bharat-vistaar
-ARG VITE_KEYCLOAK_CLIENT_ID=bharat-vistaar
+ARG VITE_KEYCLOAK_URL=http://localhost:8081/auth
+ARG VITE_KEYCLOAK_REALM=docs-pipeline
+ARG VITE_KEYCLOAK_CLIENT_ID=docs-pipeline-ui
 ARG VITE_KEYCLOAK_IDP_HINT=
 ARG VITE_AUTH_ENABLED=true
 ARG VITE_BASE=/docs-pipeline/

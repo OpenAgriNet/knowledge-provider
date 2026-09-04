@@ -46,7 +46,7 @@ echo ""
 # ── 1. Pull images that are not built locally ─────────────────────────────────
 echo "===> Pulling base images..."
 docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" pull \
-  temporal temporal-db temporal-ui minio minio-init keycloak-db 2>/dev/null || true
+  temporal temporal-db temporal-ui minio minio-init qdrant keycloak-db 2>/dev/null || true
 
 # ── 2. Build or pull application images ───────────────────────────────────────
 if [[ ${#BUILD_FLAG[@]} -gt 0 ]]; then
