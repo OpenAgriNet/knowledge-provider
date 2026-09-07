@@ -244,7 +244,7 @@ Separate from the SQLite/Qdrant catalog above (which tracks PROD vector publicat
 
 ### Publish to Network
 
-First piece of the network-discovery push architecture: right after DEV ingest, the `publishing_to_network` pipeline stage POSTs a Beckn-shaped `catalog/publish` envelope to an external Discovery Service. This is going to be the only way the experience layer discovers schemas going forward — the Master Scheme Catalog pull API above stays in place for backward compatibility. The catalog payload is currently an empty stub (`"catalogs": []`). `DISCOVERY_SERVICE_ENDPOINT`, `NETWORK_SENDER_ID` and `NETWORK_SENDER_URI` are **required** — there is no feature flag to disable this stage, so every environment running the pipeline needs them set.
+First piece of the network-discovery push architecture: right after DEV ingest, the `publishing_to_network` pipeline stage POSTs a Beckn-shaped `catalog/publish` envelope to an external Discovery Service. This is going to be the only way the experience layer discovers schemas going forward — the Master Scheme Catalog pull API above stays in place for backward compatibility. The catalog announces the *knowledge kind* the document was classified as — one catalog with exactly one `OnDemand` resource for `advisory`, another for `scheme`; any other `document_kind` publishes nothing. `DISCOVERY_SERVICE_ENDPOINT`, `NETWORK_SENDER_ID` and `NETWORK_SENDER_URI` are **required** — there is no feature flag to disable this stage, so every environment running the pipeline needs them set.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
