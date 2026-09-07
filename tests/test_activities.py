@@ -14,6 +14,7 @@ import os
 from unittest.mock import MagicMock
 
 import pytest
+from temporalio.exceptions import ApplicationError
 
 os.environ["MINIO_ACCESS_KEY"] = "test-access"
 os.environ["MINIO_SECRET_KEY"] = "test-secret"
@@ -392,7 +393,9 @@ class TestPublishCatalogToNetworkActivity:
                 "message": {"catalogs": [{"id": "cat-oan-knowledge-provider-advisories"}]},
             },
             "status_code": 200,
-            "response_body": '{"ack": true}',
+            "response_body": '{"message": {"results": [{"status": "ACCEPTED"}]}}',
+            "result_status": "ACCEPTED",
+            "errors": [],
         }
 
         class FakeService:
@@ -429,6 +432,7 @@ class TestPublishCatalogToNetworkActivity:
             "document_kind": "advisory",
             "transaction_id": "txn-1",
             "message_id": "msg-1",
+            "result_status": "ACCEPTED",
         }
         assert recorded["workflow_id"] == "wf-1"
         assert recorded["job_id"] == 42
@@ -436,6 +440,8 @@ class TestPublishCatalogToNetworkActivity:
         assert recorded["stage"] == "publishing_to_network"
         assert recorded["metadata"]["request"] == fake_result["envelope"]
         assert recorded["metadata"]["response_status"] == 200
+        assert recorded["metadata"]["result_status"] == "ACCEPTED"
+        assert recorded["metadata"]["errors"] == []
 
     @pytest.mark.unit
     @pytest.mark.asyncio
@@ -472,6 +478,8 @@ class TestPublishCatalogToNetworkActivity:
                     "envelope": None,
                     "status_code": None,
                     "response_body": None,
+                    "result_status": None,
+                    "errors": [],
                 }
 
         monkeypatch.setattr(activities, "DiscoveryPublishService", FakeService)
@@ -493,12 +501,85 @@ class TestPublishCatalogToNetworkActivity:
             "document_kind": "document",
             "transaction_id": "txn-2",
             "message_id": None,
+            "result_status": None,
         }
         assert recorded["artifact_type"] == "network_publish_skipped"
         assert recorded["stage"] == "publishing_to_network"
         assert recorded["job_id"] is None
         assert recorded["metadata"]["skipped"] is True
         assert recorded["storage_uri"]
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("result_status", ["ACCEPTED", "PARTIAL", None])
+    async def test_non_rejected_results_complete_the_stage(self, monkeypatch, result_status):
+        import pipeline.activities as activities
+        import pipeline.db as db
+
+        class FakeService:
+            def publish(self, transaction_id, document_kind, workflow_id=None):
+                return {
+                    "skipped": False,
+                    "envelope": {"context": {"messageId": "msg-3"}},
+                    "status_code": 200,
+                    "response_body": "{}",
+                    "result_status": result_status,
+                    "errors": [],
+                }
+
+        monkeypatch.setattr(activities, "DiscoveryPublishService", FakeService)
+        monkeypatch.setattr(
+            activities,
+            "_upload_file_to_minio",
+            lambda *a, **k: ("minio://documents/network_publish.json", 12, "application/json"),
+        )
+        monkeypatch.setattr(db, "get_document", lambda workflow_id: {"document_kind": "advisory"})
+        monkeypatch.setattr(db, "get_latest_document_job", lambda workflow_id: None)
+        monkeypatch.setattr(db, "add_document_artifact", lambda **kwargs: 1)
+
+        result = await activities.publish_catalog_to_network("wf-3", "txn-3")
+
+        assert result["status"] == "published"
+        assert result["result_status"] == result_status
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_rejected_result_records_the_errors_then_fails(self, monkeypatch):
+        import pipeline.activities as activities
+        import pipeline.db as db
+
+        errors = [{"code": "SCH_SCHEMA_VALIDATION_FAILED", "message": "topics is required"}]
+
+        class FakeService:
+            def publish(self, transaction_id, document_kind, workflow_id=None):
+                return {
+                    "skipped": False,
+                    "envelope": {"context": {"messageId": "msg-4"}},
+                    "status_code": 200,
+                    "response_body": "{}",
+                    "result_status": "REJECTED",
+                    "errors": errors,
+                }
+
+        monkeypatch.setattr(activities, "DiscoveryPublishService", FakeService)
+        monkeypatch.setattr(
+            activities,
+            "_upload_file_to_minio",
+            lambda *a, **k: ("minio://documents/network_publish.json", 12, "application/json"),
+        )
+        monkeypatch.setattr(db, "get_document", lambda workflow_id: {"document_kind": "advisory"})
+        monkeypatch.setattr(db, "get_latest_document_job", lambda workflow_id: None)
+
+        recorded = {}
+        monkeypatch.setattr(db, "add_document_artifact", lambda **kwargs: recorded.update(kwargs))
+
+        with pytest.raises(ApplicationError, match="SCH_SCHEMA_VALIDATION_FAILED") as excinfo:
+            await activities.publish_catalog_to_network("wf-4", "txn-4")
+
+        # Retrying is pointless: the same envelope is rejected the same way.
+        assert excinfo.value.non_retryable is True
+        # The reason must survive the failure, so the artifact is written first.
+        assert recorded["metadata"]["errors"] == errors
 
 
 class TestWorkerActivityRegistration:

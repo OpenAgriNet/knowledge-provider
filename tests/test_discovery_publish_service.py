@@ -1,10 +1,50 @@
 """Unit tests for DiscoveryPublishService."""
 
+import json
 import logging
 from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
+
+
+def _on_publish_response(catalog_id, status, errors=None, status_code=200):
+    """A mock httpx.Response carrying one CatalogProcessingResult."""
+    body = {
+        "context": {"action": "catalog/on_publish"},
+        "message": {
+            "results": [
+                {
+                    "catalogId": catalog_id,
+                    "status": status,
+                    "errors": errors or [],
+                }
+            ]
+        },
+    }
+    response = MagicMock()
+    response.raise_for_status = MagicMock()
+    response.status_code = status_code
+    response.text = json.dumps(body)
+    response.json = MagicMock(return_value=body)
+    return response
+
+
+def _client_returning(response):
+    client = MagicMock()
+    client.__enter__ = MagicMock(return_value=client)
+    client.__exit__ = MagicMock(return_value=False)
+    client.post.return_value = response
+    return client
+
+
+def _service(monkeypatch):
+    from pipeline.discovery_publish_service import DiscoveryPublishService
+
+    monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
+    monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
+    return DiscoveryPublishService()
+
 
 
 class TestDiscoveryPublishServiceConfig:
@@ -53,10 +93,7 @@ class TestDiscoveryPublishServicePublish:
         monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
         service = DiscoveryPublishService()
 
-        mock_response = MagicMock()
-        mock_response.raise_for_status = MagicMock()
-        mock_response.status_code = 200
-        mock_response.text = '{"ack": true}'
+        mock_response = _on_publish_response("cat-oan-knowledge-provider-advisories", "ACCEPTED")
 
         mock_client = MagicMock()
         mock_client.__enter__ = MagicMock(return_value=mock_client)
@@ -96,7 +133,9 @@ class TestDiscoveryPublishServicePublish:
 
         assert result["envelope"] == envelope
         assert result["status_code"] == 200
-        assert result["response_body"] == '{"ack": true}'
+        assert json.loads(result["response_body"])["message"]["results"][0]["status"] == "ACCEPTED"
+        assert result["result_status"] == "ACCEPTED"
+        assert result["errors"] == []
 
     @pytest.mark.unit
     def test_publish_generates_fresh_message_id_per_call(self, monkeypatch):
@@ -216,28 +255,123 @@ class TestDiscoveryPublishServiceSkipsUnmappedKinds:
         assert result["status_code"] is None
 
 
+class TestDiscoveryPublishServiceResult:
+    """A 200 is only an ACK - acceptance lives in message.results[].status."""
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("status", ["ACCEPTED", "PARTIAL", "REJECTED"])
+    def test_reports_the_result_status_for_our_catalog(self, monkeypatch, status):
+        service = _service(monkeypatch)
+        response = _on_publish_response("cat-oan-knowledge-provider-advisories", status)
+
+        with patch(
+            "pipeline.discovery_publish_service.httpx.Client",
+            return_value=_client_returning(response),
+        ):
+            result = service.publish(transaction_id="txn-v", document_kind="advisory")
+
+        assert result["result_status"] == status
+
+    @pytest.mark.unit
+    def test_carries_the_errors_array_through(self, monkeypatch):
+        service = _service(monkeypatch)
+        errors = [{"code": "SCH_SCHEMA_VALIDATION_FAILED", "message": "topics is required"}]
+        response = _on_publish_response(
+            "cat-oan-knowledge-provider-advisories", "REJECTED", errors=errors
+        )
+
+        with patch(
+            "pipeline.discovery_publish_service.httpx.Client",
+            return_value=_client_returning(response),
+        ):
+            result = service.publish(transaction_id="txn-v", document_kind="advisory")
+
+        assert result["errors"] == errors
+
+    @pytest.mark.unit
+    def test_picks_our_catalog_out_of_several_results(self, monkeypatch):
+        service = _service(monkeypatch)
+        body = {
+            "message": {
+                "results": [
+                    {"catalogId": "someone.else", "status": "REJECTED", "errors": []},
+                    {"catalogId": "cat-oan-knowledge-provider-advisories", "status": "ACCEPTED"},
+                ]
+            }
+        }
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.status_code = 200
+        response.text = json.dumps(body)
+        response.json = MagicMock(return_value=body)
+
+        with patch(
+            "pipeline.discovery_publish_service.httpx.Client",
+            return_value=_client_returning(response),
+        ):
+            result = service.publish(transaction_id="txn-v", document_kind="advisory")
+
+        assert result["result_status"] == "ACCEPTED"
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"message": {"ack": {"status": "ACK"}}},  # the shape our own mock returns
+            {"message": {"results": []}},
+            {},
+        ],
+    )
+    def test_unreadable_result_is_unknown_not_a_failure(self, monkeypatch, body):
+        # A peer that deviates from the spec must not be able to stall the
+        # pipeline, so an unparseable body reports status None rather than raising.
+        service = _service(monkeypatch)
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.status_code = 200
+        response.text = json.dumps(body)
+        response.json = MagicMock(return_value=body)
+
+        with patch(
+            "pipeline.discovery_publish_service.httpx.Client",
+            return_value=_client_returning(response),
+        ):
+            result = service.publish(transaction_id="txn-v", document_kind="advisory")
+
+        assert result["result_status"] is None
+        assert result["errors"] == []
+
+    @pytest.mark.unit
+    def test_non_json_body_is_unknown_not_a_failure(self, monkeypatch):
+        service = _service(monkeypatch)
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.status_code = 200
+        response.text = "<html>502 Bad Gateway</html>"
+        response.json = MagicMock(side_effect=ValueError("not json"))
+
+        with patch(
+            "pipeline.discovery_publish_service.httpx.Client",
+            return_value=_client_returning(response),
+        ):
+            result = service.publish(transaction_id="txn-v", document_kind="advisory")
+
+        assert result["result_status"] is None
+        assert result["errors"] == []
+
+    @pytest.mark.unit
+    def test_skipped_publish_has_no_result_status(self, monkeypatch):
+        service = _service(monkeypatch)
+
+        with patch("pipeline.discovery_publish_service.httpx.Client", return_value=MagicMock()):
+            result = service.publish(transaction_id="txn-v", document_kind="video")
+
+        assert result["skipped"] is True
+        assert result["result_status"] is None
+        assert result["errors"] == []
+
+
 LOGGER_NAME = "pipeline.discovery_publish_service"
-
-
-def _logging_service(monkeypatch):
-    from pipeline.discovery_publish_service import DiscoveryPublishService
-
-    monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
-    monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
-    return DiscoveryPublishService()
-
-
-def _ok_client():
-    response = MagicMock()
-    response.raise_for_status = MagicMock()
-    response.status_code = 200
-    response.text = "{}"
-
-    client = MagicMock()
-    client.__enter__ = MagicMock(return_value=client)
-    client.__exit__ = MagicMock(return_value=False)
-    client.post.return_value = response
-    return client
 
 
 class TestDiscoveryPublishServiceLogging:
@@ -245,12 +379,13 @@ class TestDiscoveryPublishServiceLogging:
 
     @pytest.mark.unit
     def test_logs_the_request_and_the_response_status(self, monkeypatch, caplog):
-        service = _logging_service(monkeypatch)
+        service = _service(monkeypatch)
 
         with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
-            with patch(
-                "pipeline.discovery_publish_service.httpx.Client", return_value=_ok_client()
-            ):
+            ok = _client_returning(
+                _on_publish_response("cat-oan-knowledge-provider-advisories", "ACCEPTED")
+            )
+            with patch("pipeline.discovery_publish_service.httpx.Client", return_value=ok):
                 service.publish(
                     transaction_id="txn-log", document_kind="advisory", workflow_id="wf-log"
                 )
@@ -268,7 +403,7 @@ class TestDiscoveryPublishServiceLogging:
     @pytest.mark.unit
     def test_logs_an_error_when_the_call_fails(self, monkeypatch, caplog):
         # The activity records no artifact on failure, so the log is the only trace.
-        service = _logging_service(monkeypatch)
+        service = _service(monkeypatch)
         client = MagicMock()
         client.__enter__ = MagicMock(return_value=client)
         client.__exit__ = MagicMock(return_value=False)
@@ -288,7 +423,7 @@ class TestDiscoveryPublishServiceLogging:
 
     @pytest.mark.unit
     def test_skipped_publish_logs_no_request(self, monkeypatch, caplog):
-        service = _logging_service(monkeypatch)
+        service = _service(monkeypatch)
 
         with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
             with patch(

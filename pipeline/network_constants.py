@@ -2,6 +2,10 @@
 
 BECKN_VERSION = "2.0.0"
 
+# Per-catalog result status in an on_publish body; a 200 is only an ACK.
+RESULT_ACCEPTED = "ACCEPTED"
+RESULT_REJECTED = "REJECTED"
+
 SCHEMA_CONTEXT_BASE = "https://schemas.openagrinet.global/schema"
 
 # Permanent: updateMode MERGE upserts resources by id, so a changed id strands

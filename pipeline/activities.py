@@ -21,6 +21,7 @@ from uuid import uuid4
 import tiktoken
 from minio import Minio
 from temporalio import activity
+from temporalio.exceptions import ApplicationError
 
 from . import scheme_catalog
 from .catalog_builder import normalize_document_kind
@@ -28,6 +29,7 @@ from .chunking import chunk_pages, load_chunking_config
 from .discovery_publish_service import DiscoveryPublishService
 from .document_repository import DocumentRepository
 from .instances import instance_display_name
+from .network_constants import RESULT_REJECTED
 from .ocr import ocr_pdf as run_ocr_pdf
 from .ocr import ocr_pdf_in_segments as run_ocr_pdf_in_segments
 from .translation import load_translation_config, translate_pages
@@ -1447,6 +1449,8 @@ async def publish_catalog_to_network(workflow_id: str, transaction_id: str) -> d
             "request": result["envelope"],
             "response_status": result["status_code"],
             "response_body": result["response_body"],
+            "result_status": result["result_status"],
+            "errors": result["errors"],
         }
 
     # Recorded even when skipped: add_document_artifact requires a storage_uri,
@@ -1473,11 +1477,22 @@ async def publish_catalog_to_network(workflow_id: str, transaction_id: str) -> d
         metadata=exchange,
     )
 
+    if result["result_status"] == RESULT_REJECTED:
+        # Recorded before the raise: a raise records no artifact, and the
+        # errors[] is the only explanation an operator gets. Non-retryable
+        # because a rejection is deterministic.
+        raise ApplicationError(
+            f"Discovery Service rejected catalog for {document_kind}: "
+            f"{result['errors']}",
+            non_retryable=True,
+        )
+
     return {
         "status": "skipped" if result["skipped"] else "published",
         "document_kind": document_kind,
         "transaction_id": transaction_id,
         "message_id": None if result["skipped"] else result["envelope"]["context"]["messageId"],
+        "result_status": result["result_status"],
     }
 
 
