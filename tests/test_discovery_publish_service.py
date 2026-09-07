@@ -317,7 +317,7 @@ class TestDiscoveryPublishServiceResult:
     @pytest.mark.parametrize(
         "body",
         [
-            {"message": {"ack": {"status": "ACK"}}},  # the shape our own mock returns
+            {"message": {"ack": {"status": "ACK"}}},  # a bare v1-style ACK
             {"message": {"results": []}},
             {},
         ],
