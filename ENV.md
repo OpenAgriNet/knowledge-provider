@@ -244,12 +244,14 @@ Separate from the SQLite/Qdrant catalog above (which tracks PROD vector publicat
 
 ### Publish to Network
 
-First piece of the network-discovery push architecture: right after DEV ingest, the `publishing_to_network` pipeline stage POSTs a Beckn-shaped `catalog/publish` envelope to an external Discovery Service. This is going to be the only way the experience layer discovers schemas going forward — the Master Scheme Catalog pull API above stays in place for backward compatibility. The catalog payload is currently an empty stub (`"catalogs": []`). Both variables are **required** — there is no feature flag to disable this stage, so every environment running the pipeline needs them set.
+First piece of the network-discovery push architecture: right after DEV ingest, the `publishing_to_network` pipeline stage POSTs a Beckn-shaped `catalog/publish` envelope to an external Discovery Service. This is going to be the only way the experience layer discovers schemas going forward — the Master Scheme Catalog pull API above stays in place for backward compatibility. The catalog payload is currently an empty stub (`"catalogs": []`). `DISCOVERY_SERVICE_ENDPOINT`, `NETWORK_SENDER_ID` and `NETWORK_SENDER_URI` are **required** — there is no feature flag to disable this stage, so every environment running the pipeline needs them set.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `DISCOVERY_SERVICE_ENDPOINT` | *(empty — required)* | Base URL of the external Discovery Service; the pipeline POSTs to `{DISCOVERY_SERVICE_ENDPOINT}/publish` |
 | `NETWORK_SENDER_ID` | *(empty — required)* | This instance's Beckn `senderId`, sent in every publish envelope's `context` |
+| `NETWORK_SENDER_URI` | *(empty — required)* | Publicly reachable base URL of this provider, sent as each catalog's `bppUri` |
+| `NETWORK_ID` | `da.gov.in/vistaar` | Beckn subnet this provider publishes into; fills an empty `visibleTo` on the receiving side |
 | `DISCOVERY_SERVICE_PUBLISH_INITIAL_INTERVAL_SECONDS` | `30` | Wait before the first retry of a failed publish |
 | `DISCOVERY_SERVICE_PUBLISH_BACKOFF_COEFFICIENT` | `2.0` | Multiplier applied to the wait after each retry |
 | `DISCOVERY_SERVICE_PUBLISH_MAX_INTERVAL_SECONDS` | `300` | Cap on the wait between retries |
@@ -266,7 +268,7 @@ First piece of the network-discovery push architecture: right after DEV ingest, 
 | Temporal / MinIO / SQLite | — | ✅ | ✅ |
 | OCR / translation / chunking / domain tags | — | config / status | ✅ runs jobs |
 | Qdrant (`VECTOR_DB_*`) | — | ✅ | ✅ |
-| Publish to Network (`DISCOVERY_SERVICE_ENDPOINT`, `NETWORK_SENDER_ID`) | — | — | ✅ runs the publish activity |
+| Publish to Network (`DISCOVERY_SERVICE_ENDPOINT`, `NETWORK_SENDER_ID`, `NETWORK_SENDER_URI`, `NETWORK_ID`) | — | — | ✅ runs the publish activity |
 
 ---
 
