@@ -59,9 +59,10 @@ Core modules (all under `pipeline/`):
 - `activities.py` — Temporal activities invoked by the workflows (OCR, translate, chunk, ingest, state updates)
 - `worker.py` — Temporal worker process; registers workflows/activities on task queue `ocr-pipeline`
 - `db.py` — SQLite access layer; SQLite is the **canonical** metadata/review-state store (documents, pages, chunks, jobs, artifacts, audit log), not just a cache
-- `document_repository.py` — `DocumentRepository`, a domain layer over `db.py` for document reads/writes (knowledge kind, artifact recording). `db.py` stays one-function-per-query with no domain knowledge; this answers the question the caller actually has, so activities never handle raw document rows
-- `network_catalog.py` — pure builder mapping a document's knowledge kind (`advisory`/`scheme`) to the single `OnDemand` Beckn catalog announced for that kind; returns `None` for any other kind. No env, no I/O
-- `discovery_publish_service.py` — `DiscoveryPublishService`: owns the Publish to Network env vars and the HTTP call, and reads the per-catalog verdict out of the response. Deliberately Temporal-free
+- `document_repository.py` — `DocumentRepository`, a domain layer over `db.py` for document reads; `db.py` stays one-function-per-query with no domain knowledge
+- `network_constants.py` — fixed values sent on the network (catalog/resource ids, topics, languages, Beckn version). The file v2 edits when the AI layer starts deriving them
+- `catalog_builder.py` — pure builder mapping a document's knowledge kind (`advisory`/`scheme`) to the single `OnDemand` Beckn catalog announced for that kind; returns `None` for any other kind. No env, no I/O
+- `discovery_publish_service.py` — `DiscoveryPublishService`: owns the Publish to Network env vars and the HTTP call. Deliberately Temporal-free
 - `models.py` — Pydantic models, including `DocumentStage` enum and `PIPELINE_STAGES` (the stepper-UI stage list)
 - `config.py` — `Config` dataclass reading env vars, with defaults
 - `instances.py` — instance/tenant (state) code ↔ human name mapping; `bv` = Bharat Vistaar platform-wide, others are state codes matching Keycloak group paths (`/states/MH/...` → `mh`)

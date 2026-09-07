@@ -23,6 +23,7 @@ from minio import Minio
 from temporalio import activity
 
 from . import scheme_catalog
+from .catalog_builder import normalize_document_kind
 from .chunking import chunk_pages, load_chunking_config
 from .discovery_publish_service import DiscoveryPublishService
 from .document_repository import DocumentRepository
@@ -1420,8 +1421,11 @@ async def publish_catalog_to_network(workflow_id: str, transaction_id: str) -> d
     rather than passed in as an activity argument - that keeps both workflow
     call sites, and any workflow already in flight, untouched.
     """
-    documents = DocumentRepository()
-    document_kind = documents.get_document_kind(workflow_id)
+    from . import db
+
+    document_kind = normalize_document_kind(
+        DocumentRepository().get_document_kind(workflow_id)
+    )
 
     service = DiscoveryPublishService()
     result = await asyncio.to_thread(
@@ -1433,7 +1437,7 @@ async def publish_catalog_to_network(workflow_id: str, transaction_id: str) -> d
         filename = "network_publish_skipped.json"
         exchange = {
             "skipped": True,
-            "document_kind": result["document_kind"],
+            "document_kind": document_kind,
             "reason": "no network catalog is mapped to this document kind",
         }
     else:
@@ -1456,8 +1460,10 @@ async def publish_catalog_to_network(workflow_id: str, transaction_id: str) -> d
         if os.path.exists(exchange_path):
             os.remove(exchange_path)
 
-    documents.record_artifact(
+    latest_job = db.get_latest_document_job(workflow_id)
+    db.add_document_artifact(
         workflow_id=workflow_id,
+        job_id=latest_job["id"] if latest_job else None,
         artifact_type=artifact_type,
         stage="publishing_to_network",
         storage_uri=exchange_uri,
@@ -1469,7 +1475,7 @@ async def publish_catalog_to_network(workflow_id: str, transaction_id: str) -> d
 
     return {
         "status": "skipped" if result["skipped"] else "published",
-        "document_kind": result["document_kind"],
+        "document_kind": document_kind,
         "transaction_id": transaction_id,
         "message_id": None if result["skipped"] else result["envelope"]["context"]["messageId"],
     }

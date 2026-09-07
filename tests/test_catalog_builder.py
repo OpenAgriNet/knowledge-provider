@@ -2,20 +2,21 @@
 
 import pytest
 
-from pipeline.network_catalog import (
+from pipeline.catalog_builder import (
+    build_catalog,
+    normalize_document_kind,
+)
+from pipeline.network_constants import (
     ADVISORY_CATALOG_ID,
     ADVISORY_RESOURCE_ID,
     SCHEMES_CATALOG_ID,
     SCHEMES_RESOURCE_ID,
-    build_catalog,
-    normalize_document_kind,
 )
 
 BPP_ID = "docs-pipeline-bv"
 BPP_URI = "https://docs.example.gov.in"
 
-# Forbidden by the schema when informationMode is OnDemand: the provider is
-# saying "ask me", so it must not also ship the answer or its provenance.
+# Forbidden by the schema under informationMode OnDemand.
 FORBIDDEN_ADVISORY_ATTRIBUTES = (
     "issuedAt",
     "validity",
@@ -122,8 +123,7 @@ class TestBuildSchemeCatalog:
 
     @pytest.mark.unit
     def test_declares_supported_knowledge_types(self):
-        # Required for KnowledgeResource under OnDemand; KnowledgeAdvisory has
-        # no equivalent, which is why the two kinds do not share attributes.
+        # Required for KnowledgeResource under OnDemand.
         attributes = _attributes("scheme")
 
         assert attributes["supportedKnowledgeTypes"] == ["Reference"]
