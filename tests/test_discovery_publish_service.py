@@ -39,17 +39,6 @@ class TestDiscoveryPublishServiceConfig:
             DiscoveryPublishService()
 
     @pytest.mark.unit
-    def test_network_id_defaults_when_unset(self, monkeypatch):
-        from pipeline.discovery_publish_service import DiscoveryPublishService
-
-        monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
-        monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
-        monkeypatch.setenv("NETWORK_SENDER_URI", "https://docs.example.gov.in")
-        monkeypatch.delenv("NETWORK_ID", raising=False)
-
-        assert DiscoveryPublishService().network_id == "da.gov.in/vistaar"
-
-    @pytest.mark.unit
     def test_explicit_args_override_env(self, monkeypatch):
         from pipeline.discovery_publish_service import DiscoveryPublishService
 
@@ -102,7 +91,8 @@ class TestDiscoveryPublishServicePublish:
         assert envelope["context"]["messageId"]  # generated, non-empty
         assert envelope["context"]["timestamp"].endswith("Z")
         assert envelope["context"]["version"] == "2.0.0"
-        assert envelope["context"]["networkId"] == "da.gov.in/vistaar"
+        # Sender id doubles as networkId.
+        assert envelope["context"]["networkId"] == "docs-pipeline-bv"
         assert "receiverId" not in envelope["context"]
 
         catalogs = envelope["message"]["catalogs"]
@@ -221,7 +211,6 @@ class TestDiscoveryPublishServiceSchemeCatalog:
             "oan.knowledgeprovider.schemes"
         )
         assert result["skipped"] is False
-        assert result["document_kind"] == "scheme"
 
 
 class TestDiscoveryPublishServiceSkipsUnmappedKinds:

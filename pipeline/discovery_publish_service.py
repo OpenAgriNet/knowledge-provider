@@ -3,11 +3,9 @@ Client for the external Discovery Service's Beckn-style catalog/publish endpoint
 
 Kept separate from pipeline/activities.py so the outbound call and envelope
 shape are testable without Temporal, and reusable outside the pipeline activity.
-Deliberately Temporal-free: the activity is what translates a rejection into a
-Temporal failure.
 
-What travels on the wire is decided by pipeline/network_catalog.py; this module
-owns the environment and the transport only.
+pipeline/catalog_builder.py decides what travels on the wire; this module owns
+the environment and the transport.
 """
 
 import logging
@@ -18,12 +16,10 @@ from typing import Optional
 
 import httpx
 
-from .network_catalog import build_catalog, normalize_document_kind
+from .catalog_builder import build_catalog
+from .network_constants import BECKN_VERSION
 
 logger = logging.getLogger(__name__)
-
-BECKN_VERSION = "2.0.0"
-DEFAULT_NETWORK_ID = "da.gov.in/vistaar"
 
 
 class DiscoveryPublishService:
@@ -34,29 +30,19 @@ class DiscoveryPublishService:
         endpoint: Optional[str] = None,
         sender_id: Optional[str] = None,
         sender_uri: Optional[str] = None,
-        network_id: Optional[str] = None,
         timeout: float = 30.0,
     ):
         self.endpoint = endpoint or os.environ.get("DISCOVERY_SERVICE_ENDPOINT")
+        # Doubles as context.networkId.
         self.sender_id = sender_id or os.environ.get("NETWORK_SENDER_ID")
         self.sender_uri = sender_uri or os.environ.get("NETWORK_SENDER_URI")
-        # Optional: the receiver falls back to its own default when absent, so
-        # an unset NETWORK_ID must not stop the pipeline.
-        self.network_id = network_id or os.environ.get("NETWORK_ID") or DEFAULT_NETWORK_ID
 
-        missing = [
-            name
-            for name, value in (
-                ("DISCOVERY_SERVICE_ENDPOINT", self.endpoint),
-                ("NETWORK_SENDER_ID", self.sender_id),
-                ("NETWORK_SENDER_URI", self.sender_uri),
-            )
-            if not value
-        ]
-        if missing:
-            raise RuntimeError(
-                f"{', '.join(missing)} must be set to publish to the network."
-            )
+        if not self.endpoint:
+            raise RuntimeError("DISCOVERY_SERVICE_ENDPOINT must be set to publish to the network.")
+        if not self.sender_id:
+            raise RuntimeError("NETWORK_SENDER_ID must be set to publish to the network.")
+        if not self.sender_uri:
+            raise RuntimeError("NETWORK_SENDER_URI must be set to publish to the network.")
 
         self.timeout = timeout
 
@@ -77,17 +63,15 @@ class DiscoveryPublishService:
         with `skipped=True`: the spec declares `message.catalogs` as
         `minItems: 1`, so there is no valid "publish nothing" request to send.
         """
-        kind = normalize_document_kind(document_kind)
-        catalog = build_catalog(kind, bpp_id=self.sender_id, bpp_uri=self.sender_uri)
+        catalog = build_catalog(document_kind, bpp_id=self.sender_id, bpp_uri=self.sender_uri)
         if catalog is None:
             logger.info(
                 "workflow_id=%s document_kind=%s network_publish_skipped=True",
                 workflow_id,
-                kind,
+                document_kind,
             )
             return {
                 "skipped": True,
-                "document_kind": kind,
                 "envelope": None,
                 "status_code": None,
                 "response_body": None,
@@ -101,7 +85,7 @@ class DiscoveryPublishService:
                 "transactionId": transaction_id,
                 "timestamp": datetime.utcnow().isoformat(timespec="milliseconds") + "Z",
                 "senderId": self.sender_id,
-                "networkId": self.network_id,
+                "networkId": self.sender_id,
             },
             "message": {
                 "catalogs": [catalog],
@@ -122,7 +106,6 @@ class DiscoveryPublishService:
 
         return {
             "skipped": False,
-            "document_kind": kind,
             "envelope": envelope,
             "status_code": response.status_code,
             "response_body": response.text,

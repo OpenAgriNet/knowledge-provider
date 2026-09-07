@@ -379,7 +379,6 @@ class TestPublishCatalogToNetworkActivity:
 
         fake_result = {
             "skipped": False,
-            "document_kind": "advisory",
             "envelope": {
                 "context": {
                     "action": "catalog/publish",
@@ -388,7 +387,7 @@ class TestPublishCatalogToNetworkActivity:
                     "transactionId": "txn-1",
                     "timestamp": "2026-03-04T10:00:00.000Z",
                     "senderId": "docs-pipeline-bv",
-                    "networkId": "da.gov.in/vistaar",
+                    "networkId": "docs-pipeline-bv",
                 },
                 "message": {"catalogs": [{"id": "oan.knowledgeprovider.advisory"}]},
             },
@@ -470,7 +469,6 @@ class TestPublishCatalogToNetworkActivity:
             def publish(self, transaction_id, document_kind, workflow_id=None):
                 return {
                     "skipped": True,
-                    "document_kind": "document",
                     "envelope": None,
                     "status_code": None,
                     "response_body": None,
