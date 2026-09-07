@@ -25,6 +25,7 @@ from temporalio import activity
 from . import scheme_catalog
 from .chunking import chunk_pages, load_chunking_config
 from .discovery_publish_service import DiscoveryPublishService
+from .document_repository import DocumentRepository
 from .instances import instance_display_name
 from .ocr import ocr_pdf as run_ocr_pdf
 from .ocr import ocr_pdf_in_segments as run_ocr_pdf_in_segments
@@ -1419,10 +1420,8 @@ async def publish_catalog_to_network(workflow_id: str, transaction_id: str) -> d
     rather than passed in as an activity argument - that keeps both workflow
     call sites, and any workflow already in flight, untouched.
     """
-    from . import db
-
-    doc = db.get_document(workflow_id)
-    document_kind = (doc or {}).get("document_kind")
+    documents = DocumentRepository()
+    document_kind = documents.get_document_kind(workflow_id)
 
     service = DiscoveryPublishService()
     result = await asyncio.to_thread(
@@ -1457,10 +1456,8 @@ async def publish_catalog_to_network(workflow_id: str, transaction_id: str) -> d
         if os.path.exists(exchange_path):
             os.remove(exchange_path)
 
-    latest_job = db.get_latest_document_job(workflow_id)
-    db.add_document_artifact(
+    documents.record_artifact(
         workflow_id=workflow_id,
-        job_id=latest_job["id"] if latest_job else None,
         artifact_type=artifact_type,
         stage="publishing_to_network",
         storage_uri=exchange_uri,
