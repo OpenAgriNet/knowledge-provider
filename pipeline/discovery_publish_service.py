@@ -17,7 +17,7 @@ from typing import Optional
 import httpx
 
 from .catalog_builder import build_catalog
-from .network_constants import BECKN_VERSION
+from .network_constants import BECKN_VERSION, RESULT_ACCEPTED
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +71,8 @@ class DiscoveryPublishService:
                 "envelope": None,
                 "status_code": None,
                 "response_body": None,
+                "result_status": None,
+                "errors": [],
             }
 
         envelope = {
@@ -128,9 +130,57 @@ class DiscoveryPublishService:
             response.status_code,
         )
 
+        result_status, errors = self._read_result(response, catalog["id"], workflow_id)
         return {
             "skipped": False,
             "envelope": envelope,
             "status_code": response.status_code,
             "response_body": response.text,
+            "result_status": result_status,
+            "errors": errors,
         }
+
+    def _read_result(
+        self,
+        response: httpx.Response,
+        catalog_id: str,
+        workflow_id: Optional[str],
+    ) -> tuple[Optional[str], list]:
+        """This catalog's result status and errors from an on_publish body.
+
+        Deliberately lenient: an unreadable or absent `message.results` reads as
+        an unknown status, never a failure - a peer that deviates from the spec
+        should not stall the pipeline. Only an explicit REJECTED is a rejection,
+        and the caller decides what that costs.
+        """
+        try:
+            results = response.json()["message"]["results"]
+            if not isinstance(results, list) or not results:
+                raise ValueError("no results")
+        except Exception:
+            logger.warning(
+                "workflow_id=%s catalog_id=%s network_publish_result=unreadable "
+                "response_body=%.200s",
+                workflow_id,
+                catalog_id,
+                response.text,
+            )
+            return None, []
+
+        result = next(
+            (r for r in results if isinstance(r, dict) and r.get("catalogId") == catalog_id),
+            results[0] if isinstance(results[0], dict) else {},
+        )
+        result_status = result.get("status")
+        errors = result.get("errors") or []
+
+        if result_status != RESULT_ACCEPTED:
+            logger.warning(
+                "workflow_id=%s catalog_id=%s network_publish_result=%s errors=%s",
+                workflow_id,
+                catalog_id,
+                result_status,
+                errors,
+            )
+
+        return result_status, errors
