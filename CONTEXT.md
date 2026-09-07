@@ -24,5 +24,9 @@ _Avoid_: "catalog" alone — ambiguous with Master Catalog and the Network Catal
 The Beckn wire-protocol `message.catalogs` object sent by Publish to Network to the Discovery Service. Structurally and semantically unrelated to the Master Catalog and Scheme Catalog tables — do not conflate the three.
 _Avoid_: "catalog" alone.
 
+**Knowledge Kind**:
+What a document *is* to the network — `advisory`, `scheme`, `video`, or an operator-entered slug — held in `documents.document_kind`. Asserted by a reviewer during the pipeline, never inferred from the file, and absent until then (every document starts as the default `document`). Only `advisory` and `scheme` map to a Network Catalog Envelope; the rest publish nothing.
+_Avoid_: "document type" — collides with `source_type`/`canonical_input_type`, which describe the input *format* (pdf, spreadsheet). Also avoid saying an advisory is "uploaded": what is uploaded is a file, which only becomes an advisory when someone classifies it.
+
 **network_visible**:
 An operator-controlled flag on a document/scheme (not a pipeline stage) that gates whether it's exposed to other BAPs through the pull-based Scheme Catalog snapshot. Independent of Publish to Network.
