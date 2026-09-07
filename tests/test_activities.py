@@ -378,15 +378,19 @@ class TestPublishCatalogToNetworkActivity:
         import pipeline.db as db
 
         fake_result = {
+            "skipped": False,
+            "document_kind": "advisory",
             "envelope": {
                 "context": {
                     "action": "catalog/publish",
+                    "version": "2.0.0",
                     "messageId": "msg-1",
                     "transactionId": "txn-1",
                     "timestamp": "2026-03-04T10:00:00.000Z",
                     "senderId": "docs-pipeline-bv",
+                    "networkId": "da.gov.in/vistaar",
                 },
-                "message": {"catalogs": []},
+                "message": {"catalogs": [{"id": "oan.knowledgeprovider.advisory"}]},
             },
             "status_code": 200,
             "response_body": '{"ack": true}',
@@ -396,8 +400,10 @@ class TestPublishCatalogToNetworkActivity:
             def __init__(self):
                 pass
 
-            def publish(self, transaction_id):
+            def publish(self, transaction_id, document_kind, workflow_id=None):
                 assert transaction_id == "txn-1"
+                assert document_kind == "advisory"
+                assert workflow_id == "wf-1"
                 return fake_result
 
         monkeypatch.setattr(activities, "DiscoveryPublishService", FakeService)
@@ -406,6 +412,7 @@ class TestPublishCatalogToNetworkActivity:
             "_upload_file_to_minio",
             lambda *a, **k: ("minio://documents/network_publish.json", 123, "application/json"),
         )
+        monkeypatch.setattr(db, "get_document", lambda workflow_id: {"document_kind": "advisory"})
         monkeypatch.setattr(db, "get_latest_document_job", lambda workflow_id: {"id": 42})
 
         recorded = {}
@@ -418,7 +425,12 @@ class TestPublishCatalogToNetworkActivity:
 
         result = await activities.publish_catalog_to_network("wf-1", "txn-1")
 
-        assert result == {"status": "published", "transaction_id": "txn-1", "message_id": "msg-1"}
+        assert result == {
+            "status": "published",
+            "document_kind": "advisory",
+            "transaction_id": "txn-1",
+            "message_id": "msg-1",
+        }
         assert recorded["workflow_id"] == "wf-1"
         assert recorded["job_id"] == 42
         assert recorded["artifact_type"] == "network_publish_payload"
@@ -433,10 +445,11 @@ class TestPublishCatalogToNetworkActivity:
         import pipeline.db as db
 
         class FakeService:
-            def publish(self, transaction_id):
+            def publish(self, transaction_id, document_kind, workflow_id=None):
                 raise RuntimeError("discovery service unreachable")
 
         monkeypatch.setattr(activities, "DiscoveryPublishService", FakeService)
+        monkeypatch.setattr(db, "get_document", lambda workflow_id: {"document_kind": "advisory"})
 
         add_artifact_calls = []
         monkeypatch.setattr(db, "add_document_artifact", lambda **kwargs: add_artifact_calls.append(kwargs))
@@ -445,6 +458,49 @@ class TestPublishCatalogToNetworkActivity:
             await activities.publish_catalog_to_network("wf-1", "txn-1")
 
         assert add_artifact_calls == []
+
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_unmapped_kind_records_a_skipped_artifact(self, monkeypatch):
+        import pipeline.activities as activities
+        import pipeline.db as db
+
+        class FakeService:
+            def publish(self, transaction_id, document_kind, workflow_id=None):
+                return {
+                    "skipped": True,
+                    "document_kind": "document",
+                    "envelope": None,
+                    "status_code": None,
+                    "response_body": None,
+                }
+
+        monkeypatch.setattr(activities, "DiscoveryPublishService", FakeService)
+        monkeypatch.setattr(
+            activities,
+            "_upload_file_to_minio",
+            lambda *a, **k: ("minio://documents/network_publish_skipped.json", 45, "application/json"),
+        )
+        monkeypatch.setattr(db, "get_document", lambda workflow_id: {"document_kind": "document"})
+        monkeypatch.setattr(db, "get_latest_document_job", lambda workflow_id: None)
+
+        recorded = {}
+        monkeypatch.setattr(db, "add_document_artifact", lambda **kwargs: recorded.update(kwargs))
+
+        result = await activities.publish_catalog_to_network("wf-2", "txn-2")
+
+        assert result == {
+            "status": "skipped",
+            "document_kind": "document",
+            "transaction_id": "txn-2",
+            "message_id": None,
+        }
+        assert recorded["artifact_type"] == "network_publish_skipped"
+        assert recorded["stage"] == "publishing_to_network"
+        assert recorded["job_id"] is None
+        assert recorded["metadata"]["skipped"] is True
+        assert recorded["storage_uri"]
 
 
 class TestWorkerActivityRegistration:

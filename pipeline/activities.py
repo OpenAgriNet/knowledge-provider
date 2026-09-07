@@ -1413,22 +1413,45 @@ async def ingest_document_from_db(
 
 @activity.defn
 async def publish_catalog_to_network(workflow_id: str, transaction_id: str) -> dict:
-    """POST a catalog/publish envelope to the Discovery Service and record the exchange."""
+    """POST a catalog/publish envelope to the Discovery Service and record the exchange.
+
+    The catalog depends on the document's knowledge kind, which is read here
+    rather than passed in as an activity argument - that keeps both workflow
+    call sites, and any workflow already in flight, untouched.
+    """
     from . import db
 
-    service = DiscoveryPublishService()
-    result = await asyncio.to_thread(service.publish, transaction_id)
+    doc = db.get_document(workflow_id)
+    document_kind = (doc or {}).get("document_kind")
 
-    exchange_path = _write_json_temp(
-        {
+    service = DiscoveryPublishService()
+    result = await asyncio.to_thread(
+        service.publish, transaction_id, document_kind, workflow_id
+    )
+
+    if result["skipped"]:
+        artifact_type = "network_publish_skipped"
+        filename = "network_publish_skipped.json"
+        exchange = {
+            "skipped": True,
+            "document_kind": result["document_kind"],
+            "reason": "no network catalog is mapped to this document kind",
+        }
+    else:
+        artifact_type = "network_publish_payload"
+        filename = "network_publish.json"
+        exchange = {
             "request": result["envelope"],
             "response_status": result["status_code"],
             "response_body": result["response_body"],
         }
-    )
+
+    # Recorded even when skipped: add_document_artifact requires a storage_uri,
+    # and an empty one 404s the artifact-content endpoint if an operator clicks it.
+    exchange_path = _write_json_temp(exchange)
     try:
         exchange_uri, exchange_size, exchange_mime = _upload_file_to_minio(
-            exchange_path, workflow_id, "network_publish_payload", "network_publish.json"
+            exchange_path, workflow_id, artifact_type, filename
         )
     finally:
         if os.path.exists(exchange_path):
@@ -1438,23 +1461,20 @@ async def publish_catalog_to_network(workflow_id: str, transaction_id: str) -> d
     db.add_document_artifact(
         workflow_id=workflow_id,
         job_id=latest_job["id"] if latest_job else None,
-        artifact_type="network_publish_payload",
+        artifact_type=artifact_type,
         stage="publishing_to_network",
         storage_uri=exchange_uri,
         mime_type=exchange_mime,
-        filename="network_publish.json",
+        filename=filename,
         size_bytes=exchange_size,
-        metadata={
-            "request": result["envelope"],
-            "response_status": result["status_code"],
-            "response_body": result["response_body"],
-        },
+        metadata=exchange,
     )
 
     return {
-        "status": "published",
+        "status": "skipped" if result["skipped"] else "published",
+        "document_kind": result["document_kind"],
         "transaction_id": transaction_id,
-        "message_id": result["envelope"]["context"]["messageId"],
+        "message_id": None if result["skipped"] else result["envelope"]["context"]["messageId"],
     }
 
 
