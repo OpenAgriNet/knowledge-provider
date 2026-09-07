@@ -1,0 +1,414 @@
+openapi: 3.0.3
+info:
+  title: Bharat Vistaar Docs Pipeline — Search API
+  description: |
+    Contract for the two search endpoints exposed by the docs-pipeline API.
+    This is a hand-written companion spec (the running FastAPI app declares
+    these routes with untyped `dict` payloads, so no schema is generated at
+    `/openapi.json` for them) — reverse-engineered from `pipeline/api.py`,
+    `pipeline/models.py`, and `pipeline/vector_store/qdrant_store.py`.
+
+    Not the full API surface — only `/search` (vector/hybrid semantic search)
+    and `/chunks/search` (SQLite keyword search across chunk records).
+  version: "1.0.0"
+  contact:
+    name: knowledge-provider (docs-pipeline)
+
+servers:
+  - url: http://localhost:8001
+    description: Local dev
+
+security:
+  - bearerAuth: []
+
+paths:
+  /search:
+    post:
+      operationId: runSearch
+      summary: Vector / hybrid semantic search over an index
+      description: |
+        Runs a search against the configured vector store (Qdrant). Requires
+        the `search` permission. Any field omitted from the request body
+        falls back to the persisted `SearchSettings` (see `GET /settings/search`),
+        then to the hardcoded defaults shown below.
+      tags: [search]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRequest'
+            examples:
+              minimal:
+                summary: Minimal request
+                value:
+                  query: "PM-KISAN eligibility"
+              full:
+                summary: Fully specified request
+                value:
+                  query: "soil health card scheme"
+                  index_name: "documents-index"
+                  search_mode: "HYBRID"
+                  top_k: 10
+                  hybrid_alpha: 0.6
+                  rerank_mode: "none"
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '400':
+          description: Missing/empty query, or the underlying vector-store search failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid Bearer token
+        '403':
+          description: Caller lacks the `search` permission
+
+  /chunks/search:
+    get:
+      operationId: searchChunksAcrossDocuments
+      summary: Keyword search across chunk records (SQLite), for KB maintainer workflows
+      description: |
+        Distinct from `/search`: this queries chunk rows directly in SQLite by
+        substring/keyword match, not the vector index. Results are scoped to
+        the caller's instance(s) unless the caller is an unrestricted admin.
+      tags: [search]
+      parameters:
+        - name: q
+          in: query
+          description: Keyword search within chunk text
+          schema:
+            type: string
+            default: ""
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: include_excluded
+          in: query
+          description: Include excluded chunks
+          schema:
+            type: boolean
+            default: false
+        - name: stage
+          in: query
+          description: Optional document stage filter
+          schema:
+            $ref: '#/components/schemas/DocumentStage'
+      responses:
+        '200':
+          description: Matching chunks
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChunkSearchResponse'
+        '401':
+          description: Missing or invalid Bearer token
+        '403':
+          description: Caller lacks the `search` permission
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Keycloak-issued RS256 JWT. When the server runs with
+        AUTH_DISABLED=true (dev default) requests are accepted without a
+        valid token and are treated as a local unrestricted admin; a Bearer
+        token, if still sent, is decoded (unverified) only to surface the
+        caller's display identity.
+
+  schemas:
+    DocumentStage:
+      type: string
+      enum:
+        - registered
+        - ocr_processing
+        - ocr_review
+        - translation_processing
+        - translation_review
+        - chunking
+        - chunk_review
+        - ready_for_ingestion
+        - ingesting
+        - publishing_to_network
+        - approval_for_prod
+        - ingesting_prod
+        - completed
+        - failed
+
+    SearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+          minLength: 1
+          description: Search text. Required; a blank/whitespace-only value returns 400.
+        index_name:
+          type: string
+          description: Vector index/collection to search.
+          default: "(persisted SearchSettings.indexName, else provider default)"
+        search_mode:
+          type: string
+          description: |
+            Requested mode. On the Qdrant backend, HYBRID currently maps
+            internally to TENSOR (dense) search — LEXICAL is a separate mode.
+          enum: [TENSOR, LEXICAL, HYBRID]
+          default: HYBRID
+        top_k:
+          type: integer
+          description: Number of final results to return, after per-doc capping. Clamped to [1, 50].
+          minimum: 1
+          maximum: 50
+          default: 12
+        candidate_multiplier:
+          type: integer
+          description: Used to derive candidate_cap when candidate_cap isn't given explicitly.
+          minimum: 1
+          default: 10
+        candidate_cap:
+          type: integer
+          description: |
+            Max candidates fetched from the vector store before per-doc
+            capping/rerank. If omitted, derived as
+            min(max(top_k * candidate_multiplier, top_k), settings.candidateCap),
+            then clamped to [top_k, 200].
+          minimum: 1
+          maximum: 200
+        max_chunks_per_doc:
+          type: integer
+          description: Max hits kept per source document when assembling final results.
+          minimum: 1
+          default: 2
+        use_e5_prefix:
+          type: boolean
+          description: Apply E5 embedding query/passage prefixes.
+          default: true
+        exclude_reference:
+          type: boolean
+          description: Exclude chunks flagged as reference material.
+          default: true
+        hybrid_alpha:
+          type: number
+          format: float
+          description: Hybrid blend weight; 0 = fully lexical, 1 = fully semantic.
+          minimum: 0
+          maximum: 1
+          default: 0.6
+        ranking_method:
+          type: string
+          enum: [rrf, normalize_linear]
+          default: rrf
+        ef_search:
+          type: integer
+          description: Qdrant HNSW ef_search parameter.
+          default: 256
+        query_expansion_profile:
+          type: string
+          description: Named query-expansion profile to apply before embedding/search.
+          default: "gu-v1"
+        rerank_mode:
+          type: string
+          description: Post-retrieval reranking strategy applied to hits.
+          default: "none"
+        hybrid_rrf_k:
+          type: integer
+          description: RRF constant `k`, used when ranking_method=rrf.
+          default: 60
+        include_raw_hits:
+          type: boolean
+          description: If true, also return the pre-cap/pre-rerank candidate list as raw_hits.
+          default: false
+
+    SearchHit:
+      type: object
+      description: |
+        A single search result. `_id`/`_score` are always present; all other
+        fields are the Qdrant point's payload and vary by index type (a
+        "scheme" index carries scheme_code/scheme_name/etc. instead of the
+        document fields). Fields are omitted entirely when null in the
+        underlying record, so treat every field but _id/_score as optional.
+      required: [_id, _score]
+      properties:
+        _id:
+          type: string
+        _score:
+          type: number
+          format: float
+        doc_id:
+          type: string
+        workflow_id:
+          type: string
+        instance:
+          type: string
+        instance_name:
+          type: string
+        type:
+          type: string
+        source:
+          type: string
+        filename:
+          type: string
+        name_gu:
+          type: string
+        name_en:
+          type: string
+        title_en:
+          type: string
+        title_gu:
+          type: string
+        doc_language:
+          type: string
+        category_tags:
+          type: array
+          items:
+            type: string
+        doc_short_description:
+          type: string
+        doc_llm_description:
+          type: string
+        ingestion_status:
+          type: string
+        description:
+          type: string
+        text:
+          type: string
+        chunk_num:
+          type: integer
+        chunk_number:
+          type: integer
+          description: Alias of chunk_num, set when chunk_num is present.
+        section:
+          type: string
+        token_count:
+          type: integer
+        page_start:
+          type: integer
+        page_end:
+          type: integer
+        is_reference:
+          type: boolean
+        quality_score:
+          type: number
+          format: float
+        priority_rank:
+          type: integer
+        priority:
+          type: string
+        scheme_code:
+          type: string
+          description: Present on scheme-index hits (type=scheme).
+        scheme_name:
+          type: string
+        scheme_aliases:
+          type: array
+          items:
+            type: string
+        chunk_id:
+          type: string
+        chunk_index:
+          type: integer
+      additionalProperties: true
+
+    SearchEffectiveConfig:
+      type: object
+      description: The fully-resolved config actually used for this search (request fields merged with settings/defaults), echoed back for debugging.
+      properties:
+        index_name: { type: string }
+        backend: { type: string, description: "Vector store backend, e.g. qdrant" }
+        query: { type: string }
+        search_mode: { type: string }
+        store_search_mode:
+          type: string
+          description: Mode actually sent to the store (HYBRID is remapped to TENSOR on Qdrant).
+        top_k: { type: integer }
+        candidate_cap: { type: integer }
+        candidate_multiplier: { type: integer }
+        max_chunks_per_doc: { type: integer }
+        use_e5_prefix: { type: boolean }
+        exclude_reference: { type: boolean }
+        hybrid_alpha: { type: number, format: float }
+        ranking_method: { type: string }
+        hybrid_rrf_k: { type: integer }
+        ef_search: { type: integer }
+        query_expansion_profile: { type: string }
+        query_expansion_applied:
+          type: boolean
+          description: True if the query-expansion profile actually rewrote the query.
+        rerank_mode: { type: string }
+        filter_string:
+          type: string
+          nullable: true
+          description: Reserved; currently always null.
+
+    SearchResponse:
+      type: object
+      required: [effective_config, candidate_count, final_count, hits]
+      properties:
+        effective_config:
+          $ref: '#/components/schemas/SearchEffectiveConfig'
+        candidate_count:
+          type: integer
+          description: Number of candidates returned by the vector store before per-doc capping.
+        final_count:
+          type: integer
+          description: Number of hits actually returned in `hits` (<= top_k).
+        hits:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchHit'
+        raw_hits:
+          type: array
+          nullable: true
+          description: Only populated when the request sets include_raw_hits=true; the candidate list before per-doc capping/rerank.
+          items:
+            $ref: '#/components/schemas/SearchHit'
+
+    ChunkSearchResponse:
+      type: object
+      required: [items, total, limit, offset, query, include_excluded, stage]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            description: Raw chunk record from SQLite (db.search_chunks); shape follows the chunks table, not formally typed here.
+            additionalProperties: true
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        query:
+          type: string
+        include_excluded:
+          type: boolean
+        stage:
+          description: Echoes the request's stage filter; absent/null when no filter was applied.
+          allOf:
+            - $ref: '#/components/schemas/DocumentStage'
+
+    ErrorResponse:
+      type: object
+      properties:
+        detail:
+          type: string
