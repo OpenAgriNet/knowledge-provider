@@ -13,7 +13,8 @@ from pipeline.network_constants import (
     SCHEMES_RESOURCE_ID,
 )
 
-# Forbidden by the schema under informationMode OnDemand.
+# Forbidden by the KnowledgeAdvisory schema under informationMode OnDemand.
+# Both advisory and scheme resources use this schema.
 FORBIDDEN_ADVISORY_ATTRIBUTES = (
     "issuedAt",
     "validity",
@@ -21,15 +22,6 @@ FORBIDDEN_ADVISORY_ATTRIBUTES = (
     "supportingResourceIds",
     "rationale",
     "source",
-)
-FORBIDDEN_RESOURCE_ATTRIBUTES = (
-    "knowledgeType",
-    "version",
-    "lifecycleStatus",
-    "content",
-    "validity",
-    "provenance",
-    "supersedes",
 )
 
 
@@ -111,25 +103,20 @@ class TestBuildSchemeCatalog:
         assert resource["descriptor"] == {"name": "Government schemes"}
 
     @pytest.mark.unit
-    def test_typed_as_knowledge_resource_not_advisory(self):
+    def test_typed_as_knowledge_advisory_distinguished_by_subject_categories(self):
+        # No KnowledgeScheme schema exists - a scheme shares KnowledgeAdvisory
+        # with the advisory resource, distinguished only by subjectCategories.
         attributes = _attributes("scheme")
 
-        assert attributes["@type"] == "openagrinet:KnowledgeResource"
-        assert attributes["@context"].endswith("/KnowledgeResource/v0.1/context.jsonld")
+        assert attributes["@type"] == "openagrinet:KnowledgeAdvisory"
+        assert attributes["@context"].endswith("/KnowledgeAdvisory/v0.1/context.jsonld")
         assert attributes["subjectCategories"] == ["Scheme"]
-
-    @pytest.mark.unit
-    def test_declares_supported_knowledge_types(self):
-        # Required for KnowledgeResource under OnDemand.
-        attributes = _attributes("scheme")
-
-        assert attributes["supportedKnowledgeTypes"] == ["Reference"]
         assert attributes["informationMode"] == "OnDemand"
         assert attributes["topics"] == ["Government schemes"]
         assert attributes["languages"] == ["en"]
 
     @pytest.mark.unit
-    @pytest.mark.parametrize("field", FORBIDDEN_RESOURCE_ATTRIBUTES)
+    @pytest.mark.parametrize("field", FORBIDDEN_ADVISORY_ATTRIBUTES)
     def test_omits_fields_forbidden_under_on_demand(self, field):
         assert field not in _attributes("scheme")
 
