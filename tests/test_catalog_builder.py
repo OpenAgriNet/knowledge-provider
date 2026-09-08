@@ -13,9 +13,6 @@ from pipeline.network_constants import (
     SCHEMES_RESOURCE_ID,
 )
 
-BPP_ID = "docs-pipeline-bv"
-BPP_URI = "https://docs.example.gov.in"
-
 # Forbidden by the schema under informationMode OnDemand.
 FORBIDDEN_ADVISORY_ATTRIBUTES = (
     "issuedAt",
@@ -37,7 +34,7 @@ FORBIDDEN_RESOURCE_ATTRIBUTES = (
 
 
 def _attributes(kind):
-    return build_catalog(kind, BPP_ID, BPP_URI)["resources"][0]["resourceAttributes"]
+    return build_catalog(kind)["resources"][0]["resourceAttributes"]
 
 
 class TestNormalizeDocumentKind:
@@ -59,17 +56,17 @@ class TestNormalizeDocumentKind:
 class TestBuildAdvisoryCatalog:
     @pytest.mark.unit
     def test_catalog_envelope_fields(self):
-        catalog = build_catalog("advisory", BPP_ID, BPP_URI)
+        catalog = build_catalog("advisory")
 
         assert catalog["id"] == ADVISORY_CATALOG_ID
-        assert catalog["bppId"] == BPP_ID
-        assert catalog["bppUri"] == BPP_URI
+        assert "bppId" not in catalog
+        assert "bppUri" not in catalog
         assert catalog["descriptor"] == {"name": "Agricultural advisory from documents"}
         assert catalog["isActive"] is True
 
     @pytest.mark.unit
     def test_exactly_one_resource_with_a_stable_id(self):
-        catalog = build_catalog("advisory", BPP_ID, BPP_URI)
+        catalog = build_catalog("advisory")
 
         assert len(catalog["resources"]) == 1
         resource = catalog["resources"][0]
@@ -85,7 +82,7 @@ class TestBuildAdvisoryCatalog:
         assert attributes["informationMode"] == "OnDemand"
         assert attributes["subjectCategories"] == ["Crop"]
         assert attributes["topics"] == ["Crop production"]
-        assert attributes["languages"] == ["en", "hi", "mr"]
+        assert attributes["languages"] == ["en"]
 
     @pytest.mark.unit
     @pytest.mark.parametrize("field", FORBIDDEN_ADVISORY_ATTRIBUTES)
@@ -96,17 +93,17 @@ class TestBuildAdvisoryCatalog:
 class TestBuildSchemeCatalog:
     @pytest.mark.unit
     def test_catalog_envelope_fields(self):
-        catalog = build_catalog("scheme", BPP_ID, BPP_URI)
+        catalog = build_catalog("scheme")
 
         assert catalog["id"] == SCHEMES_CATALOG_ID
-        assert catalog["bppId"] == BPP_ID
-        assert catalog["bppUri"] == BPP_URI
+        assert "bppId" not in catalog
+        assert "bppUri" not in catalog
         assert catalog["descriptor"] == {"name": "Schemes from documents"}
         assert catalog["isActive"] is True
 
     @pytest.mark.unit
     def test_exactly_one_resource_with_a_stable_id(self):
-        catalog = build_catalog("scheme", BPP_ID, BPP_URI)
+        catalog = build_catalog("scheme")
 
         assert len(catalog["resources"]) == 1
         resource = catalog["resources"][0]
@@ -129,7 +126,7 @@ class TestBuildSchemeCatalog:
         assert attributes["supportedKnowledgeTypes"] == ["Reference"]
         assert attributes["informationMode"] == "OnDemand"
         assert attributes["topics"] == ["Government schemes"]
-        assert attributes["languages"] == ["en", "hi", "mr"]
+        assert attributes["languages"] == ["en"]
 
     @pytest.mark.unit
     @pytest.mark.parametrize("field", FORBIDDEN_RESOURCE_ATTRIBUTES)
@@ -141,15 +138,15 @@ class TestUnmappedKinds:
     @pytest.mark.unit
     @pytest.mark.parametrize("kind", ["document", "video", "how_to_faq", "", None])
     def test_returns_none_so_the_caller_skips_publishing(self, kind):
-        assert build_catalog(kind, BPP_ID, BPP_URI) is None
+        assert build_catalog(kind) is None
 
 
 class TestBuilderIsolation:
     @pytest.mark.unit
     def test_mutating_a_built_catalog_does_not_leak_into_the_next(self):
-        first = build_catalog("advisory", BPP_ID, BPP_URI)
+        first = build_catalog("advisory")
         first["resources"][0]["resourceAttributes"]["topics"].append("tampered")
 
-        second = build_catalog("advisory", BPP_ID, BPP_URI)
+        second = build_catalog("advisory")
 
         assert second["resources"][0]["resourceAttributes"]["topics"] == ["Crop production"]

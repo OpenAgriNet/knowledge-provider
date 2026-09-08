@@ -9,7 +9,7 @@ The operator action that approves a document out of `ready_for_ingestion` and le
 _Avoid_: "publish" alone — ambiguous with Publish to Network.
 
 **Publish to Network**:
-The pipeline stage that runs immediately after DEV ingest completes and POSTs a Beckn-shaped `catalog/publish` envelope to an external Discovery Service. This is the only path the experience layer uses to discover schemas going forward; it is unrelated to Publish to Dev.
+The pipeline stage that runs immediately after DEV ingest completes and POSTs a Beckn-shaped `publish` envelope to an external Discovery Service. This is the only path the experience layer uses to discover schemas going forward; it is unrelated to Publish to Dev.
 _Avoid_: "publish" alone — ambiguous with Publish to Dev.
 
 **Master Catalog**:
