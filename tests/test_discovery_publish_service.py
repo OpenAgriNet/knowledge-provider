@@ -29,33 +29,19 @@ class TestDiscoveryPublishServiceConfig:
             DiscoveryPublishService()
 
     @pytest.mark.unit
-    def test_missing_sender_uri_alone_raises(self, monkeypatch):
-        from pipeline.discovery_publish_service import DiscoveryPublishService
-
-        monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
-        monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
-        monkeypatch.delenv("NETWORK_SENDER_URI", raising=False)
-
-        with pytest.raises(RuntimeError, match="NETWORK_SENDER_URI"):
-            DiscoveryPublishService()
-
-    @pytest.mark.unit
     def test_explicit_args_override_env(self, monkeypatch):
         from pipeline.discovery_publish_service import DiscoveryPublishService
 
         monkeypatch.delenv("DISCOVERY_SERVICE_ENDPOINT", raising=False)
         monkeypatch.delenv("NETWORK_SENDER_ID", raising=False)
-        monkeypatch.delenv("NETWORK_SENDER_URI", raising=False)
 
         service = DiscoveryPublishService(
             endpoint="https://explicit.example.com",
             sender_id="explicit-sender",
-            sender_uri="https://explicit.example.com/bpp",
         )
 
         assert service.endpoint == "https://explicit.example.com"
         assert service.sender_id == "explicit-sender"
-        assert service.sender_uri == "https://explicit.example.com/bpp"
 
 
 class TestDiscoveryPublishServicePublish:
@@ -65,7 +51,6 @@ class TestDiscoveryPublishServicePublish:
 
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
         monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
-        monkeypatch.setenv("NETWORK_SENDER_URI", "https://docs.example.gov.in")
         service = DiscoveryPublishService()
 
         mock_response = MagicMock()
@@ -119,7 +104,6 @@ class TestDiscoveryPublishServicePublish:
 
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
         monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
-        monkeypatch.setenv("NETWORK_SENDER_URI", "https://docs.example.gov.in")
         service = DiscoveryPublishService()
 
         mock_response = MagicMock()
@@ -146,7 +130,6 @@ class TestDiscoveryPublishServicePublish:
 
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
         monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
-        monkeypatch.setenv("NETWORK_SENDER_URI", "https://docs.example.gov.in")
         service = DiscoveryPublishService()
 
         mock_response = MagicMock()
@@ -169,7 +152,6 @@ class TestDiscoveryPublishServicePublish:
 
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
         monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
-        monkeypatch.setenv("NETWORK_SENDER_URI", "https://docs.example.gov.in")
         service = DiscoveryPublishService()
 
         mock_client = MagicMock()
@@ -189,7 +171,6 @@ class TestDiscoveryPublishServiceSchemeCatalog:
 
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
         monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
-        monkeypatch.setenv("NETWORK_SENDER_URI", "https://docs.example.gov.in")
         service = DiscoveryPublishService()
 
         mock_response = MagicMock()
@@ -222,7 +203,6 @@ class TestDiscoveryPublishServiceSkipsUnmappedKinds:
 
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
         monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
-        monkeypatch.setenv("NETWORK_SENDER_URI", "https://docs.example.gov.in")
         service = DiscoveryPublishService()
 
         mock_client = MagicMock()
@@ -244,7 +224,6 @@ def _logging_service(monkeypatch):
 
     monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
     monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
-    monkeypatch.setenv("NETWORK_SENDER_URI", "https://docs.example.gov.in")
     return DiscoveryPublishService()
 
 
