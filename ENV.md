@@ -250,6 +250,10 @@ First piece of the network-discovery push architecture: right after DEV ingest, 
 |----------|---------|---------|
 | `DISCOVERY_SERVICE_ENDPOINT` | *(empty — required)* | Base URL of the external Discovery Service; the pipeline POSTs to `{DISCOVERY_SERVICE_ENDPOINT}/publish` |
 | `NETWORK_SENDER_ID` | *(empty — required)* | This instance's Beckn `senderId`, sent in every publish envelope's `context` |
+| `DISCOVERY_SERVICE_PUBLISH_INITIAL_INTERVAL_SECONDS` | `30` | Wait before the first retry of a failed publish |
+| `DISCOVERY_SERVICE_PUBLISH_BACKOFF_COEFFICIENT` | `2.0` | Multiplier applied to the wait after each retry |
+| `DISCOVERY_SERVICE_PUBLISH_MAX_INTERVAL_SECONDS` | `300` | Cap on the wait between retries |
+| `DISCOVERY_SERVICE_PUBLISH_MAX_ATTEMPTS` | `5` | Total attempts (including the first) before the stage fails |
 
 ---
 

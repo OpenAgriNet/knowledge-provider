@@ -4,6 +4,7 @@ Temporal workflows for the OCR pipeline.
 The workflow pauses at review stages, waiting for user signals to continue.
 """
 
+import os
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Optional
@@ -67,13 +68,24 @@ TRANSLATION_RETRY = RetryPolicy(
 
 # Shorter than INGEST_RETRY: the Discovery Service is a new, unproven external
 # dependency, so we fail the document faster rather than holding it in-flight
-# for hours.
-NETWORK_PUBLISH_RETRY = RetryPolicy(
-    initial_interval=timedelta(seconds=30),
-    backoff_coefficient=2.0,
-    maximum_interval=timedelta(minutes=5),
-    maximum_attempts=5,
-)
+# for hours. Configurable (unlike the other policies above) since this
+# dependency's real-world retry behavior is still unproven.
+def _network_publish_retry_policy() -> RetryPolicy:
+    return RetryPolicy(
+        initial_interval=timedelta(
+            seconds=int(os.environ.get("DISCOVERY_SERVICE_PUBLISH_INITIAL_INTERVAL_SECONDS", "30"))
+        ),
+        backoff_coefficient=float(
+            os.environ.get("DISCOVERY_SERVICE_PUBLISH_BACKOFF_COEFFICIENT", "2.0")
+        ),
+        maximum_interval=timedelta(
+            seconds=int(os.environ.get("DISCOVERY_SERVICE_PUBLISH_MAX_INTERVAL_SECONDS", "300"))
+        ),
+        maximum_attempts=int(os.environ.get("DISCOVERY_SERVICE_PUBLISH_MAX_ATTEMPTS", "5")),
+    )
+
+
+NETWORK_PUBLISH_RETRY = _network_publish_retry_policy()
 
 
 async def _mirror_state(
