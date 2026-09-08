@@ -86,7 +86,7 @@ class TestDiscoveryPublishServicePublish:
         assert call_args.args[0] == "https://discovery.example.com/publish"
 
         envelope = call_args.kwargs["json"]
-        assert envelope["context"]["action"] == "catalog/publish"
+        assert envelope["context"]["action"] == "publish"
         assert envelope["context"]["transactionId"] == "txn-123"
         assert envelope["context"]["senderId"] == "docs-pipeline-bv"
         assert envelope["context"]["messageId"]  # generated, non-empty
@@ -98,12 +98,12 @@ class TestDiscoveryPublishServicePublish:
 
         catalogs = envelope["message"]["catalogs"]
         assert len(catalogs) == 1
-        assert catalogs[0]["id"] == "oan.knowledgeprovider.advisory"
-        assert catalogs[0]["bppId"] == "docs-pipeline-bv"
-        assert catalogs[0]["bppUri"] == "https://docs.example.gov.in"
+        assert catalogs[0]["id"] == "cat-oan-knowledge-provider-advisories"
+        assert "bppId" not in catalogs[0]
+        assert "bppUri" not in catalogs[0]
         assert envelope["message"]["publishDirectives"] == [
             {
-                "catalogId": "oan.knowledgeprovider.advisory",
+                "catalogId": "cat-oan-knowledge-provider-advisories",
                 "catalogType": "REGULAR",
                 "updateMode": "MERGE",
             }
@@ -207,9 +207,9 @@ class TestDiscoveryPublishServiceSchemeCatalog:
 
         envelope = mock_client.post.call_args.kwargs["json"]
         catalog = envelope["message"]["catalogs"][0]
-        assert catalog["id"] == "oan.knowledgeprovider.schemes"
+        assert catalog["id"] == "cat-oan-knowledge-provider-schemes"
         assert envelope["message"]["publishDirectives"][0]["catalogId"] == (
-            "oan.knowledgeprovider.schemes"
+            "cat-oan-knowledge-provider-schemes"
         )
         assert result["skipped"] is False
 
@@ -281,7 +281,7 @@ class TestDiscoveryPublishServiceLogging:
             "network_publish_url=https://discovery.example.com/publish" in m
             and "workflow_id=wf-log" in m
             and "transaction_id=txn-log" in m
-            and "catalog_id=oan.knowledgeprovider.advisory" in m
+            and "catalog_id=cat-oan-knowledge-provider-advisories" in m
             for m in messages
         )
         assert any("network_publish_status=200" in m for m in messages)

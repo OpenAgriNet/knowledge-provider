@@ -63,7 +63,7 @@ class DiscoveryPublishService:
         with `skipped=True`: the spec declares `message.catalogs` as
         `minItems: 1`, so there is no valid "publish nothing" request to send.
         """
-        catalog = build_catalog(document_kind, bpp_id=self.sender_id, bpp_uri=self.sender_uri)
+        catalog = build_catalog(document_kind)
         if catalog is None:
             logger.info(
                 "workflow_id=%s document_kind=%s network_publish_skipped=True",
@@ -79,7 +79,7 @@ class DiscoveryPublishService:
 
         envelope = {
             "context": {
-                "action": "catalog/publish",
+                "action": "publish",
                 "version": BECKN_VERSION,
                 "messageId": str(uuid.uuid4()),
                 "transactionId": transaction_id,

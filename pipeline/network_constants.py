@@ -6,10 +6,10 @@ SCHEMA_CONTEXT_BASE = "https://schemas.openagrinet.global/schema"
 
 # Permanent: updateMode MERGE upserts resources by id, so a changed id strands
 # the old resource on the network instead of replacing it.
-ADVISORY_CATALOG_ID = "oan.knowledgeprovider.advisory"
-ADVISORY_RESOURCE_ID = "oan.knowledgeprovider.advisory.resource"
-SCHEMES_CATALOG_ID = "oan.knowledgeprovider.schemes"
-SCHEMES_RESOURCE_ID = "oan.knowledgeprovider.schemes.resource"
+ADVISORY_CATALOG_ID = "cat-oan-knowledge-provider-advisories"
+ADVISORY_RESOURCE_ID = "res-oan-knowledge-provider-advisories"
+SCHEMES_CATALOG_ID = "cat-oan-knowledge-provider-schemes"
+SCHEMES_RESOURCE_ID = "res-oan-knowledge-provider-schemes"
 
 ADVISORY_CATALOG_NAME = "Agricultural advisory from documents"
 ADVISORY_RESOURCE_NAME = "Agricultural advisory"
@@ -20,7 +20,7 @@ SCHEMES_RESOURCE_NAME = "Government schemes"
 # fields that would carry them.
 INFORMATION_MODE = "OnDemand"
 
-SERVED_LANGUAGES = ["en", "hi", "mr"]
+SERVED_LANGUAGES = ["en"]
 
 ADVISORY_SUBJECT_CATEGORIES = ["Crop"]
 ADVISORY_TOPICS = ["Crop production"]

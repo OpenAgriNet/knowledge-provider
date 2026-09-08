@@ -81,11 +81,7 @@ def normalize_document_kind(document_kind: Optional[str]) -> str:
     return (document_kind or DEFAULT_DOCUMENT_KIND).strip().lower()
 
 
-def build_catalog(
-    document_kind: Optional[str],
-    bpp_id: str,
-    bpp_uri: str,
-) -> Optional[dict]:
+def build_catalog(document_kind: Optional[str]) -> Optional[dict]:
     """Return the catalog to announce for `document_kind`, or None.
 
     None means this kind has nothing to announce - `document`, `video` and any
@@ -98,8 +94,6 @@ def build_catalog(
 
     return {
         "id": spec["catalog_id"],
-        "bppId": bpp_id,
-        "bppUri": bpp_uri,
         "descriptor": {"name": spec["catalog_name"]},
         "isActive": True,
         "resources": [

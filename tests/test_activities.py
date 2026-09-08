@@ -381,7 +381,7 @@ class TestPublishCatalogToNetworkActivity:
             "skipped": False,
             "envelope": {
                 "context": {
-                    "action": "catalog/publish",
+                    "action": "publish",
                     "version": "2.0.0",
                     "messageId": "msg-1",
                     "transactionId": "txn-1",
@@ -389,7 +389,7 @@ class TestPublishCatalogToNetworkActivity:
                     "senderId": "docs-pipeline-bv",
                     "networkId": "docs-pipeline-bv",
                 },
-                "message": {"catalogs": [{"id": "oan.knowledgeprovider.advisory"}]},
+                "message": {"catalogs": [{"id": "cat-oan-knowledge-provider-advisories"}]},
             },
             "status_code": 200,
             "response_body": '{"ack": true}',

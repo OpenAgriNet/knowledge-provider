@@ -244,13 +244,13 @@ Separate from the SQLite/Qdrant catalog above (which tracks PROD vector publicat
 
 ### Publish to Network
 
-First piece of the network-discovery push architecture: right after DEV ingest, the `publishing_to_network` pipeline stage POSTs a Beckn-shaped `catalog/publish` envelope to an external Discovery Service. This is going to be the only way the experience layer discovers schemas going forward — the Master Scheme Catalog pull API above stays in place for backward compatibility. The catalog announces the *knowledge kind* the document was classified as — one catalog with exactly one `OnDemand` resource for `advisory`, another for `scheme`; any other `document_kind` publishes nothing. `DISCOVERY_SERVICE_ENDPOINT`, `NETWORK_SENDER_ID` and `NETWORK_SENDER_URI` are **required** — there is no feature flag to disable this stage, so every environment running the pipeline needs them set.
+First piece of the network-discovery push architecture: right after DEV ingest, the `publishing_to_network` pipeline stage POSTs a Beckn-shaped `publish` envelope to an external Discovery Service. This is going to be the only way the experience layer discovers schemas going forward — the Master Scheme Catalog pull API above stays in place for backward compatibility. The catalog announces the *knowledge kind* the document was classified as — one catalog with exactly one `OnDemand` resource for `advisory`, another for `scheme`; any other `document_kind` publishes nothing. `DISCOVERY_SERVICE_ENDPOINT`, `NETWORK_SENDER_ID` and `NETWORK_SENDER_URI` are **required** — there is no feature flag to disable this stage, so every environment running the pipeline needs them set.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `DISCOVERY_SERVICE_ENDPOINT` | *(empty — required)* | Base URL of the external Discovery Service; the pipeline POSTs to `{DISCOVERY_SERVICE_ENDPOINT}/publish` |
 | `NETWORK_SENDER_ID` | *(empty — required)* | This instance's Beckn `senderId`, also sent as `networkId` |
-| `NETWORK_SENDER_URI` | *(empty — required)* | Publicly reachable base URL of this provider, sent as each catalog's `bppUri` |
+| `NETWORK_SENDER_URI` | *(empty — required)* | Publicly reachable base URL of this provider; currently validated but not sent on the wire (`bppId`/`bppUri` are being removed from the Discovery Service API) |
 | `DISCOVERY_SERVICE_PUBLISH_INITIAL_INTERVAL_SECONDS` | `30` | Wait before the first retry of a failed publish |
 | `DISCOVERY_SERVICE_PUBLISH_BACKOFF_COEFFICIENT` | `2.0` | Multiplier applied to the wait after each retry |
 | `DISCOVERY_SERVICE_PUBLISH_MAX_INTERVAL_SECONDS` | `300` | Cap on the wait between retries |
