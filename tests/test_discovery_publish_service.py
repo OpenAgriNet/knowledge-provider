@@ -1,5 +1,6 @@
 """Unit tests for DiscoveryPublishService."""
 
+import logging
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -233,3 +234,91 @@ class TestDiscoveryPublishServiceSkipsUnmappedKinds:
         assert result["skipped"] is True
         assert result["envelope"] is None
         assert result["status_code"] is None
+
+
+LOGGER_NAME = "pipeline.discovery_publish_service"
+
+
+def _logging_service(monkeypatch):
+    from pipeline.discovery_publish_service import DiscoveryPublishService
+
+    monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
+    monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
+    monkeypatch.setenv("NETWORK_SENDER_URI", "https://docs.example.gov.in")
+    return DiscoveryPublishService()
+
+
+def _ok_client():
+    response = MagicMock()
+    response.raise_for_status = MagicMock()
+    response.status_code = 200
+    response.text = "{}"
+
+    client = MagicMock()
+    client.__enter__ = MagicMock(return_value=client)
+    client.__exit__ = MagicMock(return_value=False)
+    client.post.return_value = response
+    return client
+
+
+class TestDiscoveryPublishServiceLogging:
+    """Every line carries workflow_id - the correlation key for worker code."""
+
+    @pytest.mark.unit
+    def test_logs_the_request_and_the_response_status(self, monkeypatch, caplog):
+        service = _logging_service(monkeypatch)
+
+        with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
+            with patch(
+                "pipeline.discovery_publish_service.httpx.Client", return_value=_ok_client()
+            ):
+                service.publish(
+                    transaction_id="txn-log", document_kind="advisory", workflow_id="wf-log"
+                )
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any(
+            "network_publish_url=https://discovery.example.com/publish" in m
+            and "workflow_id=wf-log" in m
+            and "transaction_id=txn-log" in m
+            and "catalog_id=oan.knowledgeprovider.advisory" in m
+            for m in messages
+        )
+        assert any("network_publish_status=200" in m for m in messages)
+
+    @pytest.mark.unit
+    def test_logs_an_error_when_the_call_fails(self, monkeypatch, caplog):
+        # The activity records no artifact on failure, so the log is the only trace.
+        service = _logging_service(monkeypatch)
+        client = MagicMock()
+        client.__enter__ = MagicMock(return_value=client)
+        client.__exit__ = MagicMock(return_value=False)
+        client.post.side_effect = httpx.ConnectError("connection refused")
+
+        with caplog.at_level(logging.ERROR, logger=LOGGER_NAME):
+            with patch("pipeline.discovery_publish_service.httpx.Client", return_value=client):
+                with pytest.raises(httpx.ConnectError):
+                    service.publish(
+                        transaction_id="txn-log", document_kind="advisory", workflow_id="wf-log"
+                    )
+
+        errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+        assert any(
+            "network_publish_failed=True" in m and "workflow_id=wf-log" in m for m in errors
+        )
+
+    @pytest.mark.unit
+    def test_skipped_publish_logs_no_request(self, monkeypatch, caplog):
+        service = _logging_service(monkeypatch)
+
+        with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
+            with patch(
+                "pipeline.discovery_publish_service.httpx.Client", return_value=MagicMock()
+            ):
+                service.publish(
+                    transaction_id="txn-log", document_kind="video", workflow_id="wf-log"
+                )
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("network_publish_skipped=True" in m for m in messages)
+        assert not any("network_publish_url=" in m for m in messages)
