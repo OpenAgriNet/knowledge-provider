@@ -100,9 +100,37 @@ class DiscoveryPublishService:
                 ],
             },
         }
-        with httpx.Client(timeout=self.timeout) as client:
-            response = client.post(f"{self.endpoint.rstrip('/')}/publish", json=envelope)
-            response.raise_for_status()
+        url = f"{self.endpoint.rstrip('/')}/publish"
+        logger.info(
+            "workflow_id=%s catalog_id=%s transaction_id=%s message_id=%s "
+            "network_publish_url=%s",
+            workflow_id,
+            catalog["id"],
+            transaction_id,
+            envelope["context"]["messageId"],
+            url,
+        )
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                response = client.post(url, json=envelope)
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            # The activity records no artifact when publish raises, so this is
+            # the only trace of a transport failure.
+            logger.error(
+                "workflow_id=%s catalog_id=%s network_publish_failed=True error=%s",
+                workflow_id,
+                catalog["id"],
+                exc,
+            )
+            raise
+
+        logger.info(
+            "workflow_id=%s catalog_id=%s network_publish_status=%s",
+            workflow_id,
+            catalog["id"],
+            response.status_code,
+        )
 
         return {
             "skipped": False,
