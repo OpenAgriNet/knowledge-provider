@@ -24,7 +24,6 @@ from .network_constants import (
     INFORMATION_MODE,
     SCHEMA_CONTEXT_BASE,
     SCHEME_SUBJECT_CATEGORIES,
-    SCHEME_SUPPORTED_KNOWLEDGE_TYPES,
     SCHEME_TOPICS,
     SCHEMES_CATALOG_ID,
     SCHEMES_CATALOG_NAME,
@@ -43,15 +42,14 @@ _ADVISORY_RESOURCE_ATTRIBUTES = {
 }
 
 # No KnowledgeScheme schema exists in the network specs - Scheme is only a
-# subjectCategories value - so a scheme document is announced as reference
-# knowledge. supportedKnowledgeTypes is required for KnowledgeResource under
-# OnDemand; KnowledgeAdvisory has no equivalent.
+# subjectCategories value - so a scheme document is announced on the same
+# KnowledgeAdvisory schema as advisories, distinguished only by
+# subjectCategories: ["Scheme"].
 _SCHEME_RESOURCE_ATTRIBUTES = {
-    "@context": f"{SCHEMA_CONTEXT_BASE}/KnowledgeResource/v0.1/context.jsonld",
-    "@type": "openagrinet:KnowledgeResource",
+    "@context": f"{SCHEMA_CONTEXT_BASE}/KnowledgeAdvisory/v0.1/context.jsonld",
+    "@type": "openagrinet:KnowledgeAdvisory",
     "informationMode": INFORMATION_MODE,
     "subjectCategories": SCHEME_SUBJECT_CATEGORIES,
-    "supportedKnowledgeTypes": SCHEME_SUPPORTED_KNOWLEDGE_TYPES,
     "topics": SCHEME_TOPICS,
     "languages": SERVED_LANGUAGES,
 }
