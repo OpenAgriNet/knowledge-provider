@@ -29,20 +29,16 @@ class DiscoveryPublishService:
         self,
         endpoint: Optional[str] = None,
         sender_id: Optional[str] = None,
-        sender_uri: Optional[str] = None,
         timeout: float = 30.0,
     ):
         self.endpoint = endpoint or os.environ.get("DISCOVERY_SERVICE_ENDPOINT")
         # Doubles as context.networkId.
         self.sender_id = sender_id or os.environ.get("NETWORK_SENDER_ID")
-        self.sender_uri = sender_uri or os.environ.get("NETWORK_SENDER_URI")
 
         if not self.endpoint:
             raise RuntimeError("DISCOVERY_SERVICE_ENDPOINT must be set to publish to the network.")
         if not self.sender_id:
             raise RuntimeError("NETWORK_SENDER_ID must be set to publish to the network.")
-        if not self.sender_uri:
-            raise RuntimeError("NETWORK_SENDER_URI must be set to publish to the network.")
 
         self.timeout = timeout
 
