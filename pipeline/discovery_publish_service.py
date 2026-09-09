@@ -95,6 +95,7 @@ class DiscoveryPublishService:
                         "catalogType": "REGULAR",
                         "updateMode": "MERGE",
                     }
+
                 ],
             },
         }
@@ -108,6 +109,7 @@ class DiscoveryPublishService:
             envelope["context"]["messageId"],
             url,
         )
+        logger.debug("Request to %s with \n body %s", url, envelope)
         try:
             with httpx.Client(timeout=self.timeout) as client:
                 response = client.post(url, json=envelope)
@@ -116,18 +118,20 @@ class DiscoveryPublishService:
             # The activity records no artifact when publish raises, so this is
             # the only trace of a transport failure.
             logger.error(
-                "workflow_id=%s catalog_id=%s network_publish_failed=True error=%s",
+                "workflow_id=%s catalog_id=%s network_publish_failed=True transaction_id=%s error=%s",
                 workflow_id,
                 catalog["id"],
+                transaction_id,
                 exc,
             )
             raise
 
         logger.info(
-            "workflow_id=%s catalog_id=%s network_publish_status=%s",
+            "workflow_id=%s catalog_id=%s network_publish_status=%s transaction_id=%s",
             workflow_id,
             catalog["id"],
             response.status_code,
+            transaction_id
         )
 
         result_status, errors = self._read_result(response, catalog["id"], workflow_id)
