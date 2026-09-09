@@ -61,6 +61,7 @@ Root `.env` (see `.env.example`). Required by FastAPI (`pipeline/api.py`), Tempo
 |----------|---------|---------|
 | `TEMPORAL_HOST` | `localhost:7233` | Temporal gRPC address |
 | `TEMPORAL_MAX_CONCURRENT_ACTIVITIES` | `4` | Worker activity concurrency |
+| `LOG_LEVEL` | `INFO` | Worker log verbosity (`DEBUG`/`INFO`/`WARNING`/`ERROR`); the `temporalio` SDK logger stays at `INFO` regardless, to avoid its own noisy debug output |
 | `MINIO_ENDPOINT` | `localhost:9000` | MinIO API host:port |
 | `MINIO_BUCKET` | `documents` | Object storage bucket |
 | `DOCUMENT_DB_PATH` | `/data/documents.db` | SQLite path (use `./data/documents.db` for local non-Docker) |
