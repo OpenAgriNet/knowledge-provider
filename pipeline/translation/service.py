@@ -79,6 +79,10 @@ def load_translation_config(target_language: str = "en") -> TranslationConfig:
             os.environ.get("TRANSLATION_USE_MAX_COMPLETION_TOKENS", "false").strip().lower()
             in {"true", "1", "yes"}
         ),
+        # Empty TRANSLATION_TEMPERATURE omits the field entirely.
+        temperature=(
+            float(raw_temp) if (raw_temp := os.environ.get("TRANSLATION_TEMPERATURE", "0.0").strip()) else None
+        ),
         script_gate_enabled=(
             os.environ.get("TRANSLATION_SCRIPT_GATE_ENABLED", "true").strip().lower()
             not in {"false", "0", "no"}

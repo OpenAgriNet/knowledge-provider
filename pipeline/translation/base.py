@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -18,11 +19,10 @@ class TranslationConfig:
     retry_base_seconds: float = 2.0
     max_output_tokens: int = 8000
     request_timeout_seconds: float = 300.0
-    # Some OpenAI-compatible endpoints (e.g. newer Azure AI Foundry model
-    # deployments) reject the classic `max_tokens` param outright and require
-    # `max_completion_tokens` instead. The default vLLM/litellm proxy accepts
-    # `max_tokens` fine, so this stays opt-in per deployment.
+    # Some endpoints (e.g. Azure AI Foundry) require max_completion_tokens instead of max_tokens.
     use_max_completion_tokens: bool = False
+    # None omits temperature from the request; some endpoints reject non-default values.
+    temperature: Optional[float] = 0.0
     # Regex script gate: only pages containing non-Latin script are translated.
     script_gate_enabled: bool = True
     script_min_chars: int = 15

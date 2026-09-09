@@ -151,6 +151,7 @@ python scripts/mock_chandra_ocr_server.py   # same :8010 API surface as HF serve
 | `TRANSLATION_MAX_OUTPUT_TOKENS` | `8000` | Max tokens |
 | `TRANSLATION_REQUEST_TIMEOUT_SECONDS` | `300` | Timeout |
 | `TRANSLATION_USE_MAX_COMPLETION_TOKENS` | `false` | `true` sends `max_completion_tokens` instead of `max_tokens` — required by some OpenAI-compatible endpoints (e.g. Azure AI Foundry) that reject `max_tokens` outright |
+| `TRANSLATION_TEMPERATURE` | `0.0` | Sent as `temperature` in the request. Set to empty (`TRANSLATION_TEMPERATURE=`) to omit the field entirely — some endpoints (e.g. Azure AI Foundry) reject any non-default temperature. Independent of `TRANSLATION_USE_MAX_COMPLETION_TOKENS` |
 | `DISABLE_PROD_SETTING` | `false` | `true` skips the `approval_for_prod` and `ingesting_prod` stages — documents complete at DEV ingest. Read at workflow start; in-flight documents keep the shape they began with |
 | `TRANSLATION_SCRIPT_GATE_ENABLED` | `true` | Regex script gate: only pages with non-Latin (Indic) script are translated. `false` restores per-line pyfranc detection, which misreads OCR noise as European languages |
 | `TRANSLATION_SCRIPT_MIN_CHARS` | `15` | Minimum non-Latin characters on a page before it counts as non-English |
