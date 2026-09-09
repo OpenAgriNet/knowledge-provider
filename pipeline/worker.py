@@ -35,14 +35,17 @@ from .workflows import (
     TranslationOnlyWorkflow,
 )
 
+LOG_LEVEL = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").strip().upper(), logging.INFO)
+
 # Configure verbose logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=LOG_LEVEL,
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
     datefmt='%H:%M:%S'
 )
 
-# Set Temporal SDK logging to INFO
+# Set Temporal SDK logging to INFO regardless of LOG_LEVEL - its own DEBUG
+# output is noisy and rarely what LOG_LEVEL=DEBUG is set to see.
 logging.getLogger("temporalio").setLevel(logging.INFO)
 
 TASK_QUEUE = "ocr-pipeline"
