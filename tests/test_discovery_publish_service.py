@@ -418,7 +418,10 @@ class TestDiscoveryPublishServiceLogging:
 
         errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
         assert any(
-            "network_publish_failed=True" in m and "workflow_id=wf-log" in m for m in errors
+            "network_publish_failed=True" in m
+            and "workflow_id=wf-log" in m
+            and "transaction_id=txn-log" in m
+            for m in errors
         )
 
     @pytest.mark.unit
