@@ -6,7 +6,7 @@ BECKN_VERSION = "2.0.0"
 RESULT_ACCEPTED = "ACCEPTED"
 RESULT_REJECTED = "REJECTED"
 
-SCHEMA_CONTEXT_BASE = "https://openagrinet.github.io/network-specs/schema"
+SCHEMA_CONTEXT_BASE = "https://raw.githubusercontent.com/OpenAgriNet/network-specs/schema-packs-v0.1/schema"
 
 # Permanent: updateMode MERGE upserts resources by id, so a changed id strands
 # the old resource on the network instead of replacing it.
