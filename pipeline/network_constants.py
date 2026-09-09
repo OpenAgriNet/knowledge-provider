@@ -6,7 +6,7 @@ BECKN_VERSION = "2.0.0"
 RESULT_ACCEPTED = "ACCEPTED"
 RESULT_REJECTED = "REJECTED"
 
-SCHEMA_CONTEXT_BASE = "https://schemas.openagrinet.global/schema"
+SCHEMA_CONTEXT_BASE = "https://raw.githubusercontent.com/OpenAgriNet/network-specs/schema-packs-v0.1/schema"
 
 # Permanent: updateMode MERGE upserts resources by id, so a changed id strands
 # the old resource on the network instead of replacing it.
@@ -32,3 +32,13 @@ SCHEME_SUBJECT_CATEGORIES = ["Scheme"]
 SCHEME_TOPICS = ["Government schemes"]
 
 DEFAULT_DOCUMENT_KIND = "document"
+
+# Same provider on every catalog - this pipeline publishes as one provider
+# regardless of knowledge kind.
+CATALOG_PROVIDER = {
+    "id": "knowledge-provider",
+    "descriptor": {
+        "code": "oan-knowledge-provider",
+        "name": "OAN Knowledge Provider",
+    },
+}

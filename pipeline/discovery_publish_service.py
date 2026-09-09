@@ -77,7 +77,7 @@ class DiscoveryPublishService:
 
         envelope = {
             "context": {
-                "action": "publish",
+                "action": "catalog/publish",
                 "version": BECKN_VERSION,
                 "messageId": str(uuid.uuid4()),
                 "transactionId": transaction_id,
@@ -114,9 +114,20 @@ class DiscoveryPublishService:
             with httpx.Client(timeout=self.timeout) as client:
                 response = client.post(url, json=envelope)
                 response.raise_for_status()
-        except httpx.HTTPError as exc:
+        except httpx.HTTPStatusError as exc:
             # The activity records no artifact when publish raises, so this is
             # the only trace of a transport failure.
+            logger.error(
+                "workflow_id=%s catalog_id=%s network_publish_failed=True transaction_id=%s "
+                "error=%s response_body=%s",
+                workflow_id,
+                catalog["id"],
+                transaction_id,
+                exc,
+                exc.response.text,
+            )
+            raise
+        except httpx.HTTPError as exc:
             logger.error(
                 "workflow_id=%s catalog_id=%s network_publish_failed=True transaction_id=%s error=%s",
                 workflow_id,

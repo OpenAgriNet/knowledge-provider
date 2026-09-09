@@ -9,6 +9,7 @@ from pipeline.catalog_builder import (
 from pipeline.network_constants import (
     ADVISORY_CATALOG_ID,
     ADVISORY_RESOURCE_ID,
+    CATALOG_PROVIDER,
     SCHEMES_CATALOG_ID,
     SCHEMES_RESOURCE_ID,
 )
@@ -55,6 +56,7 @@ class TestBuildAdvisoryCatalog:
         assert "bppUri" not in catalog
         assert catalog["descriptor"] == {"name": "Agricultural advisory from documents"}
         assert catalog["isActive"] is True
+        assert catalog["provider"] == CATALOG_PROVIDER
 
     @pytest.mark.unit
     def test_exactly_one_resource_with_a_stable_id(self):
@@ -92,6 +94,7 @@ class TestBuildSchemeCatalog:
         assert "bppUri" not in catalog
         assert catalog["descriptor"] == {"name": "Schemes from documents"}
         assert catalog["isActive"] is True
+        assert catalog["provider"] == CATALOG_PROVIDER
 
     @pytest.mark.unit
     def test_exactly_one_resource_with_a_stable_id(self):
@@ -137,3 +140,12 @@ class TestBuilderIsolation:
         second = build_catalog("advisory")
 
         assert second["resources"][0]["resourceAttributes"]["topics"] == ["Crop production"]
+
+    @pytest.mark.unit
+    def test_mutating_a_built_catalogs_provider_does_not_leak_into_the_next(self):
+        first = build_catalog("advisory")
+        first["provider"]["descriptor"]["name"] = "tampered"
+
+        second = build_catalog("advisory")
+
+        assert second["provider"] == CATALOG_PROVIDER
