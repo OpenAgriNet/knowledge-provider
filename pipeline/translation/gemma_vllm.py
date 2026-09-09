@@ -34,9 +34,15 @@ class GemmaVllmTranslationProvider(TranslationProvider):
         payload = {
             "model": self.config.model,
             "messages": [{"role": "user", "content": TRANSLATE_PROMPT.format(text=text)}],
-            "temperature": 0.0,
-            "max_tokens": self.config.max_output_tokens,
         }
+        if self.config.use_max_completion_tokens:
+            # Same newer model family (e.g. Azure AI Foundry gpt-5.x) that
+            # rejects max_tokens also rejects a non-default temperature —
+            # only the default (1) is accepted, so omit it entirely here.
+            payload["max_completion_tokens"] = self.config.max_output_tokens
+        else:
+            payload["temperature"] = 0.0
+            payload["max_tokens"] = self.config.max_output_tokens
 
         with httpx.Client(timeout=self.config.request_timeout_seconds) as client:
             response = client.post(self._endpoint, headers=headers, json=payload)

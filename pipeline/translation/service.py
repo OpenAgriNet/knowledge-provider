@@ -75,6 +75,10 @@ def load_translation_config(target_language: str = "en") -> TranslationConfig:
         retry_base_seconds=max(0.5, float(os.environ.get("TRANSLATION_RETRY_BASE_SECONDS", "2.0"))),
         max_output_tokens=int(os.environ.get("TRANSLATION_MAX_OUTPUT_TOKENS", "8000")),
         request_timeout_seconds=float(os.environ.get("TRANSLATION_REQUEST_TIMEOUT_SECONDS", "300")),
+        use_max_completion_tokens=(
+            os.environ.get("TRANSLATION_USE_MAX_COMPLETION_TOKENS", "false").strip().lower()
+            in {"true", "1", "yes"}
+        ),
         script_gate_enabled=(
             os.environ.get("TRANSLATION_SCRIPT_GATE_ENABLED", "true").strip().lower()
             not in {"false", "0", "no"}
