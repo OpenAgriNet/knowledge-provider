@@ -108,7 +108,7 @@ class TestDiscoveryPublishServicePublish:
         assert call_args.args[0] == "https://discovery.example.com/publish"
 
         envelope = call_args.kwargs["json"]
-        assert envelope["context"]["action"] == "publish"
+        assert envelope["context"]["action"] == "catalog/publish"
         assert envelope["context"]["transactionId"] == "txn-123"
         assert envelope["context"]["senderId"] == "docs-pipeline-bv"
         assert envelope["context"]["messageId"]  # generated, non-empty

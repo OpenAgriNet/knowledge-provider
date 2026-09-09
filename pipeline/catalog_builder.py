@@ -20,6 +20,7 @@ from .network_constants import (
     ADVISORY_RESOURCE_NAME,
     ADVISORY_SUBJECT_CATEGORIES,
     ADVISORY_TOPICS,
+    CATALOG_PROVIDER,
     DEFAULT_DOCUMENT_KIND,
     INFORMATION_MODE,
     SCHEMA_CONTEXT_BASE,
@@ -94,6 +95,7 @@ def build_catalog(document_kind: Optional[str]) -> Optional[dict]:
         "id": spec["catalog_id"],
         "descriptor": {"name": spec["catalog_name"]},
         "isActive": True,
+        "provider": copy.deepcopy(CATALOG_PROVIDER),
         "resources": [
             {
                 "id": spec["resource_id"],
