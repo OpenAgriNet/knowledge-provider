@@ -122,11 +122,11 @@ services:
 
   # ---------------------------------------------------------------------------
   # Qdrant — DEV vector index (see docs/SYSTEM_DESIGN.md's DEV vs PROD dual
-  # indexing). api/worker's QDRANT_URL is always pointed at this bundled
+  # indexing). api/worker's VECTOR_DB_URL is always pointed at this bundled
   # instance below (same as TEMPORAL_HOST/MINIO_ENDPOINT) — there's no
   # external-DEV-Qdrant override inside Docker; run the app outside Docker
-  # entirely if you need QDRANT_URL to mean something else.
-  # PROD_QDRANT_URL is never bundled — promotion to PROD always targets a
+  # entirely if you need VECTOR_DB_URL to mean something else.
+  # PROD_VECTOR_DB_URL is never bundled — promotion to PROD always targets a
   # real, separately-managed deployment, on purpose.
   # ---------------------------------------------------------------------------
   qdrant:
@@ -248,7 +248,7 @@ services:
       # Docker-network overrides — these replace the localhost values in .env
       TEMPORAL_HOST: temporal:7233
       MINIO_ENDPOINT: minio:9000
-      QDRANT_URL: http://qdrant:6333
+      VECTOR_DB_URL: http://qdrant:6333
       DOCUMENT_DB_PATH: /data/documents.db
       ALLOWED_FILE_PATHS: /app/books,/data/documents
       # HF cache path propagated into the container
@@ -290,7 +290,7 @@ services:
       PYTHONUNBUFFERED: "1"
       TEMPORAL_HOST: temporal:7233
       MINIO_ENDPOINT: minio:9000
-      QDRANT_URL: http://qdrant:6333
+      VECTOR_DB_URL: http://qdrant:6333
       DOCUMENT_DB_PATH: /data/documents.db
       ALLOWED_FILE_PATHS: /app/books,/data/documents
       HF_HOME: ${HF_HOME:-/opt/hf-cache}
