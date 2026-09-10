@@ -39,17 +39,18 @@ PIPELINE_STAGES = [
     ("chunk_review", "Chunk Review", "Review chunks"),
     ("ready_for_ingestion", "Pre-Ingestion", "Final review before DEV ingest"),
     ("ingesting", "Ingesting in Dev", "Uploading to DEV vector index"),
-    ("publishing_to_network", "Publish to Network", "Publishing catalog to the discovery network"),
     ("approval_for_prod", "Approval for Prod", "Superadmin approval to promote to PROD"),
     ("ingesting_prod", "Ingesting to Prod", "Promoting vectors into PROD index"),
+    ("publishing_to_network", "Publish to Network", "Publishing catalog to the discovery network"),
     ("completed", "Completed", "Processing complete"),
 ]
 
 # Stages that only exist when PROD promotion is enabled. With
-# DISABLE_PROD_SETTING=true a document goes from `ingesting` through
-# `publishing_to_network` straight to `completed` and never enters these.
-# publishing_to_network itself is NOT prod-only: it runs for every document.
-PROD_ONLY_STAGES = frozenset({"approval_for_prod", "ingesting_prod"})
+# DISABLE_PROD_SETTING=true a document goes straight from `ingesting` to
+# `completed` and never enters these. publishing_to_network is now PROD-only
+# too: it only runs after a successful promote_document_to_prod_qdrant, so a
+# document never reaches the network without first promoting to PROD.
+PROD_ONLY_STAGES = frozenset({"approval_for_prod", "ingesting_prod", "publishing_to_network"})
 
 
 class PageData(BaseModel):

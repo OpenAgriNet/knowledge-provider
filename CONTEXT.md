@@ -9,7 +9,7 @@ The operator action that approves a document out of `ready_for_ingestion` and le
 _Avoid_: "publish" alone — ambiguous with Publish to Network.
 
 **Publish to Network**:
-The pipeline stage that runs immediately after DEV ingest completes and POSTs a Beckn-shaped `publish` envelope to an external Discovery Service. This is the only path the experience layer uses to discover schemas going forward; it is unrelated to Publish to Dev.
+The pipeline stage that runs only after a document's PROD promotion succeeds, and POSTs a Beckn-shaped `publish` envelope to an external Discovery Service. Skipped entirely when PROD is disabled (`DISABLE_PROD_SETTING=true`) — a document never reaches the network without first promoting to PROD. The envelope it sends is kind-level (see Knowledge Kind), not document-level: it does not make any single document searchable, only re-announces that this provider serves that kind at all.
 _Avoid_: "publish" alone — ambiguous with Publish to Dev.
 
 **Master Catalog**:
