@@ -137,6 +137,7 @@ class DocumentWorkflowState:
     chunks_approved: bool = False
     ingestion_approved: bool = False
     prod_approved: bool = False
+    network_published: bool = False
 
     chunk_size: int = 450
     chunk_overlap: int = 128
@@ -282,25 +283,31 @@ class DocumentPipelineWorkflow:
 
             self.state.ingested_at = _now_iso()
 
-            self.state.stage = DocumentStage.PUBLISHING_TO_NETWORK
-            await _mirror_state(
-                workflow.info().workflow_id,
-                "publishing_to_network",
-                self.state.page_count,
-                self.state.chunk_count,
-                None,
-            )
+            if not workflow.patched("publish-after-prod-v1"):
+                # Old order, preserved for in-flight workflows whose history
+                # already recorded this activity immediately after DEV ingest.
+                # New workflows publish only after a successful PROD
+                # promotion instead (see below).
+                self.state.stage = DocumentStage.PUBLISHING_TO_NETWORK
+                await _mirror_state(
+                    workflow.info().workflow_id,
+                    "publishing_to_network",
+                    self.state.page_count,
+                    self.state.chunk_count,
+                    None,
+                )
 
-            # transactionId is generated once here (workflow.uuid4() is
-            # replay-safe) and reused across activity retries; the activity
-            # generates a fresh messageId on every attempt.
-            network_transaction_id = str(workflow.uuid4())
-            await workflow.execute_activity(
-                publish_catalog_to_network,
-                args=[workflow.info().workflow_id, network_transaction_id],
-                start_to_close_timeout=timedelta(minutes=10),
-                retry_policy=NETWORK_PUBLISH_RETRY,
-            )
+                # transactionId is generated once here (workflow.uuid4() is
+                # replay-safe) and reused across activity retries; the activity
+                # generates a fresh messageId on every attempt.
+                network_transaction_id = str(workflow.uuid4())
+                await workflow.execute_activity(
+                    publish_catalog_to_network,
+                    args=[workflow.info().workflow_id, network_transaction_id],
+                    start_to_close_timeout=timedelta(minutes=10),
+                    retry_policy=NETWORK_PUBLISH_RETRY,
+                )
+                self.state.network_published = True
 
             # DISABLE_PROD_SETTING: finish at DEV ingest. Decided when the
             # workflow was started and passed in as an argument, so a replay
@@ -357,6 +364,29 @@ class DocumentPipelineWorkflow:
             )
 
             self.state.promoted_to_prod_at = _now_iso()
+
+            if not self.state.network_published:
+                # New order: publish to the network only now that PROD
+                # promotion has actually succeeded. Skipped for workflows
+                # that already published at the old position above.
+                self.state.stage = DocumentStage.PUBLISHING_TO_NETWORK
+                await _mirror_state(
+                    workflow.info().workflow_id,
+                    "publishing_to_network",
+                    self.state.page_count,
+                    self.state.chunk_count,
+                    None,
+                )
+
+                network_transaction_id = str(workflow.uuid4())
+                await workflow.execute_activity(
+                    publish_catalog_to_network,
+                    args=[workflow.info().workflow_id, network_transaction_id],
+                    start_to_close_timeout=timedelta(minutes=10),
+                    retry_policy=NETWORK_PUBLISH_RETRY,
+                )
+                self.state.network_published = True
+
             self.state.stage = DocumentStage.COMPLETED
 
             await _mirror_state(workflow.info().workflow_id, "completed", self.state.page_count, self.state.chunk_count, None)
@@ -478,18 +508,24 @@ class ReingestionWorkflow:
 
             self.state.records_ingested = result.get("records_ingested", 0)
 
-            self.state.stage = DocumentStage.PUBLISHING_TO_NETWORK
-            await _mirror_state(original_workflow_id, "publishing_to_network", page_count, chunk_count, None)
+            if not workflow.patched("publish-after-prod-v1"):
+                # Old order, preserved for in-flight workflows whose history
+                # already recorded this activity here. New executions publish
+                # to the network only from PromoteToProdWorkflow, once this
+                # reingest's own PROD promotion actually succeeds - this
+                # workflow never performs that promotion itself.
+                self.state.stage = DocumentStage.PUBLISHING_TO_NETWORK
+                await _mirror_state(original_workflow_id, "publishing_to_network", page_count, chunk_count, None)
 
-            # Content changed on reingest, so the network gets a fresh publish
-            # with a new transactionId (same replay-safety rule as above).
-            network_transaction_id = str(workflow.uuid4())
-            await workflow.execute_activity(
-                publish_catalog_to_network,
-                args=[original_workflow_id, network_transaction_id],
-                start_to_close_timeout=timedelta(minutes=10),
-                retry_policy=NETWORK_PUBLISH_RETRY,
-            )
+                # Content changed on reingest, so the network gets a fresh publish
+                # with a new transactionId (same replay-safety rule as above).
+                network_transaction_id = str(workflow.uuid4())
+                await workflow.execute_activity(
+                    publish_catalog_to_network,
+                    args=[original_workflow_id, network_transaction_id],
+                    start_to_close_timeout=timedelta(minutes=10),
+                    retry_policy=NETWORK_PUBLISH_RETRY,
+                )
 
             # Reingest lands in prod-approval gate; PromoteToProdWorkflow finishes promotion.
             self.state.stage = DocumentStage.APPROVAL_FOR_PROD
@@ -558,6 +594,23 @@ class PromoteToProdWorkflow:
                 start_to_close_timeout=timedelta(minutes=90),
                 retry_policy=INGEST_RETRY,
             )
+
+            if workflow.patched("publish-after-prod-v1"):
+                # New: this workflow now also announces the network catalog,
+                # since promotion just succeeded here (previously it never
+                # published at all - see DocumentPipelineWorkflow/ReingestionWorkflow
+                # for the equivalent post-promotion publish).
+                self.state["stage"] = "publishing_to_network"
+                await _mirror_state(original_workflow_id, "publishing_to_network", page_count, chunk_count, None)
+
+                network_transaction_id = str(workflow.uuid4())
+                await workflow.execute_activity(
+                    publish_catalog_to_network,
+                    args=[original_workflow_id, network_transaction_id],
+                    start_to_close_timeout=timedelta(minutes=10),
+                    retry_policy=NETWORK_PUBLISH_RETRY,
+                )
+
             await _mirror_state(original_workflow_id, "completed", page_count, chunk_count, None)
             self.state["stage"] = "completed"
             return {
