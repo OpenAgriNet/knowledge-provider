@@ -129,9 +129,9 @@ export const PIPELINE_STAGES = [
   { id: 'chunk_review', label: 'Approve content', shortLabel: 'Approve content' },
   { id: 'ready_for_ingestion', label: 'Ready to ingest', shortLabel: 'Ready to ingest' },
   { id: 'ingesting', label: 'Publishing to dev', shortLabel: 'Publishing to dev' },
-  { id: 'publishing_to_network', label: 'Publish to Network', shortLabel: 'Publish to Network' },
   { id: 'approval_for_prod', label: 'Approve for production', shortLabel: 'Approve for production' },
   { id: 'ingesting_prod', label: 'Publishing to prod', shortLabel: 'Publishing to prod' },
+  { id: 'publishing_to_network', label: 'Publish to Network', shortLabel: 'Publish to Network' },
   { id: 'completed', label: 'Completed', shortLabel: 'Completed' },
 ]
 
@@ -149,9 +149,9 @@ export const USER_PIPELINE_STAGES = [
   { id: 'chunk_review', label: 'Approve content' },
   { id: 'ready_for_ingestion', label: 'Ready to ingest' },
   { id: 'ingesting', label: 'Publishing to dev' },
-  { id: 'publishing_to_network', label: 'Publish to Network' },
   { id: 'approval_for_prod', label: 'Approve for production' },
   { id: 'ingesting_prod', label: 'Publishing to prod' },
+  { id: 'publishing_to_network', label: 'Publish to Network' },
   { id: 'completed', label: 'Completed' },
 ]
 
