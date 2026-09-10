@@ -10,9 +10,11 @@ import { usePipelineConfig } from '../lib/usePipelineConfig'
 import { cn } from '../lib/utils'
 
 // Steps that only exist when PROD promotion is enabled. With
-// DISABLE_PROD_SETTING=true a document completes at "Publishing to dev", so
-// showing these would leave every finished document looking stuck at 9 of 11.
-const PROD_ONLY_STEPS = new Set(['approval_for_prod', 'ingesting_prod'])
+// DISABLE_PROD_SETTING=true a document completes right after "Publishing to
+// dev" - publishing_to_network is now PROD-only too (see
+// docs/ADR/0004-publishing-to-network-is-prod-only.md) - so showing these
+// would leave every finished document looking stuck.
+const PROD_ONLY_STEPS = new Set(['approval_for_prod', 'ingesting_prod', 'publishing_to_network'])
 
 function resolveEffectiveIndex(stages, currentStage, hasPages, hasChunks) {
   const isFailed = currentStage === 'failed'
