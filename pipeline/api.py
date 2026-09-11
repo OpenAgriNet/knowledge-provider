@@ -112,6 +112,17 @@ from .workflows import (
     TranslationOnlyWorkflow,
 )
 
+LOG_LEVEL = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").strip().upper(), logging.INFO)
+# uvicorn only configures its own "uvicorn"/"uvicorn.access" loggers, so plain
+# logging.info() calls in this module (e.g. /search) are silently dropped
+# without configuring the root logger too - same LOG_LEVEL convention as
+# pipeline/worker.py.
+logging.basicConfig(
+    level=LOG_LEVEL,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    datefmt='%H:%M:%S',
+)
+
 TASK_QUEUE = "ocr-pipeline"
 _TOKEN_RE = re.compile(r"[\w\-]+", re.UNICODE)
 
@@ -3870,6 +3881,14 @@ async def run_search(payload: dict, user: RequireSearch):
     if not query:
         raise HTTPException(400, "query is required")
 
+    logging.info(
+        "search request user=%s index=%s query=%r top_k=%s",
+        user.username or user.email or user.user_id,
+        index_name,
+        query,
+        payload.get("top_k"),
+    )
+
     search_mode = (payload.get("search_mode") or settings.get("searchMethod") or "HYBRID").upper()
     top_k = max(1, min(int(payload.get("top_k") or settings.get("limit") or 12), 50))
     candidate_multiplier = max(1, int(payload.get("candidate_multiplier") or settings.get("candidateMultiplier") or 10))
@@ -3923,6 +3942,15 @@ async def run_search(payload: dict, user: RequireSearch):
         final_hits.append(hit)
         if len(final_hits) >= top_k:
             break
+
+    logging.info(
+        "search response user=%s index=%s query=%r candidate_count=%s final_count=%s",
+        user.username or user.email or user.user_id,
+        index_name,
+        query,
+        len(hits),
+        len(final_hits),
+    )
 
     return {
         "effective_config": {
