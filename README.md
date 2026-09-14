@@ -1,5 +1,7 @@
 # Document Ingestion Pipeline
 
+[![codecov](https://codecov.io/gh/OpenAgriNet/knowledge-provider/graph/badge.svg?token=2TKM2CR2AC)](https://codecov.io/gh/OpenAgriNet/knowledge-provider)
+
 This repository contains a review-driven document ingestion pipeline built around Temporal workflows, FastAPI, SQLite, MinIO, and Qdrant. It is designed for teams that need to normalize heterogeneous files, extract structured text, review and correct outputs, generate chunks, and publish searchable records into a vector index.
 
 The system is intentionally operational, not just algorithmic. Documents move through explicit stages, every major output can be persisted as an artifact, and the operator UI is designed to inspect and manage the pipeline rather than hide it.
