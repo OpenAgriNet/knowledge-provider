@@ -28,13 +28,13 @@ COPY src ./src
 # docs-pipeline-realm.json) — not the real bharat-vistaar production
 # Keycloak. Per PR discussion: localhost for now, pointed at the EC2 demo
 # instance's address once that's where this gets shown from.
-ARG VITE_API_BASE=/docs-pipeline-api
+ARG VITE_API_BASE=/knowledge-provider-api
 ARG VITE_KEYCLOAK_URL=http://localhost:8081/auth
 ARG VITE_KEYCLOAK_REALM=docs-pipeline
 ARG VITE_KEYCLOAK_CLIENT_ID=docs-pipeline-ui
 ARG VITE_KEYCLOAK_IDP_HINT=
 ARG VITE_AUTH_ENABLED=true
-ARG VITE_BASE=/docs-pipeline/
+ARG VITE_BASE=/knowledge-provider/
 
 ENV VITE_API_BASE=$VITE_API_BASE \
     VITE_KEYCLOAK_URL=$VITE_KEYCLOAK_URL \
@@ -43,13 +43,13 @@ ENV VITE_API_BASE=$VITE_API_BASE \
     VITE_KEYCLOAK_IDP_HINT=$VITE_KEYCLOAK_IDP_HINT \
     VITE_AUTH_ENABLED=$VITE_AUTH_ENABLED
 
-# Vite base path for assets under /docs-pipeline/
+# Vite base path for assets under /knowledge-provider/
 RUN npm run build -- --base=${VITE_BASE}
 
 FROM nginx:1.27-alpine
 
-# SPA under /docs-pipeline/ (matches registry nginx alias/proxy)
-COPY --from=build /app/dist /usr/share/nginx/html/docs-pipeline
+# SPA under /knowledge-provider/ (matches registry nginx alias/proxy)
+COPY --from=build /app/dist /usr/share/nginx/html/knowledge-provider
 COPY nginx.prod.conf /etc/nginx/conf.d/default.conf
 
 EXPOSE 80
