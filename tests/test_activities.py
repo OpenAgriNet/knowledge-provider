@@ -402,7 +402,7 @@ class TestPublishCatalogToNetworkActivity:
             def __init__(self):
                 pass
 
-            def publish(self, transaction_id, document_kind, workflow_id=None):
+            def publish(self, transaction_id, document_kind, workflow_id=None, validity=None):
                 assert transaction_id == "txn-1"
                 assert document_kind == "advisory"
                 assert workflow_id == "wf-1"
@@ -430,6 +430,10 @@ class TestPublishCatalogToNetworkActivity:
         assert result == {
             "status": "published",
             "document_kind": "advisory",
+            # No approver window stored for this document - see
+            # TestPublishedLifetime for the case where one is.
+            "valid_from": None,
+            "valid_to": None,
             "transaction_id": "txn-1",
             "message_id": "msg-1",
             "result_status": "ACCEPTED",
@@ -445,12 +449,100 @@ class TestPublishCatalogToNetworkActivity:
 
     @pytest.mark.unit
     @pytest.mark.asyncio
+    async def test_hands_the_stored_window_to_the_service(self, monkeypatch):
+        """The window the approver set at the prod gate reaches the publish.
+
+        Read here rather than passed as an activity argument, so workflows
+        already in flight keep working - that is exactly what makes this worth
+        a test of its own.
+        """
+        import pipeline.activities as activities
+        import pipeline.db as db
+        from pipeline.network_validity import ValidityWindow
+
+        seen = {}
+
+        class FakeService:
+            def publish(self, transaction_id, document_kind, workflow_id=None, validity=None):
+                seen["validity"] = validity
+                return {
+                    "skipped": True,
+                    "envelope": None,
+                    "status_code": None,
+                    "response_body": None,
+                    "result_status": None,
+                    "errors": [],
+                }
+
+        monkeypatch.setattr(activities, "DiscoveryPublishService", FakeService)
+        monkeypatch.setattr(
+            activities,
+            "_upload_file_to_minio",
+            lambda *a, **k: ("minio://documents/network_publish_skipped.json", 45, "application/json"),
+        )
+        monkeypatch.setattr(
+            db,
+            "get_document",
+            lambda workflow_id: {
+                "document_kind": "advisory",
+                "network_valid_from": "2026-09-16",
+                "network_valid_to": "2026-12-31",
+            },
+        )
+        monkeypatch.setattr(db, "get_latest_document_job", lambda workflow_id: None)
+        monkeypatch.setattr(db, "add_document_artifact", lambda **kwargs: None)
+
+        result = await activities.publish_catalog_to_network("wf-v", "txn-v")
+
+        assert seen["validity"] == ValidityWindow(
+            start_date="2026-09-16", end_date="2026-12-31"
+        )
+        assert result["valid_from"] == "2026-09-16"
+        assert result["valid_to"] == "2026-12-31"
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_a_document_with_no_window_publishes_without_one(self, monkeypatch):
+        # Promoted before approvers named a lifetime: still publishes.
+        import pipeline.activities as activities
+        import pipeline.db as db
+
+        seen = {}
+
+        class FakeService:
+            def publish(self, transaction_id, document_kind, workflow_id=None, validity=None):
+                seen["validity"] = validity
+                return {
+                    "skipped": True,
+                    "envelope": None,
+                    "status_code": None,
+                    "response_body": None,
+                    "result_status": None,
+                    "errors": [],
+                }
+
+        monkeypatch.setattr(activities, "DiscoveryPublishService", FakeService)
+        monkeypatch.setattr(
+            activities,
+            "_upload_file_to_minio",
+            lambda *a, **k: ("minio://documents/network_publish_skipped.json", 45, "application/json"),
+        )
+        monkeypatch.setattr(db, "get_document", lambda workflow_id: {"document_kind": "advisory"})
+        monkeypatch.setattr(db, "get_latest_document_job", lambda workflow_id: None)
+        monkeypatch.setattr(db, "add_document_artifact", lambda **kwargs: None)
+
+        await activities.publish_catalog_to_network("wf-none", "txn-none")
+
+        assert seen["validity"] is None
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
     async def test_publish_failure_propagates_and_records_nothing(self, monkeypatch):
         import pipeline.activities as activities
         import pipeline.db as db
 
         class FakeService:
-            def publish(self, transaction_id, document_kind, workflow_id=None):
+            def publish(self, transaction_id, document_kind, workflow_id=None, validity=None):
                 raise RuntimeError("discovery service unreachable")
 
         monkeypatch.setattr(activities, "DiscoveryPublishService", FakeService)
@@ -472,7 +564,7 @@ class TestPublishCatalogToNetworkActivity:
         import pipeline.db as db
 
         class FakeService:
-            def publish(self, transaction_id, document_kind, workflow_id=None):
+            def publish(self, transaction_id, document_kind, workflow_id=None, validity=None):
                 return {
                     "skipped": True,
                     "envelope": None,
@@ -499,6 +591,8 @@ class TestPublishCatalogToNetworkActivity:
         assert result == {
             "status": "skipped",
             "document_kind": "document",
+            "valid_from": None,
+            "valid_to": None,
             "transaction_id": "txn-2",
             "message_id": None,
             "result_status": None,
@@ -517,7 +611,7 @@ class TestPublishCatalogToNetworkActivity:
         import pipeline.db as db
 
         class FakeService:
-            def publish(self, transaction_id, document_kind, workflow_id=None):
+            def publish(self, transaction_id, document_kind, workflow_id=None, validity=None):
                 return {
                     "skipped": False,
                     "envelope": {"context": {"messageId": "msg-3"}},
@@ -551,7 +645,7 @@ class TestPublishCatalogToNetworkActivity:
         errors = [{"code": "SCH_SCHEMA_VALIDATION_FAILED", "message": "topics is required"}]
 
         class FakeService:
-            def publish(self, transaction_id, document_kind, workflow_id=None):
+            def publish(self, transaction_id, document_kind, workflow_id=None, validity=None):
                 return {
                     "skipped": False,
                     "envelope": {"context": {"messageId": "msg-4"}},

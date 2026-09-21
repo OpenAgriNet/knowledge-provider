@@ -8,6 +8,7 @@ tests pin the None guards that are the repository's own behaviour.
 import pytest
 
 from pipeline.document_repository import DocumentRepository
+from pipeline.network_validity import ValidityWindow
 
 
 class FakeDb:
@@ -56,6 +57,31 @@ class TestGetDocumentKind:
         assert fake.get_document_called_with == "wf-42"
 
 
+class TestGetNetworkValidity:
+    @pytest.mark.unit
+    def test_rebuilds_the_stored_window(self):
+        repo = DocumentRepository(
+            FakeDb(document={"network_valid_from": "2026-09-16", "network_valid_to": "2026-12-31"})
+        )
+
+        assert repo.get_network_validity("wf-1") == ValidityWindow(
+            start_date="2026-09-16", end_date="2026-12-31"
+        )
+
+    @pytest.mark.unit
+    def test_returns_none_for_a_missing_document(self):
+        assert DocumentRepository(FakeDb(document=None)).get_network_validity("wf-nope") is None
+
+    @pytest.mark.unit
+    def test_returns_none_when_no_approver_set_a_window(self):
+        # Documents promoted before the approval gate collected one.
+        repo = DocumentRepository(
+            FakeDb(document={"network_valid_from": None, "network_valid_to": None})
+        )
+
+        assert repo.get_network_validity("wf-1") is None
+
+
 class TestAgainstRealSqlite:
     """Guards against db.py drifting out from under the repository."""
 
@@ -76,3 +102,18 @@ class TestAgainstRealSqlite:
     @pytest.mark.db
     def test_missing_document_reads_as_none(self, db_connection):
         assert DocumentRepository().get_document_kind("no-such-workflow") is None
+
+    @pytest.mark.unit
+    @pytest.mark.db
+    def test_reads_a_window_written_through_the_db_layer(self, db_connection, sample_document):
+        workflow_id = sample_document["workflow_id"]
+        db_connection.set_network_validity(workflow_id, "2026-09-16", "2026-12-31")
+
+        assert DocumentRepository().get_network_validity(workflow_id) == ValidityWindow(
+            start_date="2026-09-16", end_date="2026-12-31"
+        )
+
+    @pytest.mark.unit
+    @pytest.mark.db
+    def test_an_unapproved_document_has_no_window(self, db_connection, sample_document):
+        assert DocumentRepository().get_network_validity(sample_document["workflow_id"]) is None

@@ -9,6 +9,7 @@ so a caller never unpacks a raw document row.
 from typing import Optional
 
 from . import db
+from .network_validity import ValidityWindow, window_from_row
 
 
 class DocumentRepository:
@@ -28,3 +29,17 @@ class DocumentRepository:
         if not doc:
             return None
         return doc.get("document_kind")
+
+    def get_network_validity(self, workflow_id: str) -> Optional[ValidityWindow]:
+        """The lifetime the prod approver set for this document's network
+        announcement, or None when it has none.
+
+        None is not an error: documents promoted before approvers named a
+        window have no stored dates, and those publish without a validity.
+        """
+        doc = self._db.get_document(workflow_id)
+        if not doc:
+            return None
+        return window_from_row(
+            doc.get("network_valid_from"), doc.get("network_valid_to")
+        )

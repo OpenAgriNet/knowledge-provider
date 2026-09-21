@@ -109,6 +109,120 @@ class TestDocumentEndpoints:
         assert response.status_code == 404
 
 
+class TestProdApprovalLifetime:
+    """The prod approver names the lifetime of the network announcement.
+
+    The window is validated and stored before anything is promoted, so a
+    rejected window must leave the document exactly where it was.
+    """
+
+    def _document_at_the_gate(self, db_connection, workflow_id):
+        db_connection.upsert_document(
+            workflow_id=workflow_id,
+            document_id=f"doc-{workflow_id}",
+            filename="test.pdf",
+            filepath="/app/books/test.pdf",
+            stage="approval_for_prod",
+        )
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_stores_the_approvers_window(self, test_client, db_connection):
+        from pipeline.network_validity import today
+
+        workflow_id = "prod-lifetime-001"
+        self._document_at_the_gate(db_connection, workflow_id)
+
+        response = test_client.post(
+            f"/documents/{workflow_id}/approve-prod",
+            json={"network_valid_to": "2099-12-31"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["network_valid_from"] == today()
+        assert response.json()["network_valid_to"] == "2099-12-31"
+        stored = db_connection.get_document(workflow_id)
+        assert stored["network_valid_from"] == today()
+        assert stored["network_valid_to"] == "2099-12-31"
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_a_body_less_approval_defaults_both_ends_to_today(self, test_client, db_connection):
+        from pipeline.network_validity import today
+
+        workflow_id = "prod-lifetime-002"
+        self._document_at_the_gate(db_connection, workflow_id)
+
+        response = test_client.post(f"/documents/{workflow_id}/approve-prod")
+
+        assert response.status_code == 200
+        stored = db_connection.get_document(workflow_id)
+        assert stored["network_valid_from"] == today()
+        assert stored["network_valid_to"] == today()
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_the_window_is_surfaced_on_the_document(self, test_client, db_connection):
+        workflow_id = "prod-lifetime-003"
+        self._document_at_the_gate(db_connection, workflow_id)
+        test_client.post(
+            f"/documents/{workflow_id}/approve-prod",
+            json={"network_valid_to": "2099-12-31"},
+        )
+
+        doc = test_client.get(f"/documents/{workflow_id}").json()
+
+        assert doc["network_valid_to"] == "2099-12-31"
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_rejects_an_end_before_the_start(self, test_client, db_connection):
+        workflow_id = "prod-lifetime-004"
+        self._document_at_the_gate(db_connection, workflow_id)
+
+        response = test_client.post(
+            f"/documents/{workflow_id}/approve-prod",
+            json={"network_valid_from": "2026-09-16", "network_valid_to": "2026-09-15"},
+        )
+
+        assert response.status_code == 400
+        assert "cannot be before" in response.json()["detail"]
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_rejects_a_malformed_date(self, test_client, db_connection):
+        workflow_id = "prod-lifetime-005"
+        self._document_at_the_gate(db_connection, workflow_id)
+
+        response = test_client.post(
+            f"/documents/{workflow_id}/approve-prod",
+            json={"network_valid_to": "31-12-2099"},
+        )
+
+        assert response.status_code == 400
+        assert "YYYY-MM-DD" in response.json()["detail"]
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_a_rejected_window_stores_nothing_and_promotes_nothing(
+        self, test_client, db_connection, mock_temporal_client
+    ):
+        workflow_id = "prod-lifetime-006"
+        self._document_at_the_gate(db_connection, workflow_id)
+        mock_temporal_client.start_workflow.reset_mock()
+
+        test_client.post(
+            f"/documents/{workflow_id}/approve-prod",
+            json={"network_valid_to": "not-a-date"},
+        )
+
+        stored = db_connection.get_document(workflow_id)
+        assert stored["network_valid_from"] is None
+        assert stored["network_valid_to"] is None
+        assert stored["stage"] == "approval_for_prod"
+        mock_temporal_client.start_workflow.assert_not_called()
+
+
 class TestPageEndpoints:
     """Tests for page operations."""
 
