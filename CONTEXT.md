@@ -28,5 +28,9 @@ _Avoid_: "catalog" alone.
 What a document *is* to the network — `advisory`, `scheme`, `video`, or an operator-entered slug — held in `documents.document_kind`. Asserted by a reviewer during the pipeline, never inferred from the file, and absent until then (every document starts as the default `document`). Only `advisory` and `scheme` map to a Network Catalog Envelope; the rest publish nothing.
 _Avoid_: "document type" — collides with `source_type`/`canonical_input_type`, which describe the input *format* (pdf, spreadsheet). Also avoid saying an advisory is "uploaded": what is uploaded is a file, which only becomes an advisory when someone classifies it.
 
+**Announcement Lifetime**:
+The `validity` window (`startDate`/`endDate`) carried on the Network Catalog Envelope, named by the prod approver at `approve-prod` and stored as `documents.network_valid_from` / `network_valid_to`. Start is the approval date; end is prepopulated with the same day and is the approver's to move. Because the envelope is kind-level, the most recently published window is the live one for that whole Knowledge Kind — see `docs/ADR/0005-approver-sets-the-network-catalogs-validity-window.md`.
+_Avoid_: "document lifetime" — the document itself is not what expires, the announcement is. Also avoid "expiry": there is a start as well as an end.
+
 **network_visible**:
 An operator-controlled flag on a document/scheme (not a pipeline stage) that gates whether it's exposed to other BAPs through the pull-based Scheme Catalog snapshot. Independent of Publish to Network.

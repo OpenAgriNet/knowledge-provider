@@ -62,6 +62,7 @@ Core modules (all under `pipeline/`):
 - `document_repository.py` — `DocumentRepository`, a domain layer over `db.py` for document reads; `db.py` stays one-function-per-query with no domain knowledge
 - `network_constants.py` — fixed values sent on the network (catalog/resource ids, topics, languages, Beckn version). The file v2 edits when the AI layer starts deriving them
 - `catalog_builder.py` — pure builder mapping a document's knowledge kind (`advisory`/`scheme`) to the single `OnDemand` Beckn catalog announced for that kind; returns `None` for any other kind. No env, no I/O
+- `network_validity.py` — pure module owning the Announcement Lifetime: what a legal `validity` window is, the today/today default an approver starts from, and how it renders on the wire. Shared by `api.py` (validating approver input) and `catalog_builder.py` (placing it on the catalog)
 - `discovery_publish_service.py` — `DiscoveryPublishService`: owns the Publish to Network env vars and the HTTP call. Deliberately Temporal-free
 - `models.py` — Pydantic models, including `DocumentStage` enum and `PIPELINE_STAGES` (the stepper-UI stage list)
 - `config.py` — `Config` dataclass reading env vars, with defaults

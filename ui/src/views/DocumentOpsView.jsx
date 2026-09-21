@@ -216,6 +216,62 @@ function DocumentClassificationPanel({ doc, workflowId, canClassify, onSaved }) 
   )
 }
 
+/** Today in the `YYYY-MM-DD` form the API stores and <input type="date"> uses. */
+function todayISODate() {
+  const now = new Date()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const day = String(now.getDate()).padStart(2, '0')
+  return `${now.getFullYear()}-${month}-${day}`
+}
+
+/**
+ * Why a bad window is blocked rather than silently corrected: the approver is
+ * the only person who knows how long the announcement should stand, so a bad
+ * window is a question for them, not something to round into shape. Mirrors the
+ * server-side check in pipeline/network_validity.parse_window.
+ */
+function validateLifetime(startDate, endDate) {
+  if (!startDate || !endDate) return 'Set both a start and an end date.'
+  if (endDate < startDate) return 'End date cannot be before the start date.'
+  return ''
+}
+
+/**
+ * Lifetime the super admin gives the network announcement this promotion leads
+ * to. Start date is the approval date and not editable - the announcement
+ * begins when it is published. End date opens at the same day and is the one
+ * thing the approver sets.
+ */
+function NetworkLifetimePanel({ startDate, endDate, onEndDateChange, error, disabled }) {
+  return (
+    <div className="space-y-2 rounded-md border border-border bg-muted/30 p-3">
+      <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+        Announcement lifetime - published to the discovery service
+      </p>
+      <div className="flex flex-wrap items-end gap-2">
+        <div className="flex flex-col gap-1">
+          <span className="text-[10px] text-muted-foreground">Start date (approval date)</span>
+          <span className="flex h-8 w-[160px] items-center rounded-md border border-dashed border-input px-2 text-xs text-muted-foreground">
+            {startDate}
+          </span>
+        </div>
+        <div className="flex flex-col gap-1">
+          <span className="text-[10px] text-muted-foreground">End date</span>
+          <Input
+            type="date"
+            className="h-8 w-[160px] text-xs"
+            value={endDate}
+            min={startDate}
+            disabled={disabled}
+            onChange={e => onEndDateChange(e.target.value)}
+          />
+        </div>
+      </div>
+      {error ? <p className="text-xs text-destructive">{error}</p> : null}
+    </div>
+  )
+}
+
 // Which permission each mutating action requires. Approvals / edits are
 // review; anything that re-runs pipeline stages or touches the index is pipeline.
 const ACTION_PERMISSION = {
@@ -328,6 +384,10 @@ export default function DocumentOpsView() {
   const [highlightedChunk, setHighlightedChunk] = useState(null)
   const [panelLoading, setPanelLoading] = useState({})
   const [actionPending, setActionPending] = useState(null)
+  // Start date is fixed at the approval date; only the end date is the
+  // approver's to move. Both re-seed per document (see the reset effect below).
+  const [lifetimeStart, setLifetimeStart] = useState(todayISODate)
+  const [lifetimeEnd, setLifetimeEnd] = useState(todayISODate)
   const requestIdRef = useRef(0)
   const attemptedPanelsRef = useRef({})
   const activeTabRef = useRef(activeTab)
@@ -586,6 +646,10 @@ export default function DocumentOpsView() {
     setPanelErrors({})
     setPanelLoading({})
     setMessage('')
+    // Re-approving carries no memory of the previous document's window: the
+    // start date is always today, and the end date opens there again.
+    setLifetimeStart(todayISODate())
+    setLifetimeEnd(todayISODate())
     load({ soft: false })
   }, [workflowId, load])
 
@@ -703,6 +767,18 @@ export default function DocumentOpsView() {
         return
       } else if (action === 'restore_document') {
         await fetchJson(`/documents/${workflowId}/restore`, { method: 'POST' })
+      } else if (action === 'approve_prod') {
+        // The window travels with the approval itself: the API validates and
+        // stores it before it signals anything, so a rejected window leaves the
+        // document parked at the gate rather than promoted-but-unannounced.
+        await fetchJson(`/documents/${workflowId}/approve-prod`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            network_valid_from: lifetimeStart,
+            network_valid_to: lifetimeEnd,
+          }),
+        })
       } else {
         await fetchJson(`/documents/${workflowId}/${action.replace(/_/g, '-')}`, { method: 'POST' })
       }
@@ -768,6 +844,9 @@ export default function DocumentOpsView() {
     (doc?.document_kind && doc.document_kind !== 'document') || doc?.scheme_code || doc?.scheme_name
   )
   const ingestBlockedByClassification = doc?.stage === 'ready_for_ingestion' && !isDocClassified
+  const showsLifetimePanel = visibleActions.includes('approve_prod')
+  const lifetimeError = showsLifetimePanel ? validateLifetime(lifetimeStart, lifetimeEnd) : ''
+  const prodBlockedByLifetime = showsLifetimePanel && Boolean(lifetimeError)
   const sortedPages = useMemo(() => [...pages].sort((a, b) => a.page_number - b.page_number), [pages])
   const reviewedPages = useMemo(() => pages.filter(p => p.is_reviewed).length, [pages])
   const reviewedChunks = useMemo(() => chunks.filter(c => c.is_reviewed).length, [chunks])
@@ -927,21 +1006,30 @@ export default function DocumentOpsView() {
           <div className="flex shrink-0 flex-wrap items-center gap-1.5 xl:justify-end">
             {visibleActions.slice(0, 4).map(action => {
               const blockedByClassification = action === 'approve_ingestion' && ingestBlockedByClassification
+              const blockedByLifetime = action === 'approve_prod' && prodBlockedByLifetime
               return (
                 <Button
                   key={action}
                   size="sm"
                   variant={action.includes('approve') ? 'success' : action.includes('reindex') ? 'warning' : 'outline'}
                   className="h-8 text-xs"
-                  disabled={Boolean(actionPending) || blockedByClassification}
-                  title={blockedByClassification ? 'Set document type below before approving for dev' : undefined}
+                  disabled={Boolean(actionPending) || blockedByClassification || blockedByLifetime}
+                  title={
+                    blockedByClassification
+                      ? 'Set document type below before approving for dev'
+                      : blockedByLifetime
+                        ? lifetimeError
+                        : undefined
+                  }
                   onClick={() => runAction(action)}
                 >
                   {actionPending === action
                     ? 'Working…'
                     : blockedByClassification
                       ? 'Set document type first'
-                      : summarizeAvailableAction(action)}
+                      : blockedByLifetime
+                        ? 'Fix lifetime dates'
+                        : summarizeAvailableAction(action)}
                 </Button>
               )
             })}
@@ -966,6 +1054,16 @@ export default function DocumentOpsView() {
             workflowId={workflowId}
             canClassify={canReview}
             onSaved={reloadAfterMutation}
+          />
+        )}
+
+        {showsLifetimePanel && (
+          <NetworkLifetimePanel
+            startDate={lifetimeStart}
+            endDate={lifetimeEnd}
+            onEndDateChange={setLifetimeEnd}
+            error={lifetimeError}
+            disabled={Boolean(actionPending)}
           />
         )}
 

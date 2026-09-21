@@ -5,9 +5,10 @@ One catalog holding exactly one OnDemand resource per kind, identical for every
 document of that kind - a seeker that matches the resource comes back to ask the
 actual question, so there is nothing per-document to put on the wire.
 
-Pure: no env, no I/O. Values live in network_constants.py; the transport lives
-in discovery_publish_service.py. See
-docs/ADR/0003-static-ondemand-network-catalog-per-knowledge-kind.md.
+Pure: no env, no I/O. Values live in network_constants.py, the validity window
+in network_validity.py, and the transport in discovery_publish_service.py. See
+docs/ADR/0003-static-ondemand-network-catalog-per-knowledge-kind.md and
+docs/ADR/0005-approver-set-validity-window-on-the-network-catalog.md.
 """
 
 import copy
@@ -32,6 +33,7 @@ from .network_constants import (
     SCHEMES_RESOURCE_NAME,
     SERVED_LANGUAGES,
 )
+from .network_validity import ValidityWindow, to_catalog_validity
 
 _ADVISORY_RESOURCE_ATTRIBUTES = {
     "@context": f"{SCHEMA_CONTEXT_BASE}/KnowledgeAdvisory/v0.1/context.jsonld",
@@ -80,18 +82,29 @@ def normalize_document_kind(document_kind: Optional[str]) -> str:
     return (document_kind or DEFAULT_DOCUMENT_KIND).strip().lower()
 
 
-def build_catalog(document_kind: Optional[str]) -> Optional[dict]:
+def build_catalog(
+    document_kind: Optional[str],
+    validity: Optional[ValidityWindow] = None,
+) -> Optional[dict]:
     """Return the catalog to announce for `document_kind`, or None.
 
     None means this kind has nothing to announce - `document`, `video` and any
     operator-entered custom slug. Callers must skip the publish rather than send
     an empty `catalogs` array, which the spec rejects (`minItems: 1`).
+
+    `validity` is the lifetime an approver set for the document being published.
+    It lands on the **catalog**, not on `resourceAttributes`: the OnDemand
+    KnowledgeAdvisory profile omits a resource-level `validity` (ADR 0003), and
+    catalog-level `validity` is where the network specs' own provider-catalog
+    examples put a published announcement's lifetime. Omitted entirely when
+    None, which leaves a pre-existing announcement's lifetime untouched under
+    `updateMode: MERGE`.
     """
     spec = _KNOWLEDGE_KIND_CATALOGS.get(normalize_document_kind(document_kind))
     if spec is None:
         return None
 
-    return {
+    catalog = {
         "id": spec["catalog_id"],
         "descriptor": {"name": spec["catalog_name"]},
         "isActive": True,
@@ -104,3 +117,6 @@ def build_catalog(document_kind: Optional[str]) -> Optional[dict]:
             }
         ],
     }
+    if validity is not None:
+        catalog["validity"] = to_catalog_validity(validity)
+    return catalog

@@ -225,7 +225,7 @@ Signals (workflow): `approve_ocr`, `approve_translation`, `approve_chunks`, `app
 API (examples):
 
 - `POST /documents/{id}/approve-ocr` … `approve-ingestion` → state-capable roles with `review`
-- `POST /documents/{id}/approve-prod` → **`RequireAdmin`** (Super Admin)
+- `POST /documents/{id}/approve-prod` → **`RequireAdmin`** (Super Admin). Also carries the Announcement Lifetime (`network_valid_from` / `network_valid_to`), validated before any promotion is triggered — see `docs/ADR/0005-approver-sets-the-network-catalogs-validity-window.md`
 
 UI gates: `DocumentOpsView` maps `approve_prod` → permission `admin`; other approvals → `review`.
 
@@ -298,7 +298,8 @@ sequenceDiagram
   UI->>API: GET /auth/me - unrestricted + admin
   SA->>UI: Open Approval for Prod queue
   SA->>API: Review document detail
-  SA->>API: POST /documents/id/approve-prod
+  SA->>UI: Set announcement lifetime - start today, end editable
+  SA->>API: POST /documents/id/approve-prod with validity window
   API->>T: Signal approve_prod or PromoteToProdWorkflow
   T->>PROD: promote_document_to_prod_qdrant
   T->>API: Set stage completed

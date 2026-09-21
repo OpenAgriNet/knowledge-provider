@@ -18,6 +18,7 @@ import httpx
 
 from .catalog_builder import build_catalog
 from .network_constants import BECKN_VERSION, RESULT_ACCEPTED
+from .network_validity import ValidityWindow
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ class DiscoveryPublishService:
         transaction_id: str,
         document_kind: Optional[str],
         workflow_id: Optional[str] = None,
+        validity: Optional[ValidityWindow] = None,
     ) -> dict:
         """
         POST a catalog/publish envelope for `document_kind`.
@@ -55,11 +57,16 @@ class DiscoveryPublishService:
         reused across retries) - only `messageId` is generated fresh here, per
         Beckn convention.
 
+        `validity` is the lifetime the approver set for the document being
+        published; None announces the catalog without one. The window is
+        already validated by the time it reaches here - see
+        `network_validity.parse_window`.
+
         A kind with no catalog mapped to it makes no HTTP call and comes back
         with `skipped=True`: the spec declares `message.catalogs` as
         `minItems: 1`, so there is no valid "publish nothing" request to send.
         """
-        catalog = build_catalog(document_kind)
+        catalog = build_catalog(document_kind, validity)
         if catalog is None:
             logger.info(
                 "workflow_id=%s document_kind=%s network_publish_skipped=True",
@@ -102,12 +109,13 @@ class DiscoveryPublishService:
         url = f"{self.endpoint.rstrip('/')}/publish"
         logger.info(
             "workflow_id=%s catalog_id=%s transaction_id=%s message_id=%s "
-            "network_publish_url=%s",
+            "network_publish_url=%s network_validity=%s",
             workflow_id,
             catalog["id"],
             transaction_id,
             envelope["context"]["messageId"],
             url,
+            catalog.get("validity"),
         )
         logger.debug("Request to %s with \n body %s", url, envelope)
         try:
