@@ -8,12 +8,6 @@ day. Pure - no env, no I/O, no db - so the API can validate an approver's edit,
 the ingest activity can stamp the same period onto every chunk, and the vector
 store can build a search filter from it without any of them re-deriving it.
 
-Deliberately separate from `pipeline/network_validity.py`, which owns the
-Announcement Lifetime: a different window, with different defaults (today /
-today, not today / a year out), named by a different person at a different
-moment, and carried on the wire rather than in a chunk payload. They share a
-date format and nothing else; see `CONTEXT.md` on not conflating the two.
-
 `pipeline/activities.py` stamps the period onto chunk payloads as
 `start_date` / `end_date`; `pipeline/vector_store/qdrant_store.py` filters on
 those fields at search time; `pipeline/api.py` validates approver input here.
@@ -42,8 +36,8 @@ class DocumentValidityError(ValueError):
 
 
 def system_clock() -> datetime:
-    """The real clock. Local, matching `network_validity.today()`'s
-    `date.today()`, so both windows agree on what day it is."""
+    """The real clock. Local rather than UTC: a period is a calendar date an
+    operator picked, so "today" should mean their today."""
     return datetime.now()
 
 

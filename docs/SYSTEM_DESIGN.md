@@ -195,11 +195,10 @@ read and write paths stay consistent.
 
 1. Super Admin sees all states’ documents in `approval_for_prod`  
 2. Reviews pages/chunks (optional quality check)  
-3. Sets the **Announcement Lifetime** — start date is the approval date, end date prepopulated with the same day and editable  
-4. `POST /documents/{id}/approve-prod` (`RequireAdmin`) with `{network_valid_from, network_valid_to}`; the window is validated and stored before anything is promoted, so a bad window is a 400 that promotes nothing  
-5. Signal `approve_prod` **or** `PromoteToProdWorkflow`  
-6. `promote_document_to_prod_qdrant` → **PROD Qdrant**  
-7. Stage `completed`; audit `promote_to_prod`. The stored window rides along on the `publishing_to_network` catalog as `validity`
+3. `POST /documents/{id}/approve-prod` (`RequireAdmin`)  
+4. Signal `approve_prod` **or** `PromoteToProdWorkflow`  
+5. `promote_document_to_prod_qdrant` → **PROD Qdrant**  
+6. Stage `completed`; audit `promote_to_prod`
 
 ### 5.3 Search
 
