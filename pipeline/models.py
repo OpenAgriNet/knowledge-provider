@@ -216,6 +216,11 @@ class DocumentSummary(BaseModel):
     # Lifetime of the network announcement, set by the prod approver.
     network_valid_from: Optional[str] = None
     network_valid_to: Optional[str] = None
+    # Period this document's chunks are searchable in. Stamped on upload and
+    # editable alongside the document type; NULL on documents uploaded before
+    # validity existed.
+    valid_from: Optional[str] = None
+    valid_to: Optional[str] = None
 
 
 class ProdApprovalRequest(BaseModel):
@@ -233,7 +238,15 @@ class ProdApprovalRequest(BaseModel):
 
 
 class SchemeMetadataUpdate(BaseModel):
-    """PATCH /documents/{id}/scheme-metadata body."""
+    """PATCH /documents/{id}/scheme-metadata body.
+
+    `valid_from`/`valid_to` are `YYYY-MM-DD` and travel with the document type
+    because that is the one form a reviewer fills in before ingestion - the
+    period is part of classifying a document, not a separate errand. Omitting
+    both leaves the stored period alone; the dates are validated in
+    `document_validity.parse_period` so a bad period comes back as the same
+    400 a bad kind does, not a Pydantic 422.
+    """
     document_kind: Optional[str] = None  # document | scheme
     scheme_code: Optional[str] = None
     scheme_name: Optional[str] = None
@@ -241,6 +254,8 @@ class SchemeMetadataUpdate(BaseModel):
     tool_routing: Optional[str] = None  # qdrant | legacy | both
     catalog_visible: Optional[bool] = None
     network_visible: Optional[bool] = None
+    valid_from: Optional[str] = None
+    valid_to: Optional[str] = None
 
 
 class DocumentArtifact(BaseModel):

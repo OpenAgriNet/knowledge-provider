@@ -53,5 +53,9 @@ class VectorStore(Protocol):
         hybrid_alpha: float = 0.6,
         ef_search: int = 256,
         attributes_to_retrieve: Optional[list[str]] = None,
+        apply_validity: bool = True,
+        valid_on: Optional[str] = None,
     ) -> dict[str, Any]:
+        """`apply_validity` keeps only chunks whose validity period covers
+        `valid_on` (default: the store's today)."""
         ...

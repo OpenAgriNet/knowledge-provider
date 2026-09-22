@@ -223,6 +223,243 @@ class TestProdApprovalLifetime:
         mock_temporal_client.start_workflow.assert_not_called()
 
 
+class TestDocumentValidityEndpoints:
+    """The validity period a reviewer sets alongside the document type.
+
+    The period is stamped on upload so the form is never blank, and the PATCH
+    that carries the document type carries the reviewer's edit to it.
+    """
+
+    def _uploaded_document(self, db_connection, workflow_id):
+        db_connection.upsert_document(
+            workflow_id=workflow_id,
+            document_id=f"doc-{workflow_id}",
+            filename="test.pdf",
+            filepath="/app/books/test.pdf",
+            stage="chunk_review",
+        )
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_a_new_document_is_valid_from_today_for_a_year(self, test_client, db_connection):
+        from pipeline.document_validity import default_period
+
+        workflow_id = "validity-001"
+        self._uploaded_document(db_connection, workflow_id)
+        expected = default_period()
+
+        doc = test_client.get(f"/documents/{workflow_id}").json()
+
+        assert doc["valid_from"] == expected.start_date
+        assert doc["valid_to"] == expected.end_date
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_stores_the_reviewers_edit(self, test_client, db_connection):
+        workflow_id = "validity-002"
+        self._uploaded_document(db_connection, workflow_id)
+
+        response = test_client.patch(
+            f"/documents/{workflow_id}/scheme-metadata",
+            json={
+                "document_kind": "advisory",
+                "valid_from": "2026-10-01",
+                "valid_to": "2026-12-31",
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["valid_from"] == "2026-10-01"
+        assert response.json()["valid_to"] == "2026-12-31"
+        stored = db_connection.get_document(workflow_id)
+        assert stored["valid_from"] == "2026-10-01"
+        assert stored["valid_to"] == "2026-12-31"
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_moving_only_the_end_keeps_the_stored_start(self, test_client, db_connection):
+        workflow_id = "validity-003"
+        self._uploaded_document(db_connection, workflow_id)
+        db_connection.set_document_validity(workflow_id, "2026-01-01", "2026-06-30")
+
+        response = test_client.patch(
+            f"/documents/{workflow_id}/scheme-metadata",
+            json={"document_kind": "advisory", "valid_to": "2027-06-30"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["valid_from"] == "2026-01-01"
+        assert response.json()["valid_to"] == "2027-06-30"
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_classifying_without_dates_leaves_the_period_alone(self, test_client, db_connection):
+        workflow_id = "validity-004"
+        self._uploaded_document(db_connection, workflow_id)
+        db_connection.set_document_validity(workflow_id, "2026-01-01", "2026-06-30")
+
+        test_client.patch(
+            f"/documents/{workflow_id}/scheme-metadata",
+            json={"document_kind": "advisory"},
+        )
+
+        stored = db_connection.get_document(workflow_id)
+        assert stored["valid_from"] == "2026-01-01"
+        assert stored["valid_to"] == "2026-06-30"
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_rejects_an_end_before_the_start(self, test_client, db_connection):
+        workflow_id = "validity-005"
+        self._uploaded_document(db_connection, workflow_id)
+
+        response = test_client.patch(
+            f"/documents/{workflow_id}/scheme-metadata",
+            json={
+                "document_kind": "advisory",
+                "valid_from": "2026-12-31",
+                "valid_to": "2026-01-01",
+            },
+        )
+
+        assert response.status_code == 400
+        assert "cannot be before" in response.json()["detail"]
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_rejects_a_malformed_date(self, test_client, db_connection):
+        workflow_id = "validity-006"
+        self._uploaded_document(db_connection, workflow_id)
+
+        response = test_client.patch(
+            f"/documents/{workflow_id}/scheme-metadata",
+            json={"document_kind": "advisory", "valid_to": "31-12-2026"},
+        )
+
+        assert response.status_code == 400
+        assert "YYYY-MM-DD" in response.json()["detail"]
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_a_rejected_period_stores_nothing(self, test_client, db_connection):
+        # Same contract the prod gate has: a 400 leaves the document as it was,
+        # kind included, rather than half-applying the PATCH.
+        workflow_id = "validity-007"
+        self._uploaded_document(db_connection, workflow_id)
+        db_connection.set_document_validity(workflow_id, "2026-01-01", "2026-06-30")
+
+        test_client.patch(
+            f"/documents/{workflow_id}/scheme-metadata",
+            json={"document_kind": "advisory", "valid_to": "not-a-date"},
+        )
+
+        stored = db_connection.get_document(workflow_id)
+        assert stored["valid_from"] == "2026-01-01"
+        assert stored["valid_to"] == "2026-06-30"
+        assert (stored["document_kind"] or "document") == "document"
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_the_period_is_listed_with_the_document(self, test_client, db_connection):
+        workflow_id = "validity-008"
+        self._uploaded_document(db_connection, workflow_id)
+        db_connection.set_document_validity(workflow_id, "2026-01-01", "2026-06-30")
+
+        listed = test_client.get("/documents").json()
+        row = next(d for d in listed if d["workflow_id"] == workflow_id)
+
+        assert row["valid_from"] == "2026-01-01"
+        assert row["valid_to"] == "2026-06-30"
+
+
+class TestSearchValidity:
+    """Search must not answer from a document outside its validity period."""
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_applies_validity_by_default(self, test_client, monkeypatch):
+        from datetime import date
+
+        captured = {}
+
+        class FakeStore:
+            backend = "qdrant"
+
+            def search(self, **kwargs):
+                captured.update(kwargs)
+                return {"hits": [], "valid_on": kwargs.get("valid_on") or date.today().isoformat()}
+
+        monkeypatch.setattr(
+            "pipeline.vector_store.get_vector_store", lambda: FakeStore()
+        )
+
+        response = test_client.post("/search", json={"query": "kisan"})
+
+        assert response.status_code == 200
+        assert captured["apply_validity"] is True
+        config = response.json()["effective_config"]
+        assert config["apply_validity"] is True
+        assert config["valid_on"] == date.today().isoformat()
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_an_operator_can_ask_about_another_day(self, test_client, monkeypatch):
+        captured = {}
+
+        class FakeStore:
+            backend = "qdrant"
+
+            def search(self, **kwargs):
+                captured.update(kwargs)
+                return {"hits": [], "valid_on": kwargs.get("valid_on")}
+
+        monkeypatch.setattr(
+            "pipeline.vector_store.get_vector_store", lambda: FakeStore()
+        )
+
+        response = test_client.post(
+            "/search", json={"query": "kisan", "valid_on": "2027-01-01"}
+        )
+
+        assert response.status_code == 200
+        assert captured["valid_on"] == "2027-01-01"
+        assert response.json()["effective_config"]["valid_on"] == "2027-01-01"
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_an_operator_can_include_expired_documents(self, test_client, monkeypatch):
+        captured = {}
+
+        class FakeStore:
+            backend = "qdrant"
+
+            def search(self, **kwargs):
+                captured.update(kwargs)
+                return {"hits": [], "valid_on": None}
+
+        monkeypatch.setattr(
+            "pipeline.vector_store.get_vector_store", lambda: FakeStore()
+        )
+
+        response = test_client.post(
+            "/search", json={"query": "kisan", "include_expired": True}
+        )
+
+        assert response.status_code == 200
+        assert captured["apply_validity"] is False
+        assert response.json()["effective_config"]["apply_validity"] is False
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_rejects_a_malformed_valid_on(self, test_client):
+        response = test_client.post(
+            "/search", json={"query": "kisan", "valid_on": "01-01-2027"}
+        )
+
+        assert response.status_code == 400
+        assert "YYYY-MM-DD" in response.json()["detail"]
+
+
 class TestPageEndpoints:
     """Tests for page operations."""
 

@@ -23,7 +23,7 @@ from minio import Minio
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
-from . import scheme_catalog
+from . import document_validity, scheme_catalog
 from .catalog_builder import normalize_document_kind
 from .chunking import chunk_pages, load_chunking_config
 from .discovery_publish_service import DiscoveryPublishService
@@ -641,6 +641,8 @@ def _prepare_records(
     scheme_code: str | None = None,
     scheme_name: str | None = None,
     scheme_aliases: list[str] | None = None,
+    valid_from: str | None = None,
+    valid_to: str | None = None,
 ) -> list[dict]:
     metadata = _get_doc_metadata(filename)
     resolved_instance = _normalize_instance(instance)
@@ -672,6 +674,10 @@ def _prepare_records(
         else []
     )
     instance_name = instance_display_name(resolved_instance)
+    # One period for the whole document, resolved before the loop: every chunk
+    # of a document expires together, and re-deriving it per chunk would let a
+    # midnight boundary split one document across two periods.
+    validity = document_validity.period_from_row(valid_from, valid_to)
 
     records = []
     for chunk in chunks:
@@ -716,6 +722,9 @@ def _prepare_records(
             "quality_score": float(quality_score) if str(quality_score).strip().replace(".", "", 1).isdigit() else 0.0,
             "priority_rank": float(priority_rank) if str(priority_rank).strip().replace(".", "", 1).isdigit() else 0.0,
         }
+        if validity is not None:
+            record["start_date"] = validity.start_date
+            record["end_date"] = validity.end_date
         if is_scheme:
             record["scheme_code"] = (scheme_code or "").strip().lower()
             record["scheme_name"] = resolved_scheme_name
@@ -749,6 +758,27 @@ def _scheme_fields_from_doc(doc: dict | None) -> dict:
         "scheme_name": doc.get("scheme_name"),
         "scheme_aliases": aliases,
     }
+
+
+def _validity_fields_from_doc(doc: dict | None) -> dict:
+    """Extract the validity kwargs for `_prepare_records` from a documents row.
+
+    A row with no stored period is stamped with the default anchored on its
+    upload day, so every chunk written from here on carries validity. Old
+    points already in the index keep none until their document is reingested,
+    which is what keeps them searchable in the meantime.
+    """
+    doc = doc or {}
+    period = document_validity.period_from_row(
+        doc.get("valid_from"), doc.get("valid_to")
+    )
+    if period is None:
+        upload_day = str(doc.get("created_at") or "")[:10]
+        try:
+            period = document_validity.period_from_upload_date(upload_day)
+        except document_validity.DocumentValidityError:
+            period = document_validity.default_period()
+    return {"valid_from": period.start_date, "valid_to": period.end_date}
 
 
 def prepare_ingestion_records(
@@ -810,6 +840,10 @@ def _passage_schema_definition(use_tensor_prefix_field: bool = True) -> dict:
         {"name": "priority_rank", "type": "float", "features": ["filter"]},
         {"name": "text", "type": "text", "features": ["lexical_search"]},
         {"name": "priority", "type": "float", "features": ["score_modifier", "filter"]},
+        # Document validity - filtered on at search time, so the day a chunk
+        # starts and stops answering travels with the chunk itself.
+        {"name": "start_date", "type": "date", "features": ["filter"]},
+        {"name": "end_date", "type": "date", "features": ["filter"]},
     ]
     if use_tensor_prefix_field:
         all_fields.append({"name": "text_for_embedding", "type": "text"})
@@ -1196,6 +1230,7 @@ async def prepare_for_ingestion(
         name_en=name_en,
         description=description,
         instance=(doc or {}).get("instance"),
+        **_validity_fields_from_doc(doc),
     )
     activity.logger.info(f"Prepared {len(records)} records")
     return records
@@ -1305,6 +1340,7 @@ async def promote_document_to_prod_qdrant(
         workflow_id=workflow_id,
         instance=doc.get("instance"),
         **scheme_kwargs,
+        **_validity_fields_from_doc(doc),
     )
     activity.logger.info(
         "Promoting %s records to PROD Qdrant collection %s (kind=%s)",
@@ -1373,6 +1409,7 @@ async def ingest_document_from_db(
         workflow_id=workflow_id,
         instance=doc.get("instance"),
         **_scheme_fields_from_doc(doc),
+        **_validity_fields_from_doc(doc),
     )
     payload_path = _write_json_temp(records)
     try:

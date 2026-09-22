@@ -11,6 +11,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
 from qdrant_client.http.exceptions import UnexpectedResponse
 
+from ..document_validity import Clock, system_clock, today
 from .embeddings import embed_passages, embed_query, get_vector_size
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,10 @@ PAYLOAD_FIELDS = (
     "scheme_aliases",
     "chunk_id",
     "chunk_index",
+    # Document validity - the period this chunk is searchable in. Absent on
+    # points written before validity existed, which search treats as current.
+    "start_date",
+    "end_date",
 )
 
 
@@ -168,12 +173,58 @@ def _hit_from_point(point: Any) -> dict[str, Any]:
     return hit
 
 
+def _validity_conditions(on_date: str) -> list[qmodels.Filter]:
+    """Conditions keeping only chunks whose validity period covers `on_date`.
+
+    One clause per end, each satisfied either by a missing field or by a date
+    on the right side of `on_date`. Read together they say: valid unless it
+    has not started yet, or has already ended.
+
+    The missing-field branches are what keep the pre-validity corpus
+    searchable - points ingested before `start_date`/`end_date` existed carry
+    neither, and an operator would rightly call it a regression if adding
+    validity silently hid every document already in the index.
+
+    Both ends are inclusive: a document uploaded today starts today and must
+    answer today, and its end date names the last day it answers.
+    """
+    return [
+        qmodels.Filter(
+            should=[
+                qmodels.IsEmptyCondition(
+                    is_empty=qmodels.PayloadField(key="start_date")
+                ),
+                qmodels.FieldCondition(
+                    key="start_date",
+                    range=qmodels.DatetimeRange(lte=on_date),
+                ),
+            ]
+        ),
+        qmodels.Filter(
+            should=[
+                qmodels.IsEmptyCondition(
+                    is_empty=qmodels.PayloadField(key="end_date")
+                ),
+                qmodels.FieldCondition(
+                    key="end_date",
+                    range=qmodels.DatetimeRange(gte=on_date),
+                ),
+            ]
+        ),
+    ]
+
+
 def _build_filter(
     doc_id: Optional[str] = None,
     chunk_num: Optional[int] = None,
     exclude_reference: bool = False,
+    valid_on: Optional[str] = None,
 ) -> Optional[qmodels.Filter]:
-    must: list[qmodels.FieldCondition] = []
+    """Assemble a Qdrant filter. `valid_on` (`YYYY-MM-DD`) restricts the result
+    to chunks valid on that day; None leaves validity out entirely, which is
+    what the delete/list paths want - an expired chunk is still that
+    document's chunk."""
+    must: list[qmodels.Condition] = []
     if doc_id is not None:
         must.append(
             qmodels.FieldCondition(
@@ -195,6 +246,8 @@ def _build_filter(
                 match=qmodels.MatchValue(value=False),
             )
         )
+    if valid_on:
+        must.extend(_validity_conditions(valid_on))
     if not must:
         return None
     return qmodels.Filter(must=must)
@@ -203,8 +256,55 @@ def _build_filter(
 class QdrantVectorStore:
     backend = "qdrant"
 
-    def __init__(self, client: Optional[QdrantClient] = None):
+    def __init__(
+        self,
+        client: Optional[QdrantClient] = None,
+        clock: Optional[Clock] = None,
+    ):
         self.client = client or get_qdrant_client()
+        # What "today" means when filtering on document validity. Injected so a
+        # test can pin the day rather than write fixtures relative to the real
+        # one, and so an operator can ask what search returned on some other
+        # date without changing the machine's clock.
+        self.clock: Clock = clock or system_clock
+
+    def today(self) -> str:
+        """Today per the injected clock, in the `YYYY-MM-DD` payload form."""
+        return today(self.clock)
+
+    # Indexed for filtering. `start_date`/`end_date` are DATETIME so Qdrant
+    # compares them as dates rather than strings; the validity filter also
+    # works unindexed, so an older collection still filters correctly while
+    # this is being backfilled - just more slowly.
+    PAYLOAD_INDEXES = {
+        "doc_id": qmodels.PayloadSchemaType.KEYWORD,
+        "workflow_id": qmodels.PayloadSchemaType.KEYWORD,
+        "filename": qmodels.PayloadSchemaType.KEYWORD,
+        "instance": qmodels.PayloadSchemaType.KEYWORD,
+        "chunk_num": qmodels.PayloadSchemaType.INTEGER,
+        "is_reference": qmodels.PayloadSchemaType.BOOL,
+        "type": qmodels.PayloadSchemaType.KEYWORD,
+        "source": qmodels.PayloadSchemaType.KEYWORD,
+        "start_date": qmodels.PayloadSchemaType.DATETIME,
+        "end_date": qmodels.PayloadSchemaType.DATETIME,
+    }
+
+    def _ensure_payload_indexes(self, name: str) -> None:
+        """Create the filterable payload indexes, ignoring the ones that exist.
+
+        Idempotent by design: Qdrant answers an already-present index with an
+        error we can safely log and move past, which is cheaper than asking
+        for the collection's index list first.
+        """
+        for field_name, schema in self.PAYLOAD_INDEXES.items():
+            try:
+                self.client.create_payload_index(
+                    collection_name=name,
+                    field_name=field_name,
+                    field_schema=schema,
+                )
+            except Exception as exc:
+                logger.debug("Payload index %s skipped/exists: %s", field_name, exc)
 
     def ensure_collection(self, name: str, recreate: bool = False) -> dict[str, Any]:
         vector_size = get_vector_size()
@@ -216,6 +316,10 @@ class QdrantVectorStore:
             exists = False
 
         if exists and not recreate:
+            # Indexes, not the collection: a collection created before a field
+            # existed is missing its index, and ingest is the one path that
+            # reliably runs against every live collection.
+            self._ensure_payload_indexes(name)
             return {"index": name, "created": False, "backend": self.backend}
 
         if exists and recreate:
@@ -229,25 +333,7 @@ class QdrantVectorStore:
             ),
         )
 
-        payload_indexes = {
-            "doc_id": qmodels.PayloadSchemaType.KEYWORD,
-            "workflow_id": qmodels.PayloadSchemaType.KEYWORD,
-            "filename": qmodels.PayloadSchemaType.KEYWORD,
-            "instance": qmodels.PayloadSchemaType.KEYWORD,
-            "chunk_num": qmodels.PayloadSchemaType.INTEGER,
-            "is_reference": qmodels.PayloadSchemaType.BOOL,
-            "type": qmodels.PayloadSchemaType.KEYWORD,
-            "source": qmodels.PayloadSchemaType.KEYWORD,
-        }
-        for field_name, schema in payload_indexes.items():
-            try:
-                self.client.create_payload_index(
-                    collection_name=name,
-                    field_name=field_name,
-                    field_schema=schema,
-                )
-            except Exception as exc:
-                logger.debug("Payload index %s skipped/exists: %s", field_name, exc)
+        self._ensure_payload_indexes(name)
 
         return {
             "index": name,
@@ -435,10 +521,21 @@ class QdrantVectorStore:
         hybrid_alpha: float = 0.6,
         ef_search: int = 256,
         attributes_to_retrieve: Optional[list[str]] = None,
+        apply_validity: bool = True,
+        valid_on: Optional[str] = None,
     ) -> dict[str, Any]:
+        """Search `name`, by default returning only chunks valid today.
+
+        `valid_on` (`YYYY-MM-DD`) answers the question for another day and
+        `apply_validity=False` drops the period filter altogether - both exist
+        for the operator who needs to see what an expired document still holds,
+        and neither is what a caller serving an end user should pass.
+        """
         mode = (search_mode or "TENSOR").upper()
+        as_of = (valid_on or self.today()) if apply_validity else None
         query_filter = _build_filter(
             exclude_reference=exclude_reference,
+            valid_on=as_of,
         )
 
         if mode == "LEXICAL":
@@ -468,7 +565,12 @@ class QdrantVectorStore:
                 hit = _hit_from_point(point)
                 hit["_score"] = score
                 hits.append(hit)
-            return {"hits": hits, "backend": self.backend, "search_mode": mode}
+            return {
+                "hits": hits,
+                "backend": self.backend,
+                "search_mode": mode,
+                "valid_on": as_of,
+            }
 
         vector = embed_query(query, use_e5_prefix=use_e5_prefix)
         search_params = qmodels.SearchParams(hnsw_ef=ef_search) if ef_search else None
@@ -499,4 +601,9 @@ class QdrantVectorStore:
             for hit in hits:
                 trimmed.append({k: v for k, v in hit.items() if k in allowed})
             hits = trimmed
-        return {"hits": hits, "backend": self.backend, "search_mode": mode}
+        return {
+            "hits": hits,
+            "backend": self.backend,
+            "search_mode": mode,
+            "valid_on": as_of,
+        }
