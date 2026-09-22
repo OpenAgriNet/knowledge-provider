@@ -213,28 +213,11 @@ class DocumentSummary(BaseModel):
     network_visible: bool = True
     prod_ready_requested_at: Optional[str] = None
     prod_ready_requested_by_username: Optional[str] = None
-    # Lifetime of the network announcement, set by the prod approver.
-    network_valid_from: Optional[str] = None
-    network_valid_to: Optional[str] = None
     # Period this document's chunks are searchable in. Stamped on upload and
     # editable alongside the document type; NULL on documents uploaded before
     # validity existed.
     valid_from: Optional[str] = None
     valid_to: Optional[str] = None
-
-
-class ProdApprovalRequest(BaseModel):
-    """POST /documents/{id}/approve-prod body.
-
-    Both ends are `YYYY-MM-DD` and both are optional: an omitted end defaults to
-    today, so a body-less approval still publishes a well-formed window. The
-    dates are validated in the endpoint (see `network_validity.parse_window`)
-    rather than by a Pydantic validator, so a bad window comes back as the same
-    400 an approver gets for a bad stage, not a 422 with a Pydantic trace.
-    """
-
-    network_valid_from: Optional[str] = None
-    network_valid_to: Optional[str] = None
 
 
 class SchemeMetadataUpdate(BaseModel):

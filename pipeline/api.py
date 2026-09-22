@@ -95,7 +95,6 @@ from .models import (
     OperationQueueEntry,
     OperationQueueResponse,
     PageUpdate,
-    ProdApprovalRequest,
     RegisterFolderRequest,
     RegisterRequest,
     ReindexStateRequest,
@@ -104,7 +103,6 @@ from .models import (
     SearchSettingsUpdate,
     SettingsAuditResponse,
 )
-from .network_validity import ValidityWindowError, parse_window
 from .workflows import (
     ChunkingOnlyWorkflow,
     DocumentPipelineWorkflow,
@@ -456,8 +454,6 @@ def _document_summary_from_row(doc: dict, current_job: Optional[dict] = None) ->
         network_visible=bool(int(doc["network_visible"])) if doc.get("network_visible") is not None else True,
         prod_ready_requested_at=doc.get("prod_ready_requested_at"),
         prod_ready_requested_by_username=doc.get("prod_ready_requested_by_username"),
-        network_valid_from=doc.get("network_valid_from"),
-        network_valid_to=doc.get("network_valid_to"),
         valid_from=doc.get("valid_from"),
         valid_to=doc.get("valid_to"),
     )
@@ -1539,8 +1535,6 @@ def _build_document_detail(doc: dict) -> DocumentDetail:
         network_visible=bool(int(doc["network_visible"])) if doc.get("network_visible") is not None else True,
         prod_ready_requested_at=doc.get("prod_ready_requested_at"),
         prod_ready_requested_by_username=doc.get("prod_ready_requested_by_username"),
-        network_valid_from=doc.get("network_valid_from"),
-        network_valid_to=doc.get("network_valid_to"),
         valid_from=doc.get("valid_from"),
         valid_to=doc.get("valid_to"),
     )
@@ -3009,16 +3003,8 @@ async def request_prod_ready(workflow_id: str, user: RequireReview):
 async def approve_prod(
     workflow_id: str,
     user: RequireAdmin,
-    approval: Optional[ProdApprovalRequest] = None,
 ):
-    """Superadmin-only: promote DEV-ingested vectors into PROD Qdrant.
-
-    The approver also names the lifetime of the network announcement this
-    promotion leads to - start date today, end date theirs to set. The window is
-    validated and stored here, before anything is signaled or started, so a
-    rejected window costs nothing: `publishing_to_network` only ever reads a
-    window that passed through `parse_window`.
-    """
+    """Superadmin-only: promote DEV-ingested vectors into PROD Qdrant."""
     doc = _require_document_for_user(workflow_id, user)
     stage = doc.get("stage")
     # Promoting an already-completed document is a fresh PROD write, so it is
@@ -3037,19 +3023,6 @@ async def approve_prod(
             f"Cannot approve for prod: document is in '{stage}' stage "
             "(expected 'approval_for_prod' or 'completed').",
         )
-
-    # Validated before any promotion is triggered: the publish that follows
-    # reads these dates off the document, and a 400 here must leave the
-    # document exactly where it was.
-    try:
-        validity = parse_window(
-            approval.network_valid_from if approval else None,
-            approval.network_valid_to if approval else None,
-        )
-    except ValidityWindowError as exc:
-        raise HTTPException(400, f"Cannot approve for prod: {exc}") from None
-
-    db.set_network_validity(workflow_id, validity.start_date, validity.end_date)
 
     # Prefer signaling the running main workflow when it is waiting at approval_for_prod.
     signaled = False
@@ -3108,8 +3081,6 @@ async def approve_prod(
             "next_stage": "ingesting_prod",
             "signaled": signaled,
             "promote_workflow_id": promote_workflow_id,
-            "network_valid_from": validity.start_date,
-            "network_valid_to": validity.end_date,
         },
         user=user,
     )
@@ -3118,8 +3089,6 @@ async def approve_prod(
         "workflow_id": workflow_id,
         "signaled": signaled,
         "promote_workflow_id": promote_workflow_id,
-        "network_valid_from": validity.start_date,
-        "network_valid_to": validity.end_date,
         "next_stage": "ingesting_prod",
     }
 

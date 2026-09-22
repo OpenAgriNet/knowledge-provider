@@ -120,10 +120,6 @@ def init_db():
             _add_column_if_missing(conn, "documents", "prod_ready_requested_at", "TEXT")
             _add_column_if_missing(conn, "documents", "prod_ready_requested_by_user_id", "TEXT")
             _add_column_if_missing(conn, "documents", "prod_ready_requested_by_username", "TEXT")
-            # Lifetime the prod approver set for the network announcement.
-            # NULL on documents promoted before approvers named one.
-            _add_column_if_missing(conn, "documents", "network_valid_from", "TEXT")
-            _add_column_if_missing(conn, "documents", "network_valid_to", "TEXT")
             # Period this document's chunks are searchable in, stamped on
             # upload and editable by the approver. NULL on documents uploaded
             # before validity existed - search reads that as always current
@@ -1714,35 +1710,6 @@ def mark_prod_ready_requested(
                     datetime.utcnow().isoformat(),
                     user_id,
                     username,
-                    datetime.utcnow().isoformat(),
-                    workflow_id,
-                ),
-            )
-            conn.commit()
-    return get_document(workflow_id)
-
-
-def set_network_validity(
-    workflow_id: str,
-    valid_from: str,
-    valid_to: str,
-) -> Optional[dict]:
-    """Record the lifetime the prod approver set for this document's network
-    announcement. Both ends are `YYYY-MM-DD`; validation belongs to the caller
-    (`pipeline/network_validity.parse_window`), not to this SQL layer."""
-    with _db_lock:
-        with get_connection() as conn:
-            conn.execute(
-                """
-                UPDATE documents
-                SET network_valid_from = ?,
-                    network_valid_to = ?,
-                    updated_at = ?
-                WHERE workflow_id = ?
-                """,
-                (
-                    valid_from,
-                    valid_to,
                     datetime.utcnow().isoformat(),
                     workflow_id,
                 ),

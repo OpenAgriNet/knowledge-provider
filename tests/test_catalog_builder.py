@@ -13,7 +13,6 @@ from pipeline.network_constants import (
     SCHEMES_CATALOG_ID,
     SCHEMES_RESOURCE_ID,
 )
-from pipeline.network_validity import ValidityWindow
 
 # Forbidden by the KnowledgeAdvisory schema under informationMode OnDemand.
 # Both advisory and scheme resources use this schema.
@@ -130,43 +129,6 @@ class TestUnmappedKinds:
     @pytest.mark.parametrize("kind", ["document", "video", "how_to_faq", "", None])
     def test_returns_none_so_the_caller_skips_publishing(self, kind):
         assert build_catalog(kind) is None
-
-
-class TestValidityWindow:
-    @pytest.mark.unit
-    @pytest.mark.parametrize("kind", ["advisory", "scheme"])
-    def test_omitted_when_the_document_has_no_window(self, kind):
-        # Documents promoted before approvers named a window: MERGE leaves an
-        # existing announcement's lifetime untouched rather than clearing it.
-        assert "validity" not in build_catalog(kind)
-
-    @pytest.mark.unit
-    @pytest.mark.parametrize("kind", ["advisory", "scheme"])
-    def test_lands_on_the_catalog_when_the_approver_set_one(self, kind):
-        catalog = build_catalog(
-            kind, ValidityWindow(start_date="2026-09-16", end_date="2026-12-31")
-        )
-
-        assert catalog["validity"] == {
-            "startDate": "2026-09-16T00:00:00Z",
-            "endDate": "2026-12-31T23:59:59Z",
-        }
-
-    @pytest.mark.unit
-    def test_never_lands_on_resource_attributes(self):
-        # `validity` is absent from the OnDemand KnowledgeAdvisory profile
-        # (ADR 0003) — the catalog is the only legal home for it.
-        catalog = build_catalog(
-            "advisory", ValidityWindow(start_date="2026-09-16", end_date="2026-12-31")
-        )
-
-        assert "validity" not in catalog["resources"][0]["resourceAttributes"]
-
-    @pytest.mark.unit
-    def test_an_unmapped_kind_still_publishes_nothing(self):
-        assert build_catalog(
-            "video", ValidityWindow(start_date="2026-09-16", end_date="2026-12-31")
-        ) is None
 
 
 class TestBuilderIsolation:

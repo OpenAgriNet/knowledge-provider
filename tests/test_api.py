@@ -109,11 +109,11 @@ class TestDocumentEndpoints:
         assert response.status_code == 404
 
 
-class TestProdApprovalLifetime:
-    """The prod approver names the lifetime of the network announcement.
+class TestProdApproval:
+    """Promoting to PROD takes no body.
 
-    The window is validated and stored before anything is promoted, so a
-    rejected window must leave the document exactly where it was.
+    It used to carry an announcement window; these pin that the gate still
+    works without one and that no validity leaks back into the contract.
     """
 
     def _document_at_the_gate(self, db_connection, workflow_id):
@@ -127,100 +127,71 @@ class TestProdApprovalLifetime:
 
     @pytest.mark.api
     @pytest.mark.unit
-    def test_stores_the_approvers_window(self, test_client, db_connection):
-        from pipeline.network_validity import today
-
-        workflow_id = "prod-lifetime-001"
-        self._document_at_the_gate(db_connection, workflow_id)
-
-        response = test_client.post(
-            f"/documents/{workflow_id}/approve-prod",
-            json={"network_valid_to": "2099-12-31"},
-        )
-
-        assert response.status_code == 200
-        assert response.json()["network_valid_from"] == today()
-        assert response.json()["network_valid_to"] == "2099-12-31"
-        stored = db_connection.get_document(workflow_id)
-        assert stored["network_valid_from"] == today()
-        assert stored["network_valid_to"] == "2099-12-31"
-
-    @pytest.mark.api
-    @pytest.mark.unit
-    def test_a_body_less_approval_defaults_both_ends_to_today(self, test_client, db_connection):
-        from pipeline.network_validity import today
-
-        workflow_id = "prod-lifetime-002"
+    def test_a_body_less_approval_is_accepted(self, test_client, db_connection):
+        workflow_id = "prod-approval-001"
         self._document_at_the_gate(db_connection, workflow_id)
 
         response = test_client.post(f"/documents/{workflow_id}/approve-prod")
 
         assert response.status_code == 200
-        stored = db_connection.get_document(workflow_id)
-        assert stored["network_valid_from"] == today()
-        assert stored["network_valid_to"] == today()
+        assert response.json()["approved"] == "prod"
+        assert response.json()["next_stage"] == "ingesting_prod"
 
     @pytest.mark.api
     @pytest.mark.unit
-    def test_the_window_is_surfaced_on_the_document(self, test_client, db_connection):
-        workflow_id = "prod-lifetime-003"
+    def test_the_response_carries_no_validity(self, test_client, db_connection):
+        workflow_id = "prod-approval-002"
         self._document_at_the_gate(db_connection, workflow_id)
-        test_client.post(
+
+        body = test_client.post(f"/documents/{workflow_id}/approve-prod").json()
+
+        assert not [key for key in body if "valid" in key]
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_an_unexpected_body_does_not_break_the_gate(self, test_client, db_connection):
+        # A caller still sending the old window must not get a 422 — the
+        # endpoint simply has no body to bind any more.
+        workflow_id = "prod-approval-003"
+        self._document_at_the_gate(db_connection, workflow_id)
+
+        response = test_client.post(
             f"/documents/{workflow_id}/approve-prod",
-            json={"network_valid_to": "2099-12-31"},
+            json={"network_valid_from": "2026-09-22", "network_valid_to": "2099-12-31"},
         )
+
+        assert response.status_code == 200
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_the_document_carries_no_validity_window(self, test_client, db_connection):
+        workflow_id = "prod-approval-004"
+        self._document_at_the_gate(db_connection, workflow_id)
+        test_client.post(f"/documents/{workflow_id}/approve-prod")
 
         doc = test_client.get(f"/documents/{workflow_id}").json()
 
-        assert doc["network_valid_to"] == "2099-12-31"
+        assert "network_valid_from" not in doc
+        assert "network_valid_to" not in doc
+        # Document Validity is a different thing and is still there.
+        assert doc["valid_from"]
 
     @pytest.mark.api
     @pytest.mark.unit
-    def test_rejects_an_end_before_the_start(self, test_client, db_connection):
-        workflow_id = "prod-lifetime-004"
-        self._document_at_the_gate(db_connection, workflow_id)
-
-        response = test_client.post(
-            f"/documents/{workflow_id}/approve-prod",
-            json={"network_valid_from": "2026-09-16", "network_valid_to": "2026-09-15"},
+    def test_the_wrong_stage_is_still_refused(self, test_client, db_connection):
+        workflow_id = "prod-approval-005"
+        db_connection.upsert_document(
+            workflow_id=workflow_id,
+            document_id=f"doc-{workflow_id}",
+            filename="test.pdf",
+            filepath="/app/books/test.pdf",
+            stage="chunk_review",
         )
+
+        response = test_client.post(f"/documents/{workflow_id}/approve-prod")
 
         assert response.status_code == 400
-        assert "cannot be before" in response.json()["detail"]
-
-    @pytest.mark.api
-    @pytest.mark.unit
-    def test_rejects_a_malformed_date(self, test_client, db_connection):
-        workflow_id = "prod-lifetime-005"
-        self._document_at_the_gate(db_connection, workflow_id)
-
-        response = test_client.post(
-            f"/documents/{workflow_id}/approve-prod",
-            json={"network_valid_to": "31-12-2099"},
-        )
-
-        assert response.status_code == 400
-        assert "YYYY-MM-DD" in response.json()["detail"]
-
-    @pytest.mark.api
-    @pytest.mark.unit
-    def test_a_rejected_window_stores_nothing_and_promotes_nothing(
-        self, test_client, db_connection, mock_temporal_client
-    ):
-        workflow_id = "prod-lifetime-006"
-        self._document_at_the_gate(db_connection, workflow_id)
-        mock_temporal_client.start_workflow.reset_mock()
-
-        test_client.post(
-            f"/documents/{workflow_id}/approve-prod",
-            json={"network_valid_to": "not-a-date"},
-        )
-
-        stored = db_connection.get_document(workflow_id)
-        assert stored["network_valid_from"] is None
-        assert stored["network_valid_to"] is None
-        assert stored["stage"] == "approval_for_prod"
-        mock_temporal_client.start_workflow.assert_not_called()
+        assert "chunk_review" in response.json()["detail"]
 
 
 class TestDocumentValidityEndpoints:
@@ -342,8 +313,8 @@ class TestDocumentValidityEndpoints:
     @pytest.mark.api
     @pytest.mark.unit
     def test_a_rejected_period_stores_nothing(self, test_client, db_connection):
-        # Same contract the prod gate has: a 400 leaves the document as it was,
-        # kind included, rather than half-applying the PATCH.
+        # A 400 leaves the document as it was, kind included, rather than
+        # half-applying the PATCH.
         workflow_id = "validity-007"
         self._uploaded_document(db_connection, workflow_id)
         db_connection.set_document_validity(workflow_id, "2026-01-01", "2026-06-30")

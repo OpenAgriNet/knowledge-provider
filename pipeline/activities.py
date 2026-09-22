@@ -1456,22 +1456,18 @@ async def ingest_document_from_db(
 async def publish_catalog_to_network(workflow_id: str, transaction_id: str) -> dict:
     """POST a catalog/publish envelope to the Discovery Service and record the exchange.
 
-    The catalog depends on the document's knowledge kind and on the lifetime the
-    prod approver set for it. Both are read here rather than passed in as
-    activity arguments - that keeps every workflow call site, and any workflow
-    already in flight, untouched.
+    The catalog depends on the document's knowledge kind, read here rather than
+    passed in as an activity argument - that keeps every workflow call site, and
+    any workflow already in flight, untouched.
     """
     from . import db
 
     repository = DocumentRepository()
     document_kind = normalize_document_kind(repository.get_document_kind(workflow_id))
-    # Set at the prod approval gate and already validated there; None only for a
-    # document promoted before approvers named a lifetime.
-    validity = repository.get_network_validity(workflow_id)
 
     service = DiscoveryPublishService()
     result = await asyncio.to_thread(
-        service.publish, transaction_id, document_kind, workflow_id, validity
+        service.publish, transaction_id, document_kind, workflow_id
     )
 
     if result["skipped"]:
@@ -1530,8 +1526,6 @@ async def publish_catalog_to_network(workflow_id: str, transaction_id: str) -> d
     return {
         "status": "skipped" if result["skipped"] else "published",
         "document_kind": document_kind,
-        "valid_from": validity.start_date if validity else None,
-        "valid_to": validity.end_date if validity else None,
         "transaction_id": transaction_id,
         "message_id": None if result["skipped"] else result["envelope"]["context"]["messageId"],
         "result_status": result["result_status"],
