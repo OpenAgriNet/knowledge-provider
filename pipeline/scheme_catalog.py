@@ -14,7 +14,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from . import db
+from . import db, document_validity
 
 SCHEME_CODE_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
@@ -754,8 +754,17 @@ def apply_scheme_metadata(
     tool_routing: Optional[str] = None,
     catalog_visible: Optional[bool] = None,
     network_visible: Optional[bool] = None,
+    valid_from: Optional[str] = None,
+    valid_to: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Update document scheme fields and rebuild catalog when needed."""
+    """Update document scheme fields and rebuild catalog when needed.
+
+    `valid_from`/`valid_to` set the document's validity period (see
+    `pipeline/document_validity.py`). Either end alone is enough - the other is
+    taken from what is stored, or from the period's own default when the
+    document has none - so a reviewer who only moves the end date does not have
+    to restate the start.
+    """
     ensure_catalog_schema()
     doc = db.get_document(workflow_id)
     if not doc:
@@ -816,6 +825,17 @@ def apply_scheme_metadata(
         updates["network_visible"] = 1 if network_visible else 0
     elif kind == "scheme" and doc.get("network_visible") is None:
         updates["network_visible"] = 1 if default_network_visible(doc.get("instance")) else 0
+
+    if valid_from is not None or valid_to is not None:
+        # Validated here rather than at the SQL layer, and against the stored
+        # period rather than today, so a reviewer editing one end keeps the
+        # other exactly as it was.
+        period = document_validity.parse_period(
+            valid_from if valid_from is not None else doc.get("valid_from"),
+            valid_to if valid_to is not None else doc.get("valid_to"),
+        )
+        updates["valid_from"] = period.start_date
+        updates["valid_to"] = period.end_date
 
     if kind == "scheme" and not (new_code or updates.get("scheme_code") or old_code):
         # Allow setting kind first without code only if not completing as scheme

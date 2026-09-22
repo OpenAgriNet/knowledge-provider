@@ -237,6 +237,22 @@ components:
           type: boolean
           description: If true, also return the pre-cap/pre-rerank candidate list as raw_hits.
           default: false
+        include_expired:
+          type: boolean
+          description: |
+            Drop the document-validity filter, returning chunks whose period
+            has ended or not yet started. An operator tool for inspecting what
+            an expired document still holds — not for a caller serving an end
+            user, who should never be answered from an expired document.
+          default: false
+        valid_on:
+          type: string
+          format: date
+          description: |
+            Answer as of this calendar day (`YYYY-MM-DD`) instead of today —
+            what search would have returned, or will return, on that date. A
+            malformed value returns 400. Ignored when include_expired is true.
+          default: "(today)"
 
     SearchHit:
       type: object
@@ -296,6 +312,18 @@ components:
         chunk_number:
           type: integer
           description: Alias of chunk_num, set when chunk_num is present.
+        start_date:
+          type: string
+          format: date
+          description: |
+            First day this chunk's document answers searches. Absent on chunks
+            ingested before validity existed, which are treated as current.
+        end_date:
+          type: string
+          format: date
+          description: |
+            Last day this chunk's document answers searches (inclusive).
+            Absent on chunks ingested before validity existed.
         section:
           type: string
         token_count:

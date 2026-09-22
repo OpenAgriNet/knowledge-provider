@@ -42,7 +42,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from temporalio.client import Client, WorkflowFailureError
 
-from . import db, scheme_catalog
+from . import db, document_validity, scheme_catalog
 from .auth.config import load_auth_config, validate_auth_config
 from .auth.deps import (
     CurrentUser,
@@ -458,6 +458,8 @@ def _document_summary_from_row(doc: dict, current_job: Optional[dict] = None) ->
         prod_ready_requested_by_username=doc.get("prod_ready_requested_by_username"),
         network_valid_from=doc.get("network_valid_from"),
         network_valid_to=doc.get("network_valid_to"),
+        valid_from=doc.get("valid_from"),
+        valid_to=doc.get("valid_to"),
     )
 
 
@@ -1539,6 +1541,8 @@ def _build_document_detail(doc: dict) -> DocumentDetail:
         prod_ready_requested_by_username=doc.get("prod_ready_requested_by_username"),
         network_valid_from=doc.get("network_valid_from"),
         network_valid_to=doc.get("network_valid_to"),
+        valid_from=doc.get("valid_from"),
+        valid_to=doc.get("valid_to"),
     )
 
 
@@ -2147,6 +2151,8 @@ async def patch_scheme_metadata(
             tool_routing=body.tool_routing,
             catalog_visible=body.catalog_visible,
             network_visible=body.network_visible,
+            valid_from=body.valid_from,
+            valid_to=body.valid_to,
         )
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
@@ -2174,6 +2180,8 @@ async def patch_scheme_metadata(
         "tool_routing": doc.get("tool_routing"),
         "catalog_visible": bool(int(doc["catalog_visible"])) if doc.get("catalog_visible") is not None else True,
         "network_visible": bool(int(doc["network_visible"])) if doc.get("network_visible") is not None else True,
+        "valid_from": doc.get("valid_from"),
+        "valid_to": doc.get("valid_to"),
         "catalog_version": result.get("catalog_version"),
         "requires_reindex": result.get("requires_reindex"),
         "pending_reindex": result.get("pending_reindex"),
@@ -3941,6 +3949,18 @@ async def run_search(payload: dict, user: RequireSearch):
     query_expansion_profile = payload.get("query_expansion_profile") or settings.get("queryExpansionProfile") or "gu-v1"
     rerank_mode = payload.get("rerank_mode") or settings.get("rerankMode") or "none"
     hybrid_rrf_k = int(payload.get("hybrid_rrf_k") or settings.get("hybridRrfK") or 60)
+    # Validity is on by default: a search serving a farmer must not answer from
+    # a document that has expired or has not started. Both overrides are
+    # operator tools - `include_expired` to inspect what an expired document
+    # still holds, `valid_on` to ask what search would have returned on another
+    # day - and the response echoes which day was actually applied.
+    include_expired = bool(payload.get("include_expired", False))
+    valid_on = (payload.get("valid_on") or "").strip() or None
+    if valid_on:
+        try:
+            document_validity.parse_period(valid_on, valid_on)
+        except document_validity.DocumentValidityError as exc:
+            raise HTTPException(400, f"Invalid valid_on: {exc}") from None
     expanded_query = _expand_query(query, query_expansion_profile)
     # Qdrant embeddings apply E5 prefixes internally; don't pre-prefix here.
     search_query = expanded_query
@@ -3960,6 +3980,8 @@ async def run_search(payload: dict, user: RequireSearch):
             use_e5_prefix=use_e5_prefix,
             hybrid_alpha=alpha,
             ef_search=ef_search,
+            apply_validity=not include_expired,
+            valid_on=valid_on,
         )
     except Exception as error:
         raise HTTPException(400, f"Vector search failed ({backend}): {error}") from error
@@ -4006,6 +4028,8 @@ async def run_search(payload: dict, user: RequireSearch):
             "query_expansion_profile": query_expansion_profile,
             "query_expansion_applied": expanded_query != query,
             "rerank_mode": rerank_mode,
+            "apply_validity": not include_expired,
+            "valid_on": result.get("valid_on"),
             "filter_string": None,
         },
         "candidate_count": len(hits),

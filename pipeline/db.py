@@ -15,6 +15,8 @@ from pathlib import Path
 from threading import Lock
 from typing import Optional
 
+from . import document_validity
+
 # Database path - can be configured via environment
 DB_PATH = os.environ.get("DOCUMENT_DB_PATH", "/data/documents.db")
 
@@ -122,6 +124,12 @@ def init_db():
             # NULL on documents promoted before approvers named one.
             _add_column_if_missing(conn, "documents", "network_valid_from", "TEXT")
             _add_column_if_missing(conn, "documents", "network_valid_to", "TEXT")
+            # Period this document's chunks are searchable in, stamped on
+            # upload and editable by the approver. NULL on documents uploaded
+            # before validity existed - search reads that as always current
+            # (see pipeline/document_validity.period_from_row).
+            _add_column_if_missing(conn, "documents", "valid_from", "TEXT")
+            _add_column_if_missing(conn, "documents", "valid_to", "TEXT")
             # Stamp NULL/empty rows with the configured default so list filters
             # (which coalesce to DEFAULT_INSTANCE) match migrated data.
             default_instance = (
@@ -673,15 +681,25 @@ def upsert_document(
     uploaded_by_username: Optional[str] = None,
     uploaded_by_email: Optional[str] = None,
     uploaded_by_roles: Optional[str] = None,
+    valid_from: Optional[str] = None,
+    valid_to: Optional[str] = None,
 ):
     """Insert or update a document record.
 
     ``instance`` is applied on INSERT only. Updates leave the existing tenant
     stamp alone so a re-upload / restart cannot silently reassign tenants.
     Uploader identity is set on INSERT, and filled on UPDATE only when currently null.
+
+    ``valid_from``/``valid_to`` are the document's validity period, likewise
+    INSERT-only: an uploader does not choose it (it defaults to the upload day
+    and a year out) and an approver's later edit must survive a restart that
+    re-registers the same workflow.
     """
     now = datetime.utcnow().isoformat()
     instance_value = (instance or os.environ.get("DEFAULT_INSTANCE") or "default").strip().lower() or "default"
+    default_period = document_validity.default_period()
+    valid_from_value = (valid_from or "").strip() or default_period.start_date
+    valid_to_value = (valid_to or "").strip() or default_period.end_date
 
     with _db_lock:
         with get_connection() as conn:
@@ -748,8 +766,9 @@ def upsert_document(
                     reindex_required, reindex_reason,
                     original_artifact_id, normalized_artifact_id, latest_job_id,
                     instance,
-                    uploaded_by_user_id, uploaded_by_username, uploaded_by_email, uploaded_by_roles
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    uploaded_by_user_id, uploaded_by_username, uploaded_by_email, uploaded_by_roles,
+                    valid_from, valid_to
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     workflow_id, document_id, filename, filepath,
                     canonical_document_id, display_name, source_filename, source_manifest_name,
@@ -762,6 +781,7 @@ def upsert_document(
                     original_artifact_id, normalized_artifact_id, latest_job_id,
                     instance_value,
                     uploaded_by_user_id, uploaded_by_username, uploaded_by_email, uploaded_by_roles,
+                    valid_from_value, valid_to_value,
                 ))
 
             conn.commit()
@@ -1370,6 +1390,8 @@ def update_document_fields(workflow_id: str, **updates: object) -> Optional[dict
         "document_kind", "scheme_code", "scheme_name", "scheme_aliases_json",
         "tool_routing", "catalog_visible", "network_visible",
         "prod_ready_requested_at", "prod_ready_requested_by_user_id", "prod_ready_requested_by_username",
+        # Document validity period (searchable-from / searchable-to)
+        "valid_from", "valid_to",
     }
     set_clauses = []
     values: list[object] = []
@@ -1715,6 +1737,35 @@ def set_network_validity(
                 UPDATE documents
                 SET network_valid_from = ?,
                     network_valid_to = ?,
+                    updated_at = ?
+                WHERE workflow_id = ?
+                """,
+                (
+                    valid_from,
+                    valid_to,
+                    datetime.utcnow().isoformat(),
+                    workflow_id,
+                ),
+            )
+            conn.commit()
+    return get_document(workflow_id)
+
+
+def set_document_validity(
+    workflow_id: str,
+    valid_from: str,
+    valid_to: str,
+) -> Optional[dict]:
+    """Record the period this document's chunks are searchable in. Both ends
+    are `YYYY-MM-DD`; validation belongs to the caller
+    (`pipeline/document_validity.parse_period`), not to this SQL layer."""
+    with _db_lock:
+        with get_connection() as conn:
+            conn.execute(
+                """
+                UPDATE documents
+                SET valid_from = ?,
+                    valid_to = ?,
                     updated_at = ?
                 WHERE workflow_id = ?
                 """,

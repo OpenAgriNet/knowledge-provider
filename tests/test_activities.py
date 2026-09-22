@@ -266,6 +266,110 @@ class TestPrepareIngestionRecords:
         assert records[0]["text"] == "Edited"
 
 
+class TestPrepareRecordsValidity:
+    """The validity period every ingested chunk carries."""
+
+    CHUNKS = [
+        {"chunk_number": 1, "original_text": "Chunk one", "token_count": 5},
+        {"chunk_number": 2, "original_text": "Chunk two", "token_count": 5},
+    ]
+
+    @pytest.mark.unit
+    def test_stamps_the_period_on_every_chunk(self):
+        # Every chunk, not just the first: the filter runs per point, so a
+        # chunk without dates would outlive its own document.
+        from pipeline.activities import _prepare_records
+
+        records = _prepare_records(
+            document_id="test-doc",
+            filename="test.pdf",
+            chunks=self.CHUNKS,
+            valid_from="2026-09-22",
+            valid_to="2027-09-22",
+        )
+
+        assert len(records) == 2
+        for record in records:
+            assert record["start_date"] == "2026-09-22"
+            assert record["end_date"] == "2027-09-22"
+
+    @pytest.mark.unit
+    def test_omits_the_period_when_the_document_has_none(self):
+        # Absent, not null — the search filter's missing-field branch is what
+        # keeps such a chunk answerable.
+        from pipeline.activities import _prepare_records
+
+        records = _prepare_records(
+            document_id="test-doc", filename="test.pdf", chunks=self.CHUNKS
+        )
+
+        assert "start_date" not in records[0]
+        assert "end_date" not in records[0]
+
+    @pytest.mark.unit
+    def test_omits_the_period_when_only_one_end_is_stored(self):
+        from pipeline.activities import _prepare_records
+
+        records = _prepare_records(
+            document_id="test-doc",
+            filename="test.pdf",
+            chunks=self.CHUNKS,
+            valid_from="2026-09-22",
+        )
+
+        assert "start_date" not in records[0]
+
+    @pytest.mark.unit
+    def test_the_period_is_in_the_passage_schema(self):
+        from pipeline.activities import _passage_schema_field_names
+
+        assert {"start_date", "end_date"} <= _passage_schema_field_names()
+
+
+class TestValidityFieldsFromDoc:
+    """What the ingest activities read off a documents row."""
+
+    @pytest.mark.unit
+    def test_uses_the_stored_period(self):
+        from pipeline.activities import _validity_fields_from_doc
+
+        fields = _validity_fields_from_doc(
+            {"valid_from": "2026-10-01", "valid_to": "2026-12-31"}
+        )
+
+        assert fields == {"valid_from": "2026-10-01", "valid_to": "2026-12-31"}
+
+    @pytest.mark.unit
+    def test_falls_back_to_the_upload_day_for_a_row_with_no_period(self):
+        # A document uploaded before validity existed, being reingested: its
+        # own upload day is a truer start than today, which would silently
+        # extend its life by another year.
+        from pipeline.activities import _validity_fields_from_doc
+
+        fields = _validity_fields_from_doc({"created_at": "2024-05-01T09:30:00"})
+
+        assert fields == {"valid_from": "2024-05-01", "valid_to": "2025-05-01"}
+
+    @pytest.mark.unit
+    def test_falls_back_to_today_when_the_row_has_no_upload_day_either(self):
+        from datetime import date
+
+        from pipeline.activities import _validity_fields_from_doc
+
+        fields = _validity_fields_from_doc({})
+
+        assert fields["valid_from"] == date.today().isoformat()
+
+    @pytest.mark.unit
+    def test_always_returns_both_ends(self):
+        # The ingest path must never write half a period.
+        from pipeline.activities import _validity_fields_from_doc
+
+        for doc in ({}, None, {"valid_from": "2026-01-01"}, {"created_at": "bogus"}):
+            fields = _validity_fields_from_doc(doc)
+            assert fields["valid_from"] and fields["valid_to"]
+
+
 class TestUpdateDocumentState:
     """Tests for the state update activity."""
 

@@ -516,7 +516,7 @@ Translation data is surfaced through the page model and review endpoints.
 - `GET /documents/{workflow_id}/qdrant`
 - `GET /documents/{workflow_id}/qdrant/chunks`
 - `POST /documents/{workflow_id}/reingest`
-- `POST /search`
+- `POST /search` — only answers from documents whose validity period covers today; `valid_on` asks about another day and `include_expired` drops the filter (see `docs/openapi-search.yaml`)
 - `GET /indexes/summary`
 - `GET /indexes/{index_name}/settings`
 - `GET /indexes/{index_name}/stats`

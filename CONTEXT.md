@@ -32,5 +32,9 @@ _Avoid_: "document type" — collides with `source_type`/`canonical_input_type`,
 The `validity` window (`startDate`/`endDate`) carried on the Network Catalog Envelope, named by the prod approver at `approve-prod` and stored as `documents.network_valid_from` / `network_valid_to`. Start is the approval date; end is prepopulated with the same day and is the approver's to move. Because the envelope is kind-level, the most recently published window is the live one for that whole Knowledge Kind — see `docs/ADR/0005-approver-sets-the-network-catalogs-validity-window.md`.
 _Avoid_: "document lifetime" — the document itself is not what expires, the announcement is. Also avoid "expiry": there is a start as well as an end.
 
+**Document Validity**:
+The period a document's chunks answer searches in, held as `documents.valid_from` / `documents.valid_to` and stamped onto every chunk's vector payload as `start_date` / `end_date`. Defaulted on upload to the upload day plus one year, then confirmed or moved by the reviewer in the same form that sets the Knowledge Kind. Both ends are inclusive, and search filters on it so an expired or not-yet-started document is never answered from. Chunks ingested before it existed carry neither date and stay searchable — see `docs/ADR/0006-document-validity-filters-search.md`.
+_Avoid_: "validity" alone — ambiguous with the Announcement Lifetime, which is a different window (kind-level, `startDate`/`endDate` on the wire, named by the prod approver). This one is document-level, never leaves the vector store, and expires a document's answers rather than an announcement.
+
 **network_visible**:
 An operator-controlled flag on a document/scheme (not a pipeline stage) that gates whether it's exposed to other BAPs through the pull-based Scheme Catalog snapshot. Independent of Publish to Network.
