@@ -15,8 +15,6 @@ from pathlib import Path
 from threading import Lock
 from typing import Optional
 
-from . import document_validity
-
 # Database path - can be configured via environment
 DB_PATH = os.environ.get("DOCUMENT_DB_PATH", "/data/documents.db")
 
@@ -686,16 +684,14 @@ def upsert_document(
     stamp alone so a re-upload / restart cannot silently reassign tenants.
     Uploader identity is set on INSERT, and filled on UPDATE only when currently null.
 
-    ``valid_from``/``valid_to`` are the document's validity period, likewise
-    INSERT-only: an uploader does not choose it (it defaults to the upload day
-    and a year out) and an approver's later edit must survive a restart that
-    re-registers the same workflow.
+    ``valid_from``/``valid_to`` are the document's validity period, stored as
+    given and likewise INSERT-only, so an approver's later edit survives a
+    restart that re-registers the same workflow. What the period should default
+    to is the caller's call (see ``pipeline/document_validity.py``); omitting
+    both stores NULL, which search reads as "no stated period".
     """
     now = datetime.utcnow().isoformat()
     instance_value = (instance or os.environ.get("DEFAULT_INSTANCE") or "default").strip().lower() or "default"
-    default_period = document_validity.default_period()
-    valid_from_value = (valid_from or "").strip() or default_period.start_date
-    valid_to_value = (valid_to or "").strip() or default_period.end_date
 
     with _db_lock:
         with get_connection() as conn:
@@ -777,7 +773,7 @@ def upsert_document(
                     original_artifact_id, normalized_artifact_id, latest_job_id,
                     instance_value,
                     uploaded_by_user_id, uploaded_by_username, uploaded_by_email, uploaded_by_roles,
-                    valid_from_value, valid_to_value,
+                    valid_from, valid_to,
                 ))
 
             conn.commit()

@@ -773,11 +773,7 @@ def _validity_fields_from_doc(doc: dict | None) -> dict:
         doc.get("valid_from"), doc.get("valid_to")
     )
     if period is None:
-        upload_day = str(doc.get("created_at") or "")[:10]
-        try:
-            period = document_validity.period_from_upload_date(upload_day)
-        except document_validity.DocumentValidityError:
-            period = document_validity.default_period()
+        period = document_validity.period_from_upload_timestamp(doc.get("created_at"))
     return {"valid_from": period.start_date, "valid_to": period.end_date}
 
 

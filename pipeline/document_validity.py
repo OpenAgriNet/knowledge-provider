@@ -98,6 +98,54 @@ def period_from_upload_date(upload_date: str) -> ValidityPeriod:
     return ValidityPeriod(start_date=stamp, end_date=add_years(stamp))
 
 
+def _parse_timestamp(value: Optional[str]) -> Optional[datetime]:
+    """Read a stored ISO-8601 timestamp, or None when it cannot be read.
+
+    `db.py` writes `datetime.utcnow().isoformat()`, which round-trips through
+    `fromisoformat` exactly. The trailing-Z form is accepted too because rows
+    can come from other writers, and Python 3.10's `fromisoformat` rejects it.
+    """
+    text = (value or "").strip()
+    if not text:
+        return None
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def day_of(timestamp: Optional[str]) -> Optional[str]:
+    """The calendar day an ISO-8601 timestamp falls on, or None when unreadable.
+
+    Parsed rather than sliced: a timestamp in an unexpected shape should come
+    back as "I cannot tell", not as whatever its first ten characters happen
+    to spell.
+    """
+    parsed = _parse_timestamp(timestamp)
+    return None if parsed is None else parsed.date().strftime(DATE_FORMAT)
+
+
+def period_from_upload_timestamp(
+    timestamp: Optional[str],
+    clock: Optional[Clock] = None,
+) -> ValidityPeriod:
+    """The default period for a document that has none stored, anchored on the
+    day it was uploaded.
+
+    Its own upload day is a truer start than today, which would silently extend
+    an old document's life by another year. A timestamp that cannot be read
+    falls back to today's default rather than raising: this runs on the ingest
+    path, where refusing to ingest over an unparseable audit column would be a
+    worse answer than giving the document a period starting now.
+    """
+    upload_day = day_of(timestamp)
+    if upload_day is None:
+        return default_period(clock)
+    return period_from_upload_date(upload_day)
+
+
 def _parse_date(value: Optional[str], field: str) -> date:
     try:
         return datetime.strptime((value or "").strip(), DATE_FORMAT).date()

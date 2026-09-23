@@ -117,11 +117,10 @@ class TestGetValidity:
         )
 
     @pytest.mark.unit
-    def test_a_freshly_uploaded_document_already_has_a_period(self, db_connection):
-        # Nothing asks for it on upload — db stamps the default so no document
-        # is ever ingested without one.
-        from datetime import date
-
+    def test_a_row_written_without_a_period_reads_as_none(self, db_connection):
+        # db.py stores what it is given and defaults nothing — the upload
+        # endpoint decides the period (see TestDocumentValidityEndpoints in
+        # test_api.py). A row created around it simply has none.
         db_connection.upsert_document(
             workflow_id="wf-fresh",
             document_id="doc-fresh",
@@ -129,8 +128,20 @@ class TestGetValidity:
             filepath="/books/b.pdf",
         )
 
-        period = DocumentRepository(db_connection).get_validity("wf-fresh")
+        assert DocumentRepository(db_connection).get_validity("wf-fresh") is None
 
-        assert period is not None
-        assert period.start_date == date.today().isoformat()
-        assert period.is_active_on(date.today().isoformat())
+    @pytest.mark.unit
+    @pytest.mark.db
+    def test_a_period_passed_to_the_db_layer_is_stored_verbatim(self, db_connection):
+        db_connection.upsert_document(
+            workflow_id="wf-stamped",
+            document_id="doc-stamped",
+            filename="c.pdf",
+            filepath="/books/c.pdf",
+            valid_from="2026-09-23",
+            valid_to="2027-09-23",
+        )
+
+        assert DocumentRepository(db_connection).get_validity("wf-stamped") == ValidityPeriod(
+            start_date="2026-09-23", end_date="2027-09-23"
+        )

@@ -173,8 +173,8 @@ class TestProdApproval:
 
         assert "network_valid_from" not in doc
         assert "network_valid_to" not in doc
-        # Document Validity is a different thing and is still there.
-        assert doc["valid_from"]
+        # Document Validity is a different thing and is still reported.
+        assert "valid_from" in doc
 
     @pytest.mark.api
     @pytest.mark.unit
@@ -212,17 +212,36 @@ class TestDocumentValidityEndpoints:
 
     @pytest.mark.api
     @pytest.mark.unit
-    def test_a_new_document_is_valid_from_today_for_a_year(self, test_client, db_connection):
+    def test_upload_stamps_today_and_a_year_out(self, test_client, sample_pdf_content):
+        # The upload endpoint owns this default — db.py stores what it is given
+        # and has no opinion on what a period should be — so the guarantee is
+        # only real if it is asserted through the endpoint that grants it.
         from pipeline.document_validity import default_period
 
-        workflow_id = "validity-001"
-        self._uploaded_document(db_connection, workflow_id)
         expected = default_period()
+
+        response = test_client.post(
+            "/upload",
+            files={"file": ("validity-upload.pdf", sample_pdf_content, "application/pdf")},
+        )
+
+        assert response.status_code == 200
+        doc = test_client.get(f"/documents/{response.json()['workflow_id']}").json()
+        assert doc["valid_from"] == expected.start_date
+        assert doc["valid_to"] == expected.end_date
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_a_document_stored_without_a_period_reports_none(self, test_client, db_connection):
+        # Rows written outside the upload path (scripts, backfills) carry no
+        # period, and the API surfaces that honestly rather than inventing one.
+        workflow_id = "validity-000"
+        self._uploaded_document(db_connection, workflow_id)
 
         doc = test_client.get(f"/documents/{workflow_id}").json()
 
-        assert doc["valid_from"] == expected.start_date
-        assert doc["valid_to"] == expected.end_date
+        assert doc["valid_from"] is None
+        assert doc["valid_to"] is None
 
     @pytest.mark.api
     @pytest.mark.unit

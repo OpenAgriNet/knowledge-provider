@@ -13,10 +13,12 @@ from pipeline.document_validity import (
     DocumentValidityError,
     ValidityPeriod,
     add_years,
+    day_of,
     default_period,
     parse_period,
     period_from_row,
     period_from_upload_date,
+    period_from_upload_timestamp,
     system_clock,
     today,
 )
@@ -187,3 +189,62 @@ class TestPeriodFromRow:
     @pytest.mark.unit
     def test_returns_none_for_an_inverted_stored_period(self):
         assert period_from_row("2026-12-31", "2026-01-01") is None
+
+
+class TestDayOf:
+    """Reading the calendar day out of a stored timestamp."""
+
+    @pytest.mark.unit
+    def test_reads_what_the_db_layer_writes(self):
+        # db.py stores datetime.utcnow().isoformat().
+        assert day_of("2026-09-23T09:30:00.123456") == "2026-09-23"
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "stamp",
+        [
+            "2026-09-23T09:30:00",
+            "2026-09-23 09:30:00",
+            "2026-09-23T09:30:00+05:30",
+            "2026-09-23",
+        ],
+    )
+    def test_reads_the_other_shapes_a_row_can_carry(self, stamp):
+        assert day_of(stamp) == "2026-09-23"
+
+    @pytest.mark.unit
+    def test_reads_a_trailing_z(self):
+        # Python 3.10's fromisoformat rejects "Z"; a row can still hold one.
+        assert day_of("2026-09-23T09:30:00Z") == "2026-09-23"
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("bad", [None, "", "   ", "garbage", "2026-13-45", "23/09/2026"])
+    def test_unreadable_timestamps_report_none(self, bad):
+        # The point of parsing rather than slicing: an unexpected shape comes
+        # back as "I cannot tell" instead of its first ten characters.
+        assert day_of(bad) is None
+
+    @pytest.mark.unit
+    def test_does_not_slice_a_misleading_prefix(self):
+        # "23/09/2026" sliced to ten characters looks like a date and is not.
+        assert day_of("23/09/2026 09:30:00") is None
+
+
+class TestPeriodFromUploadTimestamp:
+    @pytest.mark.unit
+    def test_anchors_on_the_day_the_timestamp_falls_on(self):
+        assert period_from_upload_timestamp("2024-05-01T09:30:00.123456") == ValidityPeriod(
+            start_date="2024-05-01", end_date="2025-05-01"
+        )
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("bad", [None, "", "garbage"])
+    def test_falls_back_to_todays_default_when_unreadable(self, bad):
+        # On the ingest path: refusing to ingest over an unparseable audit
+        # column would be a worse answer than a period starting now.
+        assert period_from_upload_timestamp(bad, clock=FROZEN) == default_period(FROZEN)
+
+    @pytest.mark.unit
+    def test_never_raises(self):
+        for value in (None, "", "   ", "garbage", "2026-13-45", "0001-01-01T00:00:00"):
+            assert period_from_upload_timestamp(value, clock=FROZEN) is not None
