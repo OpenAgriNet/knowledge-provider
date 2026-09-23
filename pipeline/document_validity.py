@@ -19,6 +19,11 @@ from typing import Callable, Optional
 
 # Operators think in calendar dates, not instants - a period is stored,
 # exchanged and filtered as a plain `YYYY-MM-DD` day.
+#
+# Parsing only. Dates are rendered with `date.isoformat()`, which is the same
+# format but zero-pads the year on every platform - glibc's strftime does not
+# ("%Y" of year 1 is "1-01-01" on Linux and "0001-01-01" on macOS), and a date
+# this module emitted would then fail the parse this module does.
 DATE_FORMAT = "%Y-%m-%d"
 
 # How long a freshly uploaded document is presumed to stay current. A year is
@@ -60,7 +65,7 @@ class ValidityPeriod:
 
 def today(clock: Optional[Clock] = None) -> str:
     """Today's date in the stored form."""
-    return (clock or system_clock)().date().strftime(DATE_FORMAT)
+    return (clock or system_clock)().date().isoformat()
 
 
 def add_years(stamp: str, years: int = DEFAULT_VALIDITY_YEARS) -> str:
@@ -68,13 +73,25 @@ def add_years(stamp: str, years: int = DEFAULT_VALIDITY_YEARS) -> str:
 
     29 February lands on 28 February in a non-leap year - the alternative
     (1 March) would push the period into the wrong month for no gain.
+
+    A stamp near `date.max` cannot move forward at all; that comes back as a
+    `DocumentValidityError` rather than the raw `ValueError` the stdlib
+    raises, so every failure out of this module is the one kind callers
+    already handle.
     """
     anchor = _parse_date(stamp, "date")
+    target_year = anchor.year + years
     try:
-        moved = anchor.replace(year=anchor.year + years)
+        moved = anchor.replace(year=target_year)
     except ValueError:
-        moved = anchor.replace(year=anchor.year + years, day=28)
-    return moved.strftime(DATE_FORMAT)
+        try:
+            moved = anchor.replace(year=target_year, day=28)
+        except ValueError:
+            raise DocumentValidityError(
+                f"{stamp} cannot move {years} year(s) forward: "
+                f"year {target_year} is outside the supported range."
+            ) from None
+    return moved.isoformat()
 
 
 def default_period(clock: Optional[Clock] = None) -> ValidityPeriod:
@@ -94,7 +111,7 @@ def period_from_upload_date(upload_date: str) -> ValidityPeriod:
     upload day is a truer start than today, which would silently extend a
     two-year-old document's life by another year.
     """
-    stamp = _parse_date(upload_date, "upload date").strftime(DATE_FORMAT)
+    stamp = _parse_date(upload_date, "upload date").isoformat()
     return ValidityPeriod(start_date=stamp, end_date=add_years(stamp))
 
 
@@ -124,7 +141,7 @@ def day_of(timestamp: Optional[str]) -> Optional[str]:
     to spell.
     """
     parsed = _parse_timestamp(timestamp)
-    return None if parsed is None else parsed.date().strftime(DATE_FORMAT)
+    return None if parsed is None else parsed.date().isoformat()
 
 
 def period_from_upload_timestamp(
@@ -143,7 +160,14 @@ def period_from_upload_timestamp(
     upload_day = day_of(timestamp)
     if upload_day is None:
         return default_period(clock)
-    return period_from_upload_date(upload_day)
+    try:
+        return period_from_upload_date(upload_day)
+    except DocumentValidityError:
+        # Belt and braces: `day_of` emits a form `period_from_upload_date`
+        # accepts, so this is unreachable today. It stays because the promise
+        # this function makes is "never raises", and a caller on the ingest
+        # path should not be the one to discover that drifted.
+        return default_period(clock)
 
 
 def _parse_date(value: Optional[str], field: str) -> date:
@@ -169,18 +193,18 @@ def parse_period(
     """
     raw_start = start_date if (start_date or "").strip() else today(clock)
     start = _parse_date(raw_start, "start date")
-    stamp = start.strftime(DATE_FORMAT)
+    stamp = start.isoformat()
 
     raw_end = end_date if (end_date or "").strip() else add_years(stamp)
     end = _parse_date(raw_end, "end date")
 
     if end < start:
         raise DocumentValidityError(
-            f"end date ({end.strftime(DATE_FORMAT)}) cannot be before "
+            f"end date ({end.isoformat()}) cannot be before "
             f"start date ({stamp})."
         )
 
-    return ValidityPeriod(start_date=stamp, end_date=end.strftime(DATE_FORMAT))
+    return ValidityPeriod(start_date=stamp, end_date=end.isoformat())
 
 
 def period_from_row(
