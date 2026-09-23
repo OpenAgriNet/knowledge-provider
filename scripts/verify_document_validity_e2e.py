@@ -35,7 +35,7 @@ os.environ["HF_HUB_OFFLINE"] = "1"
 
 from datetime import datetime  # noqa: E402
 
-from pipeline import db  # noqa: E402
+from pipeline import db, document_validity  # noqa: E402
 from pipeline.activities import _prepare_records, _validity_fields_from_doc  # noqa: E402
 from pipeline.vector_store.qdrant_store import QdrantVectorStore  # noqa: E402
 
@@ -59,6 +59,11 @@ def clock_at(stamp):
 
 
 def make_document(workflow_id, text, valid_from=None, valid_to=None, legacy=False):
+    # Stands in for the upload endpoint, which is what decides the period a new
+    # document starts with — db.py stores what it is given and defaults nothing.
+    if not legacy and valid_from is None and valid_to is None:
+        default = document_validity.default_period()
+        valid_from, valid_to = default.start_date, default.end_date
     db.upsert_document(
         workflow_id=workflow_id,
         document_id=workflow_id,

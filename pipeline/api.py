@@ -1009,6 +1009,10 @@ async def start_document_workflow(
 
     # Save to SQLite for visibility during processing
     actor = _actor_from_user(user)
+    # The period this document is searchable in starts here, at the one moment
+    # that knows the upload day. A reviewer confirms or moves it later, on the
+    # form that sets the document type.
+    validity = document_validity.default_period()
     db.upsert_document(
         workflow_id=workflow_id,
         document_id=document_id,
@@ -1024,6 +1028,8 @@ async def start_document_workflow(
         uploaded_by_username=actor.get("username") or None,
         uploaded_by_email=actor.get("email") or None,
         uploaded_by_roles=actor.get("roles_csv") or None,
+        valid_from=validity.start_date,
+        valid_to=validity.end_date,
     )
     job_id = db.create_document_job(
         workflow_id=workflow_id,
@@ -1180,6 +1186,8 @@ async def upload_and_process(
 
     # Save to SQLite for visibility during processing
     actor = _actor_from_user(user)
+    # See the manifest upload path above: the period starts at the upload.
+    validity = document_validity.default_period()
     db.upsert_document(
         workflow_id=workflow_id,
         document_id=document_id,
@@ -1195,6 +1203,8 @@ async def upload_and_process(
         uploaded_by_username=actor.get("username") or None,
         uploaded_by_email=actor.get("email") or None,
         uploaded_by_roles=actor.get("roles_csv") or None,
+        valid_from=validity.start_date,
+        valid_to=validity.end_date,
     )
     job_id = db.create_document_job(
         workflow_id=workflow_id,
