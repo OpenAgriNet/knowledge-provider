@@ -66,6 +66,20 @@ class TestAddYears:
         with pytest.raises(DocumentValidityError, match="YYYY-MM-DD"):
             add_years("22-09-2026")
 
+    @pytest.mark.unit
+    def test_zero_pads_a_year_below_1000(self):
+        # strftime("%Y") does not zero-pad on glibc — year 1 renders as
+        # "1-01-01" on Linux and "0001-01-01" on macOS — so a date this module
+        # emitted would fail the parse this module does, on Linux only.
+        assert add_years("0001-01-01") == "0002-01-01"
+
+    @pytest.mark.unit
+    def test_a_date_that_cannot_move_forward_is_a_domain_error(self):
+        # date.max is year 9999; the stdlib raises a bare ValueError there,
+        # which callers handling DocumentValidityError would not catch.
+        with pytest.raises(DocumentValidityError, match="outside the supported range"):
+            add_years("9999-12-31")
+
 
 class TestDefaultPeriod:
     @pytest.mark.unit
@@ -225,6 +239,12 @@ class TestDayOf:
         assert day_of(bad) is None
 
     @pytest.mark.unit
+    def test_zero_pads_a_year_below_1000(self):
+        # Must round-trip back through this module's own parser; see
+        # TestAddYears.test_zero_pads_a_year_below_1000 for why it can't.
+        assert day_of("0001-01-01T00:00:00") == "0001-01-01"
+
+    @pytest.mark.unit
     def test_does_not_slice_a_misleading_prefix(self):
         # "23/09/2026" sliced to ten characters looks like a date and is not.
         assert day_of("23/09/2026 09:30:00") is None
@@ -245,6 +265,25 @@ class TestPeriodFromUploadTimestamp:
         assert period_from_upload_timestamp(bad, clock=FROZEN) == default_period(FROZEN)
 
     @pytest.mark.unit
-    def test_never_raises(self):
-        for value in (None, "", "   ", "garbage", "2026-13-45", "0001-01-01T00:00:00"):
-            assert period_from_upload_timestamp(value, clock=FROZEN) is not None
+    @pytest.mark.parametrize(
+        "value",
+        [
+            None,
+            "",
+            "   ",
+            "garbage",
+            "2026-13-45",
+            "0001-01-01T00:00:00",  # below the year strftime zero-pads
+            "9999-12-31T23:59:59",  # cannot move a year forward
+        ],
+    )
+    def test_never_raises(self, value):
+        # This runs on the ingest path: whatever an audit column holds, it must
+        # come back as a period rather than stopping the document.
+        assert period_from_upload_timestamp(value, clock=FROZEN) is not None
+
+    @pytest.mark.unit
+    def test_a_timestamp_past_the_range_falls_back_to_today(self):
+        assert period_from_upload_timestamp(
+            "9999-12-31T23:59:59", clock=FROZEN
+        ) == default_period(FROZEN)
