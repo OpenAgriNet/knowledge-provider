@@ -10,6 +10,13 @@ class TestTranslationService:
     def test_load_translation_config_defaults(self, monkeypatch):
         from pipeline.translation.service import load_translation_config
 
+        # AGRINET_* win over TRANSLATION_* in _gemma_endpoint/_gemma_model, so
+        # clearing only the TRANSLATION_* pair leaves this asserting whatever
+        # the developer's .env happens to hold. A real .env sets both, which is
+        # why this passed alone and failed in a full run (any test importing
+        # pipeline.api pulls .env into the process via load_dotenv).
+        monkeypatch.delenv("AGRINET_GEMMA_BASE_URL", raising=False)
+        monkeypatch.delenv("AGRINET_GEMMA_MODEL_NAME", raising=False)
         monkeypatch.delenv("TRANSLATION_PROVIDER", raising=False)
         monkeypatch.delenv("TRANSLATION_MODEL", raising=False)
         monkeypatch.setenv("TRANSLATION_VLLM_BASE_URL", "http://localhost:8000/v1")
