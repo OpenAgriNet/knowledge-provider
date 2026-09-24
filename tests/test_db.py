@@ -245,6 +245,91 @@ class TestDocumentOperations:
         assert db_connection.purge_document("never-existed") == {}
 
 
+class TestDocumentValidityColumns:
+    """The validity period columns on `documents`.
+
+    db.py stores the dates it is handed and defaults nothing — the upload
+    endpoint decides what a new document's period should be (see
+    TestDocumentValidityEndpoints in test_api.py). These pin the storage half
+    of that split.
+    """
+
+    @pytest.mark.db
+    @pytest.mark.unit
+    def test_a_period_is_stored_verbatim(self, db_connection):
+        db_connection.upsert_document(
+            workflow_id="wf-stamped",
+            document_id="doc-stamped",
+            filename="c.pdf",
+            filepath="/books/c.pdf",
+            valid_from="2026-09-23",
+            valid_to="2027-09-23",
+        )
+
+        doc = db_connection.get_document("wf-stamped")
+
+        assert doc["valid_from"] == "2026-09-23"
+        assert doc["valid_to"] == "2027-09-23"
+
+    @pytest.mark.db
+    @pytest.mark.unit
+    def test_a_document_created_without_a_period_stores_null(self, db_connection):
+        # No default invented here — that is the caller's call.
+        db_connection.upsert_document(
+            workflow_id="wf-fresh",
+            document_id="doc-fresh",
+            filename="b.pdf",
+            filepath="/books/b.pdf",
+        )
+
+        doc = db_connection.get_document("wf-fresh")
+
+        assert doc["valid_from"] is None
+        assert doc["valid_to"] is None
+
+    @pytest.mark.db
+    @pytest.mark.unit
+    def test_set_document_validity_round_trips(self, db_connection):
+        db_connection.upsert_document(
+            workflow_id="wf-validity",
+            document_id="doc-validity",
+            filename="a.pdf",
+            filepath="/books/a.pdf",
+        )
+
+        db_connection.set_document_validity("wf-validity", "2026-10-01", "2026-12-31")
+
+        doc = db_connection.get_document("wf-validity")
+        assert doc["valid_from"] == "2026-10-01"
+        assert doc["valid_to"] == "2026-12-31"
+
+    @pytest.mark.db
+    @pytest.mark.unit
+    def test_a_period_is_not_overwritten_by_a_later_upsert(self, db_connection):
+        # INSERT-only: an approver's edit must survive a restart that
+        # re-registers the same workflow.
+        db_connection.upsert_document(
+            workflow_id="wf-keep",
+            document_id="doc-keep",
+            filename="d.pdf",
+            filepath="/books/d.pdf",
+            valid_from="2026-01-01",
+            valid_to="2026-06-30",
+        )
+
+        db_connection.upsert_document(
+            workflow_id="wf-keep",
+            document_id="doc-keep",
+            filename="d.pdf",
+            filepath="/books/d.pdf",
+            stage="ocr_review",
+        )
+
+        doc = db_connection.get_document("wf-keep")
+        assert doc["valid_from"] == "2026-01-01"
+        assert doc["valid_to"] == "2026-06-30"
+
+
 class TestPageOperations:
     """Tests for page CRUD operations."""
 
