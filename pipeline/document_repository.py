@@ -9,7 +9,6 @@ so a caller never unpacks a raw document row.
 from typing import Optional
 
 from . import db
-from .document_validity import ValidityPeriod, period_from_row
 
 
 class DocumentRepository:
@@ -29,16 +28,3 @@ class DocumentRepository:
         if not doc:
             return None
         return doc.get("document_kind")
-
-    def get_validity(self, workflow_id: str) -> Optional[ValidityPeriod]:
-        """The period this document's chunks are searchable in, or None when
-        it has none.
-
-        None is not an error: documents uploaded before validity existed have
-        no stored dates, and their chunks are searchable without restriction
-        (see `document_validity.period_from_row`).
-        """
-        doc = self._db.get_document(workflow_id)
-        if not doc:
-            return None
-        return period_from_row(doc.get("valid_from"), doc.get("valid_to"))
