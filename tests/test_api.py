@@ -441,6 +441,33 @@ class TestSearchValidity:
 
     @pytest.mark.api
     @pytest.mark.unit
+    def test_normalises_valid_on_before_it_reaches_the_store(self, test_client, monkeypatch):
+        # strptime accepts "2026-9-3" but the vector store's date range does
+        # not, so validating without using the parsed value turned a bad
+        # request into a "Vector search failed" 400 blaming the store.
+        captured = {}
+
+        class FakeStore:
+            backend = "qdrant"
+
+            def search(self, **kwargs):
+                captured.update(kwargs)
+                return {"hits": [], "valid_on": kwargs.get("valid_on")}
+
+        monkeypatch.setattr(
+            "pipeline.vector_store.get_vector_store", lambda: FakeStore()
+        )
+
+        response = test_client.post(
+            "/search", json={"query": "kisan", "valid_on": "2026-9-3"}
+        )
+
+        assert response.status_code == 200
+        assert captured["valid_on"] == "2026-09-03"
+        assert response.json()["effective_config"]["valid_on"] == "2026-09-03"
+
+    @pytest.mark.api
+    @pytest.mark.unit
     def test_rejects_a_malformed_valid_on(self, test_client):
         response = test_client.post(
             "/search", json={"query": "kisan", "valid_on": "01-01-2027"}

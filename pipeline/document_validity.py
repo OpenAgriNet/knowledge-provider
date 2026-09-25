@@ -179,6 +179,18 @@ def _parse_date(value: Optional[str], field: str) -> date:
         ) from None
 
 
+def parse_day(value: Optional[str], field: str = "date") -> str:
+    """Validate a single calendar date and return it in canonical form.
+
+    The canonical form matters as much as the validation: `strptime` accepts
+    `2026-9-3`, so a caller that validated a date and then forwarded the raw
+    string would pass its own check and fail somewhere downstream that wants
+    the padded form. Returning the parsed date means a caller cannot hold a
+    validated date and a non-canonical one at the same time.
+    """
+    return _parse_date(value, field).isoformat()
+
+
 def parse_period(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,

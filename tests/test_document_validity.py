@@ -15,6 +15,7 @@ from pipeline.document_validity import (
     add_years,
     day_of,
     default_period,
+    parse_day,
     parse_period,
     period_from_row,
     period_from_upload_date,
@@ -287,3 +288,33 @@ class TestPeriodFromUploadTimestamp:
         assert period_from_upload_timestamp(
             "9999-12-31T23:59:59", clock=FROZEN
         ) == default_period(FROZEN)
+
+
+class TestParseDay:
+    """Validating a single calendar date, and getting it back canonical."""
+
+    @pytest.mark.unit
+    def test_returns_the_date_it_validated(self):
+        assert parse_day("2026-09-03") == "2026-09-03"
+
+    @pytest.mark.unit
+    def test_zero_pads_a_date_strptime_accepts_unpadded(self):
+        # The reason this returns a value instead of just raising: strptime
+        # takes "2026-9-3", and a caller forwarding that raw string fails in
+        # whatever consumer wants the padded form.
+        assert parse_day("2026-9-3") == "2026-09-03"
+
+    @pytest.mark.unit
+    def test_trims_surrounding_whitespace(self):
+        assert parse_day("  2026-09-03 ") == "2026-09-03"
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("bad", [None, "", "   ", "01-01-2027", "2026/09/03", "garbage", "2026-13-45"])
+    def test_rejects_anything_that_is_not_a_calendar_date(self, bad):
+        with pytest.raises(DocumentValidityError, match="YYYY-MM-DD"):
+            parse_day(bad)
+
+    @pytest.mark.unit
+    def test_names_the_field_in_the_error(self):
+        with pytest.raises(DocumentValidityError, match="valid_on"):
+            parse_day("nope", "valid_on")
