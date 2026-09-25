@@ -4,7 +4,8 @@ The validity period a document's chunks are searchable in.
 A document is only worth answering from for as long as its content still
 holds. This module owns that rule: what a legal period is, the period an
 uploader's document starts life with, and whether a period is live on a given
-day. Pure - no env, no I/O, no db - so the API can validate an approver's edit,
+day. A period always has a start; its end is optional, and an absent end means
+the document never expires. Pure - no env, no I/O, no db - so the API can validate an approver's edit,
 the ingest activity can stamp the same period onto every chunk, and the vector
 store can build a search filter from it without any of them re-deriving it.
 
@@ -26,11 +27,6 @@ from typing import Callable, Optional
 # this module emitted would then fail the parse this module does.
 DATE_FORMAT = "%Y-%m-%d"
 
-# How long a freshly uploaded document is presumed to stay current. A year is
-# the business's default review cadence, not a technical limit: the approver is
-# shown it prefilled and is free to move either end.
-DEFAULT_VALIDITY_YEARS = 1
-
 # Returns "now". Injected wherever the answer depends on the current day, so a
 # test can pin the day instead of building fixtures relative to the real one.
 Clock = Callable[[], datetime]
@@ -48,19 +44,31 @@ def system_clock() -> datetime:
 
 @dataclass(frozen=True)
 class ValidityPeriod:
-    """Inclusive calendar span, both ends `YYYY-MM-DD`.
+    """Calendar span, `YYYY-MM-DD`, with an inclusive start and optional end.
 
-    Inclusive on purpose: a document uploaded today defaults to a period
-    starting today and must be searchable the same day, and an end date names
-    the last day it answers rather than the first day it does not.
+    Inclusive on purpose: a document uploaded today starts today and must be
+    searchable the same day, and an end date names the last day it answers
+    rather than the first day it does not.
+
+    `end_date is None` means the document never expires. That is the default a
+    document is uploaded with - business asks that content stay answerable
+    until someone decides otherwise, rather than going dark on a date nobody
+    chose.
     """
 
     start_date: str
-    end_date: str
+    end_date: Optional[str] = None
+
+    @property
+    def expires(self) -> bool:
+        """Whether this period has an end at all."""
+        return self.end_date is not None
 
     def is_active_on(self, on_date: str) -> bool:
         """Whether this period covers `on_date` (`YYYY-MM-DD`)."""
-        return self.start_date <= on_date <= self.end_date
+        if on_date < self.start_date:
+            return False
+        return self.end_date is None or on_date <= self.end_date
 
 
 def today(clock: Optional[Clock] = None) -> str:
@@ -68,38 +76,12 @@ def today(clock: Optional[Clock] = None) -> str:
     return (clock or system_clock)().date().isoformat()
 
 
-def add_years(stamp: str, years: int = DEFAULT_VALIDITY_YEARS) -> str:
-    """`stamp` moved forward by whole calendar years.
-
-    29 February lands on 28 February in a non-leap year - the alternative
-    (1 March) would push the period into the wrong month for no gain.
-
-    A stamp near `date.max` cannot move forward at all; that comes back as a
-    `DocumentValidityError` rather than the raw `ValueError` the stdlib
-    raises, so every failure out of this module is the one kind callers
-    already handle.
-    """
-    anchor = _parse_date(stamp, "date")
-    target_year = anchor.year + years
-    try:
-        moved = anchor.replace(year=target_year)
-    except ValueError:
-        try:
-            moved = anchor.replace(year=target_year, day=28)
-        except ValueError:
-            raise DocumentValidityError(
-                f"{stamp} cannot move {years} year(s) forward: "
-                f"year {target_year} is outside the supported range."
-            ) from None
-    return moved.isoformat()
-
-
 def default_period(clock: Optional[Clock] = None) -> ValidityPeriod:
     """The period a document gets on upload, before anyone edits it.
 
-    Starts the day it is uploaded and runs a year out, so a document is live
-    the moment it is ingested and expires without anyone having to remember to
-    expire it.
+    Starts the day it is uploaded and does not end: a document is live the
+    moment it is ingested and stays answerable until a reviewer says otherwise.
+    An end nobody chose would retire content on a date nobody meant.
     """
     return period_from_upload_date(today(clock))
 
@@ -108,11 +90,11 @@ def period_from_upload_date(upload_date: str) -> ValidityPeriod:
     """The default period anchored on the day a document was uploaded.
 
     Used when stamping a document that predates the stored columns: its own
-    upload day is a truer start than today, which would silently extend a
-    two-year-old document's life by another year.
+    upload day is a truer start than today, which would date a two-year-old
+    document as though it arrived this morning.
     """
     stamp = _parse_date(upload_date, "upload date").isoformat()
-    return ValidityPeriod(start_date=stamp, end_date=add_years(stamp))
+    return ValidityPeriod(start_date=stamp, end_date=None)
 
 
 def _parse_timestamp(value: Optional[str]) -> Optional[datetime]:
@@ -196,19 +178,22 @@ def parse_period(
     end_date: Optional[str] = None,
     clock: Optional[Clock] = None,
 ) -> ValidityPeriod:
-    """Validate an operator-supplied period, defaulting either end.
+    """Validate an operator-supplied period.
 
-    An omitted start defaults to today and an omitted end to a year past the
-    resolved start, so a caller that sends only one end still gets a complete
-    period. Raises `DocumentValidityError` - never returns a half-valid
-    period, so a caller holding one can store it unchecked.
+    An omitted start defaults to today. An omitted end means the document
+    never expires - blank is a real answer here, not a missing one, so a
+    reviewer who clears the end date is asking for exactly that. Raises
+    `DocumentValidityError` - never returns a half-valid period, so a caller
+    holding one can store it unchecked.
     """
     raw_start = start_date if (start_date or "").strip() else today(clock)
     start = _parse_date(raw_start, "start date")
     stamp = start.isoformat()
 
-    raw_end = end_date if (end_date or "").strip() else add_years(stamp)
-    end = _parse_date(raw_end, "end date")
+    if not (end_date or "").strip():
+        return ValidityPeriod(start_date=stamp, end_date=None)
+
+    end = _parse_date(end_date, "end date")
 
     if end < start:
         raise DocumentValidityError(
@@ -225,12 +210,17 @@ def period_from_row(
 ) -> Optional[ValidityPeriod]:
     """Rebuild a stored period, or None when the document has none.
 
-    None is the normal case for a document uploaded before validity existed.
-    It means "this document has no stated period", which search reads as
-    always current - not an error, and not a silent fallback to today, which
-    would retire every legacy document at once.
+    The start is what decides whether a period exists at all. A row with a
+    start and a NULL end is the normal shape - that is what an upload stores -
+    and it rebuilds as an open-ended period, not as "no period": the document
+    is searchable from its start day and never expires.
+
+    None means "this document has no stated period", the case for a document
+    uploaded before validity existed. Search reads that as always current -
+    not an error, and not a silent fallback to today, which would retire every
+    legacy document at once.
     """
-    if not (start_date or "").strip() or not (end_date or "").strip():
+    if not (start_date or "").strip():
         return None
     try:
         return parse_period(start_date, end_date)

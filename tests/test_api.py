@@ -212,13 +212,13 @@ class TestDocumentValidityEndpoints:
 
     @pytest.mark.api
     @pytest.mark.unit
-    def test_upload_stamps_today_and_a_year_out(self, test_client, sample_pdf_content):
+    def test_upload_starts_today_and_never_expires(self, test_client, sample_pdf_content):
         # The upload endpoint owns this default — db.py stores what it is given
         # and has no opinion on what a period should be — so the guarantee is
         # only real if it is asserted through the endpoint that grants it.
-        from pipeline.document_validity import default_period
-
-        expected = default_period()
+        # Spelled out rather than compared against default_period(), so a
+        # change to that default fails here instead of agreeing with itself.
+        from datetime import date
 
         response = test_client.post(
             "/upload",
@@ -227,8 +227,32 @@ class TestDocumentValidityEndpoints:
 
         assert response.status_code == 200
         doc = test_client.get(f"/documents/{response.json()['workflow_id']}").json()
-        assert doc["valid_from"] == expected.start_date
-        assert doc["valid_to"] == expected.end_date
+        assert doc["valid_from"] == date.today().isoformat()
+        assert doc["valid_to"] is None
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_an_end_date_can_be_set_and_then_cleared(self, test_client, db_connection):
+        # Clearing is the way back to "never expires". Blank has to be a real
+        # answer, not a missing one, or an end date could never be undone.
+        workflow_id = "validity-009"
+        self._uploaded_document(db_connection, workflow_id)
+
+        set_response = test_client.patch(
+            f"/documents/{workflow_id}/scheme-metadata",
+            json={"document_kind": "advisory", "valid_from": "2026-01-01", "valid_to": "2026-06-30"},
+        )
+        assert set_response.json()["valid_to"] == "2026-06-30"
+
+        cleared = test_client.patch(
+            f"/documents/{workflow_id}/scheme-metadata",
+            json={"document_kind": "advisory", "valid_to": ""},
+        )
+
+        assert cleared.status_code == 200
+        assert cleared.json()["valid_to"] is None
+        assert cleared.json()["valid_from"] == "2026-01-01"
+        assert db_connection.get_document(workflow_id)["valid_to"] is None
 
     @pytest.mark.api
     @pytest.mark.unit

@@ -44,6 +44,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Skeleton } from '../components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { Textarea } from '../components/ui/textarea'
+import { DOCUMENT_VALIDITY_ENABLED } from '../config'
 import {
   fetchJson,
   formatCompactDateTime,
@@ -110,25 +111,14 @@ function previewSchemeCode(title) {
 }
 
 /**
- * Validity the document is searchable in. Prefilled rather than blank: the
- * server already stamped the upload day and a year out on upload, so the
- * reviewer is confirming or moving a real period, not inventing one. Mirrors
- * pipeline/document_validity.py - the server revalidates whatever is sent.
+ * Validity the document is searchable in. The start is prefilled from what the
+ * server stamped at upload; the end is deliberately blank-able - an empty end
+ * means the document never expires, which is the default every upload gets.
+ * Mirrors pipeline/document_validity.py; the server revalidates whatever is sent.
  */
-function plusOneYearISODate(stamp) {
-  const [year, month, day] = (stamp || '').split('-')
-  if (!year || !month || !day) return ''
-  // Clamp 29 Feb to 28 Feb in a non-leap year, matching add_years() server-side.
-  const moved = new Date(Number(year) + 1, Number(month) - 1, Number(day))
-  const movedMonth = String(moved.getMonth() + 1).padStart(2, '0')
-  const movedDay = String(moved.getDate()).padStart(2, '0')
-  if (moved.getMonth() !== Number(month) - 1) return `${Number(year) + 1}-${month}-28`
-  return `${moved.getFullYear()}-${movedMonth}-${movedDay}`
-}
-
 function validateValidity(validFrom, validTo) {
-  if (!validFrom || !validTo) return 'Set both a start and an end date.'
-  if (validTo < validFrom) return 'End date cannot be before the start date.'
+  if (!validFrom) return 'Set a start date.'
+  if (validTo && validTo < validFrom) return 'End date cannot be before the start date.'
   return ''
 }
 
@@ -152,15 +142,17 @@ function DocumentClassificationPanel({ doc, workflowId, canClassify, onSaved }) 
   const [customKind, setCustomKind] = useState(hasKind && !DOCUMENT_KIND_OPTIONS.some(o => o.value === doc.document_kind) ? doc.document_kind : '')
   const [schemeName, setSchemeName] = useState(doc.scheme_name || '')
   const [validFrom, setValidFrom] = useState(doc.valid_from || todayISODate())
-  const [validTo, setValidTo] = useState(
-    doc.valid_to || plusOneYearISODate(doc.valid_from || todayISODate())
-  )
+  // Blank when the document has no end date, which is the normal case - an
+  // empty field here reads as "never expires", not as "not filled in yet".
+  const [validTo, setValidTo] = useState(doc.valid_to || '')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
   const effectiveKind = kind === '__custom__' ? customKind.trim().toLowerCase() : kind
   const isScheme = effectiveKind === 'scheme'
-  const validityError = validateValidity(validFrom, validTo)
+  const validityError = DOCUMENT_VALIDITY_ENABLED
+    ? validateValidity(validFrom, validTo)
+    : ''
   const canSave =
     Boolean(effectiveKind) &&
     (!isScheme || schemeName.trim().length > 0) &&
@@ -177,8 +169,11 @@ function DocumentClassificationPanel({ doc, workflowId, canClassify, onSaved }) 
         body: JSON.stringify({
           document_kind: effectiveKind,
           ...(isScheme ? { scheme_name: schemeName.trim() } : {}),
-          valid_from: validFrom,
-          valid_to: validTo,
+          // Omitted entirely when the feature is off, so classifying a
+          // document leaves whatever period the upload stamped untouched.
+          ...(DOCUMENT_VALIDITY_ENABLED
+            ? { valid_from: validFrom, valid_to: validTo }
+            : {}),
         }),
       })
       await onSaved()
@@ -192,13 +187,15 @@ function DocumentClassificationPanel({ doc, workflowId, canClassify, onSaved }) 
   const alreadySaved =
     doc.document_kind === effectiveKind
     && (!isScheme || doc.scheme_name === schemeName.trim())
-    && doc.valid_from === validFrom
-    && doc.valid_to === validTo
+    && (!DOCUMENT_VALIDITY_ENABLED
+      || (doc.valid_from === validFrom && (doc.valid_to || '') === validTo))
 
   return (
     <div className="space-y-2 rounded-md border border-border bg-muted/30 p-3">
       <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-        Document type and validity — used by the Master Catalog / AI layer
+        {DOCUMENT_VALIDITY_ENABLED
+          ? 'Document type and validity — used by the Master Catalog / AI layer'
+          : 'Document type — used by the Master Catalog / AI layer'}
       </p>
       <div className="flex flex-wrap items-end gap-2">
         <div className="flex flex-col gap-1">
@@ -214,27 +211,31 @@ function DocumentClassificationPanel({ doc, workflowId, canClassify, onSaved }) 
             </SelectContent>
           </Select>
         </div>
-        <div className="flex flex-col gap-1">
-          <span className="text-[10px] text-muted-foreground">Valid from</span>
-          <Input
-            type="date"
-            className="h-8 w-[150px] text-xs"
-            value={validFrom}
-            disabled={!canClassify}
-            onChange={e => setValidFrom(e.target.value)}
-          />
-        </div>
-        <div className="flex flex-col gap-1">
-          <span className="text-[10px] text-muted-foreground">Valid until</span>
-          <Input
-            type="date"
-            className="h-8 w-[150px] text-xs"
-            value={validTo}
-            min={validFrom}
-            disabled={!canClassify}
-            onChange={e => setValidTo(e.target.value)}
-          />
-        </div>
+        {DOCUMENT_VALIDITY_ENABLED && (
+          <>
+            <div className="flex flex-col gap-1">
+              <span className="text-[10px] text-muted-foreground">Valid from</span>
+              <Input
+                type="date"
+                className="h-8 w-[150px] text-xs"
+                value={validFrom}
+                disabled={!canClassify}
+                onChange={e => setValidFrom(e.target.value)}
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <span className="text-[10px] text-muted-foreground">Valid until (optional)</span>
+              <Input
+                type="date"
+                className="h-8 w-[150px] text-xs"
+                value={validTo}
+                min={validFrom}
+                disabled={!canClassify}
+                onChange={e => setValidTo(e.target.value)}
+              />
+            </div>
+          </>
+        )}
         {kind === '__custom__' && (
           <div className="flex flex-col gap-1">
             <span className="text-[10px] text-muted-foreground">Custom type</span>
@@ -273,13 +274,13 @@ function DocumentClassificationPanel({ doc, workflowId, canClassify, onSaved }) 
           </Button>
         )}
       </div>
-      {canClassify && validityError ? (
+      {DOCUMENT_VALIDITY_ENABLED && canClassify && validityError ? (
         <p className="text-xs text-destructive">{validityError}</p>
       ) : null}
-      {canClassify && !validityError ? (
+      {DOCUMENT_VALIDITY_ENABLED && canClassify && !validityError ? (
         <p className="text-[11px] text-muted-foreground">
-          Search only answers from this document between these dates. Defaults to a
-          year from upload — move either end before publishing to dev.
+          Search only answers from this document from the start date onwards. Leave
+          the end date blank and it never expires.
         </p>
       ) : null}
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
