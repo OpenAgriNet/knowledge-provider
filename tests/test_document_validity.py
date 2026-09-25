@@ -9,10 +9,8 @@ from datetime import datetime
 import pytest
 
 from pipeline.document_validity import (
-    DEFAULT_VALIDITY_YEARS,
     DocumentValidityError,
     ValidityPeriod,
-    add_years,
     day_of,
     default_period,
     parse_day,
@@ -43,52 +41,19 @@ class TestToday:
         assert today() == system_clock().date().isoformat()
 
 
-class TestAddYears:
-    @pytest.mark.unit
-    def test_moves_a_date_a_year_on(self):
-        assert add_years("2026-09-22") == "2027-09-22"
-
-    @pytest.mark.unit
-    def test_default_is_one_year(self):
-        assert DEFAULT_VALIDITY_YEARS == 1
-
-    @pytest.mark.unit
-    def test_leap_day_lands_on_the_28th(self):
-        # 2027-02-29 does not exist; 1 March would push the period into the
-        # wrong month, so the last day of February is the honest answer.
-        assert add_years("2024-02-29") == "2025-02-28"
-
-    @pytest.mark.unit
-    def test_leap_day_to_a_leap_year_keeps_the_29th(self):
-        assert add_years("2023-02-28") == "2024-02-28"
-
-    @pytest.mark.unit
-    def test_rejects_a_malformed_date(self):
-        with pytest.raises(DocumentValidityError, match="YYYY-MM-DD"):
-            add_years("22-09-2026")
-
-    @pytest.mark.unit
-    def test_zero_pads_a_year_below_1000(self):
-        # strftime("%Y") does not zero-pad on glibc — year 1 renders as
-        # "1-01-01" on Linux and "0001-01-01" on macOS — so a date this module
-        # emitted would fail the parse this module does, on Linux only.
-        assert add_years("0001-01-01") == "0002-01-01"
-
-    @pytest.mark.unit
-    def test_a_date_that_cannot_move_forward_is_a_domain_error(self):
-        # date.max is year 9999; the stdlib raises a bare ValueError there,
-        # which callers handling DocumentValidityError would not catch.
-        with pytest.raises(DocumentValidityError, match="outside the supported range"):
-            add_years("9999-12-31")
-
-
 class TestDefaultPeriod:
     @pytest.mark.unit
-    def test_starts_today_and_runs_a_year(self):
-        # What an uploader's document gets before anyone edits anything.
+    def test_starts_today_and_never_ends(self):
+        # What an uploader's document gets before anyone edits anything. The
+        # business asks that content stay answerable until someone decides
+        # otherwise, rather than expiring on a date nobody chose.
         assert default_period(FROZEN) == ValidityPeriod(
-            start_date="2026-09-22", end_date="2027-09-22"
+            start_date="2026-09-22", end_date=None
         )
+
+    @pytest.mark.unit
+    def test_does_not_expire(self):
+        assert default_period(FROZEN).expires is False
 
     @pytest.mark.unit
     def test_is_active_on_its_own_first_day(self):
@@ -97,25 +62,23 @@ class TestDefaultPeriod:
         assert default_period(FROZEN).is_active_on("2026-09-22")
 
     @pytest.mark.unit
-    def test_is_active_on_its_own_last_day(self):
-        assert default_period(FROZEN).is_active_on("2027-09-22")
-
-    @pytest.mark.unit
-    def test_is_not_active_the_day_after_it_ends(self):
-        assert not default_period(FROZEN).is_active_on("2027-09-23")
+    @pytest.mark.parametrize("day", ["2027-09-23", "2099-01-01", "9999-12-31"])
+    def test_is_still_active_however_far_out_you_look(self, day):
+        assert default_period(FROZEN).is_active_on(day)
 
     @pytest.mark.unit
     def test_is_not_active_the_day_before_it_starts(self):
+        # An open end does not mean an open start.
         assert not default_period(FROZEN).is_active_on("2026-09-21")
 
 
 class TestPeriodFromUploadDate:
     @pytest.mark.unit
     def test_anchors_on_the_upload_day_not_today(self):
-        # A document uploaded two years ago must not have its life quietly
-        # extended by a year just because it is being reingested today.
+        # A document uploaded two years ago must not be dated as though it
+        # arrived this morning just because it is being reingested today.
         assert period_from_upload_date("2024-05-01") == ValidityPeriod(
-            start_date="2024-05-01", end_date="2025-05-01"
+            start_date="2024-05-01", end_date=None
         )
 
     @pytest.mark.unit
@@ -126,15 +89,21 @@ class TestPeriodFromUploadDate:
 
 class TestParsePeriod:
     @pytest.mark.unit
-    def test_defaults_both_ends(self):
+    def test_defaults_to_today_with_no_end(self):
         assert parse_period(clock=FROZEN) == ValidityPeriod(
-            start_date="2026-09-22", end_date="2027-09-22"
+            start_date="2026-09-22", end_date=None
         )
 
     @pytest.mark.unit
     @pytest.mark.parametrize("blank", [None, "", "   "])
-    def test_defaults_a_blank_end_to_a_year_past_the_start(self, blank):
-        assert parse_period("2026-01-15", blank, clock=FROZEN).end_date == "2027-01-15"
+    def test_a_blank_end_means_never_expires(self, blank):
+        # Blank is a real answer here, not a missing one: a reviewer who
+        # clears the end date is asking for a document that never expires.
+        assert parse_period("2026-01-15", blank, clock=FROZEN).end_date is None
+
+    @pytest.mark.unit
+    def test_an_explicit_end_is_still_honoured(self):
+        assert parse_period("2026-01-15", "2026-06-30", clock=FROZEN).end_date == "2026-06-30"
 
     @pytest.mark.unit
     @pytest.mark.parametrize("blank", [None, "", "   "])
@@ -190,12 +159,23 @@ class TestPeriodFromRow:
     @pytest.mark.unit
     @pytest.mark.parametrize(
         "start,end",
-        [(None, None), ("2026-01-01", None), (None, "2026-12-31"), ("", ""), ("  ", "2026-12-31")],
+        [(None, None), (None, "2026-12-31"), ("", ""), ("  ", "2026-12-31")],
     )
-    def test_returns_none_when_either_end_is_missing(self, start, end):
+    def test_returns_none_when_the_start_is_missing(self, start, end):
         # A document uploaded before validity existed. None means "no stated
-        # period", which search reads as always current.
+        # period", which search reads as always current. The start is what
+        # decides whether a period exists at all.
         assert period_from_row(start, end) is None
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("blank", [None, "", "   "])
+    def test_a_start_with_no_end_is_an_open_ended_period(self, blank):
+        # The normal shape: this is exactly what an upload stores. It must
+        # rebuild as a real period, not as "no period" — the document is
+        # searchable from its start day and never expires.
+        assert period_from_row("2026-01-01", blank) == ValidityPeriod(
+            start_date="2026-01-01", end_date=None
+        )
 
     @pytest.mark.unit
     def test_returns_none_for_a_row_this_module_never_wrote(self):
@@ -255,7 +235,7 @@ class TestPeriodFromUploadTimestamp:
     @pytest.mark.unit
     def test_anchors_on_the_day_the_timestamp_falls_on(self):
         assert period_from_upload_timestamp("2024-05-01T09:30:00.123456") == ValidityPeriod(
-            start_date="2024-05-01", end_date="2025-05-01"
+            start_date="2024-05-01", end_date=None
         )
 
     @pytest.mark.unit
@@ -284,10 +264,12 @@ class TestPeriodFromUploadTimestamp:
         assert period_from_upload_timestamp(value, clock=FROZEN) is not None
 
     @pytest.mark.unit
-    def test_a_timestamp_past_the_range_falls_back_to_today(self):
+    def test_a_timestamp_at_the_end_of_the_range_is_anchored_not_rejected(self):
+        # Used to fall back to today: deriving an end a year out overflowed
+        # past date.max. With no end to derive there is nothing to overflow.
         assert period_from_upload_timestamp(
             "9999-12-31T23:59:59", clock=FROZEN
-        ) == default_period(FROZEN)
+        ) == ValidityPeriod(start_date="9999-12-31", end_date=None)
 
 
 class TestParseDay:

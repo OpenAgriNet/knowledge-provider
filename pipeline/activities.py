@@ -724,7 +724,11 @@ def _prepare_records(
         }
         if validity is not None:
             record["start_date"] = validity.start_date
-            record["end_date"] = validity.end_date
+            # Omitted, not null, when the document never expires: the search
+            # filter's "end_date missing" branch is what keeps it answerable
+            # forever, and _record_payload drops None anyway.
+            if validity.end_date is not None:
+                record["end_date"] = validity.end_date
         if is_scheme:
             record["scheme_code"] = (scheme_code or "").strip().lower()
             record["scheme_name"] = resolved_scheme_name
@@ -764,9 +768,9 @@ def _validity_fields_from_doc(doc: dict | None) -> dict:
     """Extract the validity kwargs for `_prepare_records` from a documents row.
 
     A row with no stored period is stamped with the default anchored on its
-    upload day, so every chunk written from here on carries validity. Old
-    points already in the index keep none until their document is reingested,
-    which is what keeps them searchable in the meantime.
+    upload day - start there, no end - so every chunk written from here on
+    carries a start. Old points already in the index keep none until their
+    document is reingested, which is what keeps them searchable meanwhile.
     """
     doc = doc or {}
     period = document_validity.period_from_row(

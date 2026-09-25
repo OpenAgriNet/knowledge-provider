@@ -307,7 +307,11 @@ class TestPrepareRecordsValidity:
         assert "end_date" not in records[0]
 
     @pytest.mark.unit
-    def test_omits_the_period_when_only_one_end_is_stored(self):
+    def test_a_start_with_no_end_stamps_a_start_and_omits_the_end(self):
+        # The normal shape since the business dropped the fixed expiry: the
+        # chunk is searchable from its start day and never expires. The end is
+        # omitted rather than null — the filter's "end_date missing" branch is
+        # what keeps it answerable.
         from pipeline.activities import _prepare_records
 
         records = _prepare_records(
@@ -317,7 +321,8 @@ class TestPrepareRecordsValidity:
             valid_from="2026-09-22",
         )
 
-        assert "start_date" not in records[0]
+        assert records[0]["start_date"] == "2026-09-22"
+        assert "end_date" not in records[0]
 
     @pytest.mark.unit
     def test_the_period_is_in_the_passage_schema(self):
@@ -342,13 +347,13 @@ class TestValidityFieldsFromDoc:
     @pytest.mark.unit
     def test_falls_back_to_the_upload_day_for_a_row_with_no_period(self):
         # A document uploaded before validity existed, being reingested: its
-        # own upload day is a truer start than today, which would silently
-        # extend its life by another year.
+        # own upload day is a truer start than today, which would date it as
+        # though it arrived this morning.
         from pipeline.activities import _validity_fields_from_doc
 
         fields = _validity_fields_from_doc({"created_at": "2024-05-01T09:30:00"})
 
-        assert fields == {"valid_from": "2024-05-01", "valid_to": "2025-05-01"}
+        assert fields == {"valid_from": "2024-05-01", "valid_to": None}
 
     @pytest.mark.unit
     def test_falls_back_to_today_when_the_row_has_no_upload_day_either(self):
@@ -361,13 +366,28 @@ class TestValidityFieldsFromDoc:
         assert fields["valid_from"] == date.today().isoformat()
 
     @pytest.mark.unit
-    def test_always_returns_both_ends(self):
-        # The ingest path must never write half a period.
+    @pytest.mark.parametrize(
+        "doc", [{}, None, {"valid_from": "2026-01-01"}, {"created_at": "bogus"}]
+    )
+    def test_always_returns_a_start(self, doc):
+        # The ingest path must never write a period with no start. The end is
+        # optional by design — None means the document never expires.
         from pipeline.activities import _validity_fields_from_doc
 
-        for doc in ({}, None, {"valid_from": "2026-01-01"}, {"created_at": "bogus"}):
-            fields = _validity_fields_from_doc(doc)
-            assert fields["valid_from"] and fields["valid_to"]
+        fields = _validity_fields_from_doc(doc)
+
+        assert fields["valid_from"]
+        assert "valid_to" in fields
+
+    @pytest.mark.unit
+    def test_a_stored_open_ended_period_survives(self):
+        from pipeline.activities import _validity_fields_from_doc
+
+        fields = _validity_fields_from_doc(
+            {"valid_from": "2026-01-01", "valid_to": None}
+        )
+
+        assert fields == {"valid_from": "2026-01-01", "valid_to": None}
 
 
 class TestUpdateDocumentState:

@@ -34,6 +34,9 @@ ARG VITE_KEYCLOAK_REALM=docs-pipeline
 ARG VITE_KEYCLOAK_CLIENT_ID=docs-pipeline-ui
 ARG VITE_KEYCLOAK_IDP_HINT=
 ARG VITE_AUTH_ENABLED=true
+# Feature flag: shows the document validity date fields. Off by default —
+# the backend applies validity regardless, this only exposes the entry fields.
+ARG VITE_DOCUMENT_VALIDITY_ENABLED=false
 ARG VITE_BASE=/knowledge-provider/
 
 ENV VITE_API_BASE=$VITE_API_BASE \
@@ -41,7 +44,8 @@ ENV VITE_API_BASE=$VITE_API_BASE \
     VITE_KEYCLOAK_REALM=$VITE_KEYCLOAK_REALM \
     VITE_KEYCLOAK_CLIENT_ID=$VITE_KEYCLOAK_CLIENT_ID \
     VITE_KEYCLOAK_IDP_HINT=$VITE_KEYCLOAK_IDP_HINT \
-    VITE_AUTH_ENABLED=$VITE_AUTH_ENABLED
+    VITE_AUTH_ENABLED=$VITE_AUTH_ENABLED \
+    VITE_DOCUMENT_VALIDITY_ENABLED=$VITE_DOCUMENT_VALIDITY_ENABLED
 
 # Vite base path for assets under /knowledge-provider/
 RUN npm run build -- --base=${VITE_BASE}

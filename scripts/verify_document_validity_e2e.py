@@ -63,7 +63,7 @@ def make_document(workflow_id, text, valid_from=None, valid_to=None, legacy=Fals
     # document starts with — db.py stores what it is given and defaults nothing.
     if not legacy and valid_from is None and valid_to is None:
         default = document_validity.default_period()
-        valid_from, valid_to = default.start_date, default.end_date
+        valid_from, valid_to = default.start_date, default.end_date  # end is None
     db.upsert_document(
         workflow_id=workflow_id,
         document_id=workflow_id,
@@ -100,9 +100,14 @@ by_doc = {r["doc_id"]: r for r in records}
 today = db.get_document("wf-active")["valid_from"]
 check("upload stamps today as the default start", by_doc["wf-active"]["start_date"], today)
 check(
-    "upload stamps a year out as the default end",
-    by_doc["wf-active"]["end_date"],
+    "upload leaves the default end unset (never expires)",
+    "end_date" in by_doc["wf-active"],
+    False,
+)
+check(
+    "and stores NULL for it",
     db.get_document("wf-active")["valid_to"],
+    None,
 )
 check("approver-set period reaches the payload", by_doc["wf-expired"]["start_date"], "2024-01-01")
 check("legacy document carries no start_date", "start_date" in by_doc["wf-legacy"], False)
@@ -132,13 +137,13 @@ check(
 )
 
 print("\n=== 3. search with an injected clock ===")
-# Past the active document's default year (today + 1y) and inside the future
-# document's window, so exactly one of the two is live.
+# Inside the future document's window. The active document is open-ended, so
+# it is still live here too — only the expired one has dropped out.
 future_store = QdrantVectorStore(client=store.client, clock=clock_at("2027-12-01"))
 check(
-    "in Dec 2027 the future document is live and the active one has expired",
+    "in Dec 2027 the future document has started and the expired one is gone",
     sorted(h["doc_id"] for h in future_store.search(COLLECTION, "kisan credit card subsidy", limit=10)["hits"]),
-    ["wf-future", "wf-legacy"],
+    ["wf-active", "wf-future", "wf-legacy"],
 )
 past_store = QdrantVectorStore(client=store.client, clock=clock_at("2024-06-01"))
 check(
@@ -169,8 +174,29 @@ check(
     ["wf-legacy"],
 )
 
+print("\n=== 4b. an open-ended document never expires ===")
+for far_future in ("2030-01-01", "2099-12-31", "9999-12-31"):
+    check(
+        f"still searchable on {far_future}",
+        sorted(h["doc_id"] for h in QdrantVectorStore(
+            client=store.client, clock=clock_at(far_future)
+        ).search(COLLECTION, "kisan credit card subsidy", limit=10)["hits"]),
+        ["wf-active", "wf-legacy"],
+    )
+check(
+    "but not before its start day",
+    sorted(h["doc_id"] for h in QdrantVectorStore(
+        client=store.client, clock=clock_at("2020-01-01")
+    ).search(COLLECTION, "kisan credit card subsidy", limit=10)["hits"]),
+    ["wf-legacy"],
+)
+
 print("\n=== 5. operator overrides ===")
-check("valid_on answers for another day", search_docs(valid_on="2027-12-01"), ["wf-future", "wf-legacy"])
+check(
+    "valid_on answers for another day",
+    search_docs(valid_on="2027-12-01"),
+    ["wf-active", "wf-future", "wf-legacy"],
+)
 check(
     "include_expired returns everything",
     search_docs(apply_validity=False),
