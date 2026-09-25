@@ -8,8 +8,10 @@ actually applies them and honours the injected clock.
 from datetime import datetime
 
 import pytest
+from pydantic import ValidationError
 from qdrant_client.http import models as qmodels
 
+from pipeline.document_validity import parse_day
 from pipeline.vector_store.qdrant_store import (
     PAYLOAD_FIELDS,
     QdrantVectorStore,
@@ -227,3 +229,70 @@ class TestPayload:
             QdrantVectorStore.PAYLOAD_INDEXES["end_date"]
             == qmodels.PayloadSchemaType.DATETIME
         )
+
+
+class TestValidOnMustBeCanonical:
+    """Why `valid_on` is canonicalised before it ever reaches the store.
+
+    `strptime("%Y-%m-%d")` accepts "2026-1-2", so a date can pass our own
+    validation and still be unusable downstream. The constraint is the Python
+    client's, not Qdrant's: the server filters "2026-1-2" exactly as it
+    filters "2026-01-02" (verified against a live instance), but
+    `qdrant_client`'s DatetimeRange is a pydantic model that rejects the
+    unpadded spelling before a request is ever sent.
+
+    Left unguarded this surfaced as `400 Vector search failed (qdrant)`,
+    blaming the vector store for a malformed request. These pin the real
+    constraint so the guard is never removed as redundant, and so a client
+    upgrade that changes the rule is noticed here rather than in production.
+    """
+
+    @pytest.mark.unit
+    def test_the_client_rejects_an_unpadded_day(self):
+        with pytest.raises(ValidationError):
+            _build_filter(valid_on="2026-1-2")
+
+    @pytest.mark.unit
+    def test_the_client_accepts_the_canonical_day(self):
+        assert _build_filter(valid_on="2026-01-02") is not None
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "2026-1-2",      # the spelling that started this
+            "2026-01-02",
+            "  2026-9-3  ",  # padded and trimmed
+            "2024-2-29",     # leap day, unpadded
+            "0001-01-01",    # the year strftime would not zero-pad
+            "9999-12-31",
+        ],
+    )
+    def test_anything_parse_day_returns_is_usable_as_a_filter(self, raw):
+        # The contract between the two modules: document_validity decides what
+        # a valid day is, and whatever it hands back must be something the
+        # store can filter on. This is the assertion that must never break.
+        assert _build_filter(valid_on=parse_day(raw)) is not None
+
+    @pytest.mark.unit
+    def test_the_stores_own_today_is_usable_as_a_filter(self):
+        # The other source of `valid_on`: when a caller passes none, search
+        # falls back to self.today(). That path needs the same guarantee.
+        store = QdrantVectorStore(client=FakeClient(), clock=clock_at(TODAY))
+
+        assert _build_filter(valid_on=store.today()) is not None
+
+    @pytest.mark.unit
+    def test_search_builds_a_usable_filter_from_an_unpadded_override(self):
+        # End of the chain: the store is handed only canonical days, so a
+        # search that overrides the clock still builds a filter rather than
+        # raising out of pydantic.
+        client = FakeClient()
+        store = QdrantVectorStore(client=client, clock=clock_at(TODAY))
+
+        result = store.search(
+            "idx", "kisan", search_mode="LEXICAL", valid_on=parse_day("2026-1-2")
+        )
+
+        assert result["valid_on"] == "2026-01-02"
+        assert ("start_date", "lte", "2026-01-02") in dates_in(client.scroll_filter)
