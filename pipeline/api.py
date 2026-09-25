@@ -3937,9 +3937,12 @@ async def run_search(payload: dict, user: RequireSearch):
     valid_on = (payload.get("valid_on") or "").strip() or None
     if valid_on:
         try:
-            document_validity.parse_period(valid_on, valid_on)
+            # Reassigned, not just checked: parse_day returns the canonical
+            # zero-padded form, and the vector store's date range rejects the
+            # `2026-9-3` spelling that strptime happily accepts.
+            valid_on = document_validity.parse_day(valid_on, "valid_on")
         except document_validity.DocumentValidityError as exc:
-            raise HTTPException(400, f"Invalid valid_on: {exc}") from None
+            raise HTTPException(400, str(exc)) from None
     expanded_query = _expand_query(query, query_expansion_profile)
     # Qdrant embeddings apply E5 prefixes internally; don't pre-prefix here.
     search_query = expanded_query
