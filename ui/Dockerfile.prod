@@ -36,7 +36,7 @@ ARG VITE_KEYCLOAK_IDP_HINT=
 ARG VITE_AUTH_ENABLED=true
 # Feature flag: shows the document validity date fields. Off by default —
 # the backend applies validity regardless, this only exposes the entry fields.
-ARG VITE_DOCUMENT_VALIDITY_ENABLED=false
+ARG VITE_DOCUMENT_VALIDITY_ENABLED=true
 ARG VITE_BASE=/knowledge-provider/
 
 ENV VITE_API_BASE=$VITE_API_BASE \
