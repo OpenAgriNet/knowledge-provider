@@ -1,6 +1,6 @@
 const GROUP_PROVIDER_NOT_CONFIGURED = 'group_provider_not_configured'
 
-function parseMetadata(artifact) {
+const parseMetadata = artifact => {
   try {
     return JSON.parse(artifact.metadata_json || 'null')
   } catch {
