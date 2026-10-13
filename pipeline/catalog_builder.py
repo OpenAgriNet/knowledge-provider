@@ -3,14 +3,11 @@ Builds the Network Catalog Envelope's catalog for a document's knowledge kind.
 
 One catalog holding exactly one OnDemand resource per kind, identical for every
 document of that kind - a seeker that matches the resource comes back to ask the
-actual question, so there is nothing per-document to put on the wire. A Group's
-documents get that same catalog under the Group's own provider, with ids
-prefixed by the group code; documents with no Group keep the Shared Provider.
+actual question, so there is nothing per-document to put on the wire.
 
 Pure: no env, no I/O. Values live in network_constants.py and the transport in
 discovery_publish_service.py. See
-docs/ADR/0003-static-ondemand-network-catalog-per-knowledge-kind.md and
-docs/ADR/0006-publish-to-network-under-per-group-provider.md.
+docs/ADR/0003-static-ondemand-network-catalog-per-knowledge-kind.md.
 """
 
 import copy
@@ -83,8 +80,6 @@ PUBLISHABLE_DOCUMENT_KINDS = tuple(_KNOWLEDGE_KIND_CATALOGS)
 
 @dataclass(frozen=True)
 class GroupProvider:
-    """The Group a catalog is announced for, and the provider id it publishes as."""
-
     code: str
     name: str
     provider_id: str
@@ -100,10 +95,6 @@ def build_catalog(
     group_provider: Optional[GroupProvider] = None,
 ) -> Optional[dict]:
     """Return the catalog to announce for `document_kind`, or None.
-
-    With a `group_provider`, the catalog and resource ids carry the group code
-    and both catalog and provider are named for the Group; without one, the
-    catalog is announced under the Shared Provider exactly as before.
 
     None means this kind has nothing to announce - `document`, `video` and any
     operator-entered custom slug. Callers must skip the publish rather than send

@@ -1,5 +1,3 @@
-"""Unit tests for Group resolution and the Group Provider map (ADR 0006)."""
-
 import pytest
 
 from pipeline.network_group import (
@@ -96,8 +94,6 @@ class TestLoadGroupProviderIds:
 
 
 class TestBootRefusesMalformedProviderMap:
-    """Both the API and the worker refuse to start on a malformed map."""
-
     @pytest.fixture
     def broken_map(self, monkeypatch):
         monkeypatch.setenv(GROUP_PROVIDER_IDS_ENV, "{broken")

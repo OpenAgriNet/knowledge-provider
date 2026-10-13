@@ -165,7 +165,6 @@ class TestPrepareIngestionRecords:
 
     @pytest.mark.unit
     def test_prepare_records_carries_group_beside_instance(self, monkeypatch):
-        """A state chunk carries its Group; a platform chunk has no group field."""
         from pipeline.activities import _prepare_records
 
         monkeypatch.delenv("PORTAL_INSTANCE", raising=False)
@@ -726,8 +725,6 @@ class TestPublishCatalogToNetworkActivity:
 
 
 class TestPublishCatalogToNetworkGroups:
-    """The activity publishes under the document's Group (ADR 0006)."""
-
     @staticmethod
     def _wire(monkeypatch, document, service_result, seen):
         import pipeline.activities as activities

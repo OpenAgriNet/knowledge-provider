@@ -442,8 +442,6 @@ class TestDiscoveryPublishServiceLogging:
 
 
 class TestDiscoveryPublishServiceGroupProvider:
-    """A Group's documents publish under its Group Provider (ADR 0006)."""
-
     @pytest.mark.unit
     def test_configured_group_publishes_under_its_own_provider(self, monkeypatch):
         from pipeline.discovery_publish_service import DiscoveryPublishService
@@ -466,7 +464,6 @@ class TestDiscoveryPublishServiceGroupProvider:
         assert catalog["provider"]["id"] == "mh.provider.oan.dev"
         assert catalog["provider"]["descriptor"]["name"] == "Maharashtra - Knowledge Advisories"
         assert envelope["message"]["publishDirectives"][0]["catalogId"] == catalog["id"]
-        # One publish address for every Group.
         assert client.post.call_args.args[0] == "https://discovery.example.com/publish"
         assert result["skipped"] is False
         assert result["result_status"] == "ACCEPTED"
@@ -494,8 +491,6 @@ class TestDiscoveryPublishServiceGroupProvider:
 
     @pytest.mark.unit
     def test_unmapped_kind_wins_over_an_unconfigured_group(self, monkeypatch):
-        # Not announcing a 'document' is normal - it must not raise the
-        # misconfiguration warning just because its Group has no provider.
         from pipeline.discovery_publish_service import (
             SKIP_UNMAPPED_KIND,
             DiscoveryPublishService,

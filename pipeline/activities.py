@@ -702,7 +702,6 @@ def _prepare_records(
             "workflow_id": workflow_id or "",
             "instance": resolved_instance,
             "instance_name": instance_name,
-            # None for a chunk with no Group; dropped from the payload, not nulled.
             "group": group_for_instance(resolved_instance),
             "type": "scheme" if is_scheme else "document",
             "source": "docs-pipeline",
@@ -1464,9 +1463,9 @@ async def ingest_document_from_db(
 async def publish_catalog_to_network(workflow_id: str, transaction_id: str) -> dict:
     """POST a catalog/publish envelope to the Discovery Service and record the exchange.
 
-    The catalog depends on the document's knowledge kind and Group, read here
-    rather than passed in as activity arguments - that keeps every workflow call
-    site, and any workflow already in flight, untouched.
+    The catalog depends on the document's knowledge kind, read here rather than
+    passed in as an activity argument - that keeps every workflow call site, and
+    any workflow already in flight, untouched.
     """
     from . import db
 
