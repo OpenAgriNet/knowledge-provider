@@ -8,7 +8,7 @@ const parseMetadata = artifact => {
   }
 }
 
-export function groupProviderSkipReason(artifacts) {
+export const groupProviderSkipReason = artifacts => {
   const latest = (artifacts || [])
     .filter(artifact => artifact.stage === 'publishing_to_network')
     .reduce((newest, artifact) => (!newest || artifact.id > newest.id ? artifact : newest), null)
