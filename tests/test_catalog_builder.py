@@ -3,6 +3,7 @@
 import pytest
 
 from pipeline.catalog_builder import (
+    GroupProvider,
     build_catalog,
     normalize_document_kind,
 )
@@ -149,3 +150,59 @@ class TestBuilderIsolation:
         second = build_catalog("advisory")
 
         assert second["provider"] == CATALOG_PROVIDER
+
+
+MAHARASHTRA = GroupProvider(code="mh", name="Maharashtra", provider_id="mh.provider.oan.dev")
+
+
+class TestGroupProviderCatalog:
+    """A Group's documents are announced under its own provider (ADR 0006)."""
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "kind,catalog_id,resource_id,name",
+        [
+            (
+                "advisory",
+                "mh-cat-oan-knowledge-provider-advisories",
+                "mh-res-oan-knowledge-provider-advisories",
+                "Maharashtra - Knowledge Advisories",
+            ),
+            (
+                "scheme",
+                "mh-cat-oan-knowledge-provider-schemes",
+                "mh-res-oan-knowledge-provider-schemes",
+                "Maharashtra - Knowledge Schemes",
+            ),
+        ],
+    )
+    def test_ids_and_names_carry_the_group(self, kind, catalog_id, resource_id, name):
+        catalog = build_catalog(kind, MAHARASHTRA)
+
+        assert catalog["id"] == catalog_id
+        assert catalog["descriptor"] == {"name": name}
+        assert catalog["resources"][0]["id"] == resource_id
+        assert catalog["provider"] == {
+            "id": "mh.provider.oan.dev",
+            "descriptor": {"code": "mh-oan-knowledge-provider", "name": name},
+        }
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("kind", ["advisory", "scheme"])
+    def test_resource_attributes_match_the_shared_provider(self, kind):
+        grouped = build_catalog(kind, MAHARASHTRA)["resources"][0]
+        shared = build_catalog(kind)["resources"][0]
+
+        assert grouped["resourceAttributes"] == shared["resourceAttributes"]
+        assert grouped["descriptor"] == shared["descriptor"]
+
+    @pytest.mark.unit
+    def test_unmapped_kind_still_publishes_nothing(self):
+        assert build_catalog("document", MAHARASHTRA) is None
+
+    @pytest.mark.unit
+    def test_no_group_keeps_the_shared_provider(self):
+        catalog = build_catalog("advisory", None)
+
+        assert catalog["id"] == ADVISORY_CATALOG_ID
+        assert catalog["provider"] == CATALOG_PROVIDER

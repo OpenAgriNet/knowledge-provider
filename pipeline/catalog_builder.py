@@ -3,14 +3,18 @@ Builds the Network Catalog Envelope's catalog for a document's knowledge kind.
 
 One catalog holding exactly one OnDemand resource per kind, identical for every
 document of that kind - a seeker that matches the resource comes back to ask the
-actual question, so there is nothing per-document to put on the wire.
+actual question, so there is nothing per-document to put on the wire. A Group's
+documents get that same catalog under the Group's own provider, with ids
+prefixed by the group code; documents with no Group keep the Shared Provider.
 
 Pure: no env, no I/O. Values live in network_constants.py and the transport in
 discovery_publish_service.py. See
-docs/ADR/0003-static-ondemand-network-catalog-per-knowledge-kind.md.
+docs/ADR/0003-static-ondemand-network-catalog-per-knowledge-kind.md and
+docs/ADR/0006-publish-to-network-under-per-group-provider.md.
 """
 
 import copy
+from dataclasses import dataclass
 from typing import Optional
 
 from .network_constants import (
@@ -57,6 +61,7 @@ _SCHEME_RESOURCE_ATTRIBUTES = {
 
 _KNOWLEDGE_KIND_CATALOGS = {
     "advisory": {
+        "group_label": "Knowledge Advisories",
         "catalog_id": ADVISORY_CATALOG_ID,
         "catalog_name": ADVISORY_CATALOG_NAME,
         "resource_id": ADVISORY_RESOURCE_ID,
@@ -64,6 +69,7 @@ _KNOWLEDGE_KIND_CATALOGS = {
         "resource_attributes": _ADVISORY_RESOURCE_ATTRIBUTES,
     },
     "scheme": {
+        "group_label": "Knowledge Schemes",
         "catalog_id": SCHEMES_CATALOG_ID,
         "catalog_name": SCHEMES_CATALOG_NAME,
         "resource_id": SCHEMES_RESOURCE_ID,
@@ -75,13 +81,29 @@ _KNOWLEDGE_KIND_CATALOGS = {
 PUBLISHABLE_DOCUMENT_KINDS = tuple(_KNOWLEDGE_KIND_CATALOGS)
 
 
+@dataclass(frozen=True)
+class GroupProvider:
+    """The Group a catalog is announced for, and the provider id it publishes as."""
+
+    code: str
+    name: str
+    provider_id: str
+
+
 def normalize_document_kind(document_kind: Optional[str]) -> str:
     """Coerce a stored `documents.document_kind` to its lookup form."""
     return (document_kind or DEFAULT_DOCUMENT_KIND).strip().lower()
 
 
-def build_catalog(document_kind: Optional[str]) -> Optional[dict]:
+def build_catalog(
+    document_kind: Optional[str],
+    group_provider: Optional[GroupProvider] = None,
+) -> Optional[dict]:
     """Return the catalog to announce for `document_kind`, or None.
+
+    With a `group_provider`, the catalog and resource ids carry the group code
+    and both catalog and provider are named for the Group; without one, the
+    catalog is announced under the Shared Provider exactly as before.
 
     None means this kind has nothing to announce - `document`, `video` and any
     operator-entered custom slug. Callers must skip the publish rather than send
@@ -91,14 +113,31 @@ def build_catalog(document_kind: Optional[str]) -> Optional[dict]:
     if spec is None:
         return None
 
+    catalog_id = spec["catalog_id"]
+    catalog_name = spec["catalog_name"]
+    resource_id = spec["resource_id"]
+    provider = copy.deepcopy(CATALOG_PROVIDER)
+    if group_provider is not None:
+        prefix = f"{group_provider.code}-"
+        catalog_id = prefix + catalog_id
+        resource_id = prefix + resource_id
+        catalog_name = f"{group_provider.name} - {spec['group_label']}"
+        provider = {
+            "id": group_provider.provider_id,
+            "descriptor": {
+                "code": prefix + CATALOG_PROVIDER["descriptor"]["code"],
+                "name": catalog_name,
+            },
+        }
+
     catalog = {
-        "id": spec["catalog_id"],
-        "descriptor": {"name": spec["catalog_name"]},
+        "id": catalog_id,
+        "descriptor": {"name": catalog_name},
         "isActive": True,
-        "provider": copy.deepcopy(CATALOG_PROVIDER),
+        "provider": provider,
         "resources": [
             {
-                "id": spec["resource_id"],
+                "id": resource_id,
                 "descriptor": {"name": spec["resource_name"]},
                 "resourceAttributes": copy.deepcopy(spec["resource_attributes"]),
             }

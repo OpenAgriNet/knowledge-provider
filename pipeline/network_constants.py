@@ -33,8 +33,9 @@ SCHEME_TOPICS = ["Government schemes"]
 
 DEFAULT_DOCUMENT_KIND = "document"
 
-# Same provider on every catalog - this pipeline publishes as one provider
-# regardless of knowledge kind.
+# The Shared Provider: every catalog of a document with no Group. A Group's
+# documents publish under that Group's provider instead (ADR 0006), whose
+# descriptor code is this one prefixed with the group code.
 CATALOG_PROVIDER = {
     "id": "knowledge-provider",
     "descriptor": {

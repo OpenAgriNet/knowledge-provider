@@ -103,6 +103,7 @@ from .models import (
     SearchSettingsUpdate,
     SettingsAuditResponse,
 )
+from .network_group import load_group_provider_ids
 from .workflows import (
     ChunkingOnlyWorkflow,
     DocumentPipelineWorkflow,
@@ -136,6 +137,10 @@ MINIO_BUCKET = "documents"
 async def lifespan(app: FastAPI):
     """Initialize Temporal and MinIO clients on startup."""
     global temporal_client, minio_client, MINIO_BUCKET
+
+    # Only the worker publishes, but a malformed Group Provider map is a bad
+    # deploy - fail it here too rather than leave half the stack up (ADR 0006).
+    load_group_provider_ids()
 
     auth_cfg = load_auth_config()
     validate_auth_config(auth_cfg)

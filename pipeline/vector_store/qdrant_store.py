@@ -23,6 +23,9 @@ PAYLOAD_FIELDS = (
     "workflow_id",
     "instance",
     "instance_name",
+    # Group code (ADR 0006); absent on chunks with no Group and on chunks
+    # ingested before it existed.
+    "group",
     "type",
     "source",
     "filename",
@@ -281,6 +284,7 @@ class QdrantVectorStore:
         "workflow_id": qmodels.PayloadSchemaType.KEYWORD,
         "filename": qmodels.PayloadSchemaType.KEYWORD,
         "instance": qmodels.PayloadSchemaType.KEYWORD,
+        "group": qmodels.PayloadSchemaType.KEYWORD,
         "chunk_num": qmodels.PayloadSchemaType.INTEGER,
         "is_reference": qmodels.PayloadSchemaType.BOOL,
         "type": qmodels.PayloadSchemaType.KEYWORD,

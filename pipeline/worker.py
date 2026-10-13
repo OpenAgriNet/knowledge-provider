@@ -26,6 +26,7 @@ from .activities import (
     run_ocr_and_store,
     update_document_state,
 )
+from .network_group import load_group_provider_ids
 from .workflows import (
     ChunkingOnlyWorkflow,
     DocumentPipelineWorkflow,
@@ -53,6 +54,10 @@ TASK_QUEUE = "ocr-pipeline"
 
 async def main():
     """Start the worker."""
+    # Refuse to boot on a malformed Group Provider map rather than discover it
+    # on the first publish (ADR 0006).
+    load_group_provider_ids()
+
     translation_provider = os.environ.get("TRANSLATION_PROVIDER", "gemma_vllm").strip().lower()
     if translation_provider in {"gemma_vllm", "gemma4", "gemma"}:
         if not os.environ.get("TRANSLATION_VLLM_BASE_URL", "").strip():
