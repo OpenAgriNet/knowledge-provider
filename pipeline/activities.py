@@ -26,10 +26,15 @@ from temporalio.exceptions import ApplicationError
 from . import document_validity, scheme_catalog
 from .catalog_builder import normalize_document_kind
 from .chunking import chunk_pages, load_chunking_config
-from .discovery_publish_service import DiscoveryPublishService
+from .discovery_publish_service import (
+    SKIP_GROUP_PROVIDER_NOT_CONFIGURED,
+    SKIP_UNMAPPED_KIND,
+    DiscoveryPublishService,
+)
 from .document_repository import DocumentRepository
 from .instances import instance_display_name
 from .network_constants import RESULT_REJECTED
+from .network_group import group_for_instance
 from .ocr import ocr_pdf as run_ocr_pdf
 from .ocr import ocr_pdf_in_segments as run_ocr_pdf_in_segments
 from .translation import load_translation_config, translate_pages
@@ -697,6 +702,8 @@ def _prepare_records(
             "workflow_id": workflow_id or "",
             "instance": resolved_instance,
             "instance_name": instance_name,
+            # None for a chunk with no Group; dropped from the payload, not nulled.
+            "group": group_for_instance(resolved_instance),
             "type": "scheme" if is_scheme else "document",
             "source": "docs-pipeline",
             "filename": external_slug,
@@ -817,6 +824,7 @@ def _passage_schema_definition(use_tensor_prefix_field: bool = True) -> dict:
         {"name": "workflow_id", "type": "text", "features": ["filter"]},
         {"name": "instance", "type": "text", "features": ["filter"]},
         {"name": "instance_name", "type": "text", "features": ["filter"]},
+        {"name": "group", "type": "text", "features": ["filter"]},
         {"name": "type", "type": "text", "features": ["filter"]},
         {"name": "source", "type": "text", "features": ["filter"]},
         {"name": "filename", "type": "text", "features": ["filter"]},
@@ -1456,27 +1464,39 @@ async def ingest_document_from_db(
 async def publish_catalog_to_network(workflow_id: str, transaction_id: str) -> dict:
     """POST a catalog/publish envelope to the Discovery Service and record the exchange.
 
-    The catalog depends on the document's knowledge kind, read here rather than
-    passed in as an activity argument - that keeps every workflow call site, and
-    any workflow already in flight, untouched.
+    The catalog depends on the document's knowledge kind and Group, read here
+    rather than passed in as activity arguments - that keeps every workflow call
+    site, and any workflow already in flight, untouched.
     """
     from . import db
 
     repository = DocumentRepository()
     document_kind = normalize_document_kind(repository.get_document_kind(workflow_id))
+    group = repository.get_document_group(workflow_id)
 
     service = DiscoveryPublishService()
     result = await asyncio.to_thread(
-        service.publish, transaction_id, document_kind, workflow_id
+        service.publish, transaction_id, document_kind, workflow_id, group
     )
 
     if result["skipped"]:
         artifact_type = "network_publish_skipped"
         filename = "network_publish_skipped.json"
+        skip_reason = result.get("skip_reason") or SKIP_UNMAPPED_KIND
+        if skip_reason == SKIP_GROUP_PROVIDER_NOT_CONFIGURED:
+            reason = (
+                "Not published: no network provider is configured for "
+                f"{instance_display_name(group)} ({group})"
+            )
+            activity.logger.warning("workflow_id=%s %s", workflow_id, reason)
+        else:
+            reason = "no network catalog is mapped to this document kind"
         exchange = {
             "skipped": True,
             "document_kind": document_kind,
-            "reason": "no network catalog is mapped to this document kind",
+            "group": group,
+            "reason_code": skip_reason,
+            "reason": reason,
         }
     else:
         artifact_type = "network_publish_payload"

@@ -249,10 +249,13 @@ Separate from the SQLite/Qdrant catalog above (which tracks PROD vector publicat
 
 First piece of the network-discovery push architecture: once a document's PROD promotion succeeds, the `publishing_to_network` pipeline stage POSTs a Beckn-shaped `publish` envelope to an external Discovery Service. It's a PROD-only stage (see `docs/ADR/0004-publishing-to-network-is-prod-only.md`) — skipped entirely when `DISABLE_PROD_SETTING=true`, since a document never reaches the network without first promoting to PROD. This is going to be the only way the experience layer discovers schemas going forward — the Master Scheme Catalog pull API above stays in place for backward compatibility. The catalog announces the *knowledge kind* the document was classified as — one catalog with exactly one `OnDemand` resource for `advisory`, another for `scheme`; any other `document_kind` publishes nothing. `DISCOVERY_SERVICE_ENDPOINT` and `NETWORK_SENDER_ID` are **required** whenever PROD promotion is enabled — there is no separate feature flag for this stage beyond `DISABLE_PROD_SETTING`.
 
+A document filed under a state (its **Group**, taken from the document's `instance`) is announced under that Group's own provider, looked up in `NETWORK_GROUP_PROVIDER_IDS`: catalog and resource ids get the group code as a prefix (`mh-cat-oan-knowledge-provider-advisories`) and both catalog and provider are named `<Group name> - Knowledge Advisories|Schemes`. Documents under the portal instance (`PORTAL_INSTANCE`, `bv`) or the default instance (`DEFAULT_INSTANCE`) have no Group and keep the shared provider and unprefixed ids. A Group missing from the map is **skipped with a warning** (the document still completes, and the console shows the warning); a malformed map stops both the API and the worker from booting. See `docs/ADR/0006-publish-to-network-under-per-group-provider.md`.
+
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `DISCOVERY_SERVICE_ENDPOINT` | *(empty — required)* | Base URL of the external Discovery Service; the pipeline POSTs to `{DISCOVERY_SERVICE_ENDPOINT}/publish` |
 | `NETWORK_SENDER_ID` | *(empty — required)* | This instance's Beckn `senderId`, also sent as `networkId` |
+| `NETWORK_GROUP_PROVIDER_IDS` | *(empty — no Group has a provider)* | JSON object of group code → provider id, set per deployment, e.g. `{"mh":"mh.provider.oan.dev"}`. Keys are case-insensitive. Must be valid JSON of non-empty strings or the API and worker refuse to start |
 | `DISCOVERY_SERVICE_PUBLISH_INITIAL_INTERVAL_SECONDS` | `30` | Wait before the first retry of a failed publish |
 | `DISCOVERY_SERVICE_PUBLISH_BACKOFF_COEFFICIENT` | `2.0` | Multiplier applied to the wait after each retry |
 | `DISCOVERY_SERVICE_PUBLISH_MAX_INTERVAL_SECONDS` | `300` | Cap on the wait between retries |
@@ -270,6 +273,7 @@ First piece of the network-discovery push architecture: once a document's PROD p
 | OCR / translation / chunking / domain tags | — | config / status | ✅ runs jobs |
 | Qdrant (`VECTOR_DB_*`) | — | ✅ | ✅ |
 | Publish to Network (`DISCOVERY_SERVICE_ENDPOINT`, `NETWORK_SENDER_ID`) | — | — | ✅ runs the publish activity |
+| Group Provider map (`NETWORK_GROUP_PROVIDER_IDS`) | — | validated at boot | ✅ validated at boot, used by the publish activity |
 
 ---
 

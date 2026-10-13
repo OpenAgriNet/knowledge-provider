@@ -9,7 +9,7 @@ The operator action that approves a document out of `ready_for_ingestion` and le
 _Avoid_: "publish" alone — ambiguous with Publish to Network.
 
 **Publish to Network**:
-The pipeline stage that runs only after a document's PROD promotion succeeds, and POSTs a Beckn-shaped `publish` envelope to an external Discovery Service. Skipped entirely when PROD is disabled (`DISABLE_PROD_SETTING=true`) — a document never reaches the network without first promoting to PROD. The envelope it sends is kind-level (see Knowledge Kind), not document-level: it does not make any single document searchable, only re-announces that this provider serves that kind at all.
+The pipeline stage that runs only after a document's PROD promotion succeeds, and POSTs a Beckn-shaped `publish` envelope to an external Discovery Service. Skipped entirely when PROD is disabled (`DISABLE_PROD_SETTING=true`) — a document never reaches the network without first promoting to PROD. The envelope it sends is kind-level (see Knowledge Kind), not document-level: it does not make any single document searchable, only re-announces that the document's provider (its Group Provider, or the Shared Provider) serves that kind at all.
 _Avoid_: "publish" alone — ambiguous with Publish to Dev.
 
 **Master Catalog**:
@@ -23,6 +23,18 @@ _Avoid_: "catalog" alone — ambiguous with Master Catalog and the Network Catal
 **Network Catalog Envelope**:
 The Beckn wire-protocol `message.catalogs` object sent by Publish to Network to the Discovery Service. Structurally and semantically unrelated to the Master Catalog and Scheme Catalog tables — do not conflate the three.
 _Avoid_: "catalog" alone.
+
+**Group**:
+The state a document belongs to, named by its state code (`mh` for Maharashtra) and taken from the document's `instance`. Bharat Vistaar and `default` documents have no Group. New features say Group; existing screens, roles and data still say state or instance.
+_Avoid_: "tenant"; "state" or "instance" in new features. Never call Bharat Vistaar a Group.
+
+**Group Provider**:
+The network provider a Group's documents are announced under in Publish to Network, with its own catalog per Knowledge Kind, set per deployment. A Group without one configured publishes nothing.
+_Avoid_: "state provider".
+
+**Shared Provider**:
+The single network provider used by documents with no Group (Bharat Vistaar, `default`), keeping the original catalog ids.
+_Avoid_: "national provider", "central provider".
 
 **Knowledge Kind**:
 What a document *is* to the network — `advisory`, `scheme`, `video`, or an operator-entered slug — held in `documents.document_kind`. Asserted by a reviewer during the pipeline, never inferred from the file, and absent until then (every document starts as the default `document`). Only `advisory` and `scheme` map to a Network Catalog Envelope; the rest publish nothing.
