@@ -156,8 +156,6 @@ MAHARASHTRA = GroupProvider(code="mh", name="Maharashtra", provider_id="mh.provi
 
 
 class TestGroupProviderCatalog:
-    """A Group's documents are announced under its own provider (ADR 0006)."""
-
     @pytest.mark.unit
     @pytest.mark.parametrize(
         "kind,catalog_id,resource_id,name",

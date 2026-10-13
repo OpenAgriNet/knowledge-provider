@@ -23,8 +23,6 @@ from .network_group import load_group_provider_ids
 
 logger = logging.getLogger(__name__)
 
-# Why a publish made no HTTP call. An unmapped kind is the normal case; a Group
-# with no provider configured is a deployment gap an operator must see.
 SKIP_UNMAPPED_KIND = "unmapped_kind"
 SKIP_GROUP_PROVIDER_NOT_CONFIGURED = "group_provider_not_configured"
 
@@ -48,7 +46,6 @@ class DiscoveryPublishService:
             raise RuntimeError("NETWORK_SENDER_ID must be set to publish to the network.")
 
         self.timeout = timeout
-        # Raises on a malformed map; the API and worker also check it at boot.
         self.group_provider_ids = load_group_provider_ids()
 
     def publish(
@@ -59,8 +56,7 @@ class DiscoveryPublishService:
         group: Optional[str] = None,
     ) -> dict:
         """
-        POST a catalog/publish envelope for `document_kind`, announced under
-        `group`'s provider, or under the Shared Provider when `group` is None.
+        POST a catalog/publish envelope for `document_kind`.
 
         `transaction_id` is supplied by the caller (generated once per publish,
         reused across retries) - only `messageId` is generated fresh here, per
@@ -69,8 +65,6 @@ class DiscoveryPublishService:
         A kind with no catalog mapped to it makes no HTTP call and comes back
         with `skipped=True`: the spec declares `message.catalogs` as
         `minItems: 1`, so there is no valid "publish nothing" request to send.
-        So does a Group with no provider configured - publishing it under the
-        Shared Provider would put the state's knowledge under the wrong identity.
         """
         if build_catalog(document_kind) is None:
             logger.info(

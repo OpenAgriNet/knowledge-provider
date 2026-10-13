@@ -54,8 +54,6 @@ TASK_QUEUE = "ocr-pipeline"
 
 async def main():
     """Start the worker."""
-    # Refuse to boot on a malformed Group Provider map rather than discover it
-    # on the first publish (ADR 0006).
     load_group_provider_ids()
 
     translation_provider = os.environ.get("TRANSLATION_PROVIDER", "gemma_vllm").strip().lower()

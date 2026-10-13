@@ -1,5 +1,3 @@
-"""Unit tests for the Group field on Qdrant chunk payloads (ADR 0006)."""
-
 import pytest
 from qdrant_client.http import models as qmodels
 
@@ -23,7 +21,6 @@ class TestGroupPayload:
 
     @pytest.mark.unit
     def test_a_chunk_with_no_group_has_no_group_field(self):
-        # Absent, not null: Bharat Vistaar and 'default' chunks have no Group.
         payload = _record_payload({"text": "x", "instance": "bv", "group": None})
 
         assert "group" not in payload

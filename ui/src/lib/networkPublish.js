@@ -1,5 +1,3 @@
-// Publish to Network skip reasons, mirrored from
-// pipeline/discovery_publish_service.py.
 const GROUP_PROVIDER_NOT_CONFIGURED = 'group_provider_not_configured'
 
 function parseMetadata(artifact) {
@@ -10,13 +8,6 @@ function parseMetadata(artifact) {
   }
 }
 
-/**
- * The warning to show when the document's latest Publish to Network was
- * skipped because its Group has no network provider configured, else null.
- *
- * Only the latest attempt counts, so the notice clears once a re-run publishes.
- * A skip for an unmapped knowledge kind is normal and never warns.
- */
 export function groupProviderSkipReason(artifacts) {
   const latest = (artifacts || [])
     .filter(artifact => artifact.stage === 'publishing_to_network')
