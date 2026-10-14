@@ -20,4 +20,4 @@ Decision:
 Consequences:
 - Ids are permanent under `MERGE` (ADR 0003). Documents already published under the Shared Provider are not moved, so state knowledge published before this change stays under the Shared Provider. A mistyped Group provider id leaves stranded entries on the network.
 - Depends on the network adapter layer accepting the per-Group provider, catalog and resource ids.
-- Chunks gain a `group` field (absent for Bharat Vistaar and `default`) alongside the unchanged `instance` and `instance_name`. Existing chunks are not backfilled, which #202's group filter must account for.
+- Only the Publish to Network payload changes. Chunks and the search indexes gain no `group` field; they keep `instance` and `instance_name`, where Bharat Vistaar and `default` documents carry `bv`/`default` and state documents carry the state code, so #202 can filter on `instance`.

@@ -164,24 +164,6 @@ class TestPrepareIngestionRecords:
             assert records[0]["instance_name"] == expected
 
     @pytest.mark.unit
-    def test_prepare_records_carries_group_beside_instance(self, monkeypatch):
-        from pipeline.activities import _prepare_records
-
-        monkeypatch.delenv("PORTAL_INSTANCE", raising=False)
-        monkeypatch.delenv("DEFAULT_INSTANCE", raising=False)
-        chunks = [{"chunk_number": 1, "original_text": "Test chunk", "token_count": 5}]
-
-        for code, expected in (("mh", "mh"), ("bv", None), ("default", None)):
-            record = _prepare_records(
-                document_id="test-doc",
-                filename="test.pdf",
-                chunks=chunks,
-                instance=code,
-            )[0]
-            assert record["instance"] == code
-            assert record["group"] == expected
-
-    @pytest.mark.unit
     def test_prepare_records_fills_scheme_aliases(self):
         """A scheme must never index with scheme_aliases: []."""
         from pipeline.activities import _prepare_records
