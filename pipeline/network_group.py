@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Optional
 
 from .instances import PORTAL_INSTANCE
 
-GROUP_PROVIDER_IDS_ENV = "NETWORK_GROUP_PROVIDER_IDS"
+GROUP_PROVIDERS_CONFIG_PATH_ENV = "NETWORK_GROUP_PROVIDERS_CONFIG_PATH"
+DEFAULT_GROUP_PROVIDERS_CONFIG_PATH = Path(__file__).with_name("network_group_providers.json")
 
 
 class GroupProviderConfigError(ValueError):
@@ -26,18 +28,18 @@ def group_for_instance(instance: Optional[str]) -> Optional[str]:
     return code
 
 
-def parse_group_provider_ids(raw: Optional[str]) -> dict[str, str]:
+def parse_group_provider_ids(raw: Optional[str], source: str) -> dict[str, str]:
     if raw is None or not raw.strip():
         return {}
 
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise GroupProviderConfigError(f"{GROUP_PROVIDER_IDS_ENV} is not valid JSON: {exc}") from exc
+        raise GroupProviderConfigError(f"{source} is not valid JSON: {exc}") from exc
 
     if not isinstance(parsed, dict):
         raise GroupProviderConfigError(
-            f"{GROUP_PROVIDER_IDS_ENV} must be a JSON object of group code to provider id"
+            f"{source} must be a JSON object of group code to provider id"
         )
 
     provider_ids: dict[str, str] = {}
@@ -46,16 +48,26 @@ def parse_group_provider_ids(raw: Optional[str]) -> dict[str, str]:
         provider_id = value.strip() if isinstance(value, str) else ""
         if not code or not provider_id:
             raise GroupProviderConfigError(
-                f"{GROUP_PROVIDER_IDS_ENV} entry {key!r}: {value!r} must map a group code "
+                f"{source} entry {key!r}: {value!r} must map a group code "
                 "to a non-empty provider id"
             )
         if code in provider_ids:
             raise GroupProviderConfigError(
-                f"{GROUP_PROVIDER_IDS_ENV} names group {code!r} more than once"
+                f"{source} names group {code!r} more than once"
             )
         provider_ids[code] = provider_id
     return provider_ids
 
 
+def group_providers_config_path() -> Path:
+    configured = os.environ.get(GROUP_PROVIDERS_CONFIG_PATH_ENV, "").strip()
+    return Path(configured) if configured else DEFAULT_GROUP_PROVIDERS_CONFIG_PATH
+
+
 def load_group_provider_ids() -> dict[str, str]:
-    return parse_group_provider_ids(os.environ.get(GROUP_PROVIDER_IDS_ENV))
+    path = group_providers_config_path()
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise GroupProviderConfigError(f"Group provider config {path} cannot be read: {exc}") from exc
+    return parse_group_provider_ids(raw, str(path))

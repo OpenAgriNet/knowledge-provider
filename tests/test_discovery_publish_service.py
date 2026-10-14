@@ -441,14 +441,20 @@ class TestDiscoveryPublishServiceLogging:
         assert not any("network_publish_url=" in m for m in messages)
 
 
+def _use_group_providers(monkeypatch, tmp_path, content):
+    path = tmp_path / "network_group_providers.json"
+    path.write_text(content)
+    monkeypatch.setenv("NETWORK_GROUP_PROVIDERS_CONFIG_PATH", str(path))
+
+
 class TestDiscoveryPublishServiceGroupProvider:
     @pytest.mark.unit
-    def test_configured_group_publishes_under_its_own_provider(self, monkeypatch):
+    def test_configured_group_publishes_under_its_own_provider(self, monkeypatch, tmp_path):
         from pipeline.discovery_publish_service import DiscoveryPublishService
 
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
         monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
-        monkeypatch.setenv("NETWORK_GROUP_PROVIDER_IDS", '{"MH": "mh.provider.oan.dev"}')
+        _use_group_providers(monkeypatch, tmp_path, '{"MH": "mh.provider.oan.dev"}')
         service = DiscoveryPublishService()
         client = _client_returning(
             _on_publish_response("mh-cat-oan-knowledge-provider-advisories", "ACCEPTED")
@@ -469,7 +475,7 @@ class TestDiscoveryPublishServiceGroupProvider:
         assert result["result_status"] == "ACCEPTED"
 
     @pytest.mark.unit
-    def test_unconfigured_group_is_skipped_without_an_http_call(self, monkeypatch):
+    def test_unconfigured_group_is_skipped_without_an_http_call(self, monkeypatch, tmp_path):
         from pipeline.discovery_publish_service import (
             SKIP_GROUP_PROVIDER_NOT_CONFIGURED,
             DiscoveryPublishService,
@@ -477,7 +483,7 @@ class TestDiscoveryPublishServiceGroupProvider:
 
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
         monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
-        monkeypatch.setenv("NETWORK_GROUP_PROVIDER_IDS", '{"mh": "mh.provider.oan.dev"}')
+        _use_group_providers(monkeypatch, tmp_path, '{"mh": "mh.provider.oan.dev"}')
         service = DiscoveryPublishService()
         client = MagicMock()
 
@@ -490,7 +496,7 @@ class TestDiscoveryPublishServiceGroupProvider:
         assert result["envelope"] is None
 
     @pytest.mark.unit
-    def test_unmapped_kind_wins_over_an_unconfigured_group(self, monkeypatch):
+    def test_unmapped_kind_wins_over_an_unconfigured_group(self, monkeypatch, tmp_path):
         from pipeline.discovery_publish_service import (
             SKIP_UNMAPPED_KIND,
             DiscoveryPublishService,
@@ -498,7 +504,7 @@ class TestDiscoveryPublishServiceGroupProvider:
 
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
         monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
-        monkeypatch.delenv("NETWORK_GROUP_PROVIDER_IDS", raising=False)
+        monkeypatch.delenv("NETWORK_GROUP_PROVIDERS_CONFIG_PATH", raising=False)
         service = DiscoveryPublishService()
 
         result = service.publish(transaction_id="txn-doc", document_kind="document", group="ka")
@@ -507,13 +513,13 @@ class TestDiscoveryPublishServiceGroupProvider:
         assert result["skip_reason"] == SKIP_UNMAPPED_KIND
 
     @pytest.mark.unit
-    def test_no_group_publishes_under_the_shared_provider(self, monkeypatch):
+    def test_no_group_publishes_under_the_shared_provider(self, monkeypatch, tmp_path):
         from pipeline.discovery_publish_service import DiscoveryPublishService
         from pipeline.network_constants import CATALOG_PROVIDER
 
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
         monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
-        monkeypatch.setenv("NETWORK_GROUP_PROVIDER_IDS", '{"mh": "mh.provider.oan.dev"}')
+        _use_group_providers(monkeypatch, tmp_path, '{"mh": "mh.provider.oan.dev"}')
         service = DiscoveryPublishService()
         client = _client_returning(
             _on_publish_response("cat-oan-knowledge-provider-advisories", "ACCEPTED")
@@ -527,13 +533,13 @@ class TestDiscoveryPublishServiceGroupProvider:
         assert catalog["provider"] == CATALOG_PROVIDER
 
     @pytest.mark.unit
-    def test_malformed_provider_map_fails_construction(self, monkeypatch):
+    def test_malformed_provider_map_fails_construction(self, monkeypatch, tmp_path):
         from pipeline.discovery_publish_service import DiscoveryPublishService
         from pipeline.network_group import GroupProviderConfigError
 
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
         monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
-        monkeypatch.setenv("NETWORK_GROUP_PROVIDER_IDS", "{broken")
+        _use_group_providers(monkeypatch, tmp_path, "{broken")
 
         with pytest.raises(GroupProviderConfigError):
             DiscoveryPublishService()

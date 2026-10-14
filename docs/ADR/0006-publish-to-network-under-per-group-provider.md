@@ -11,7 +11,7 @@ Decision:
 - The group code is derived from the document's `instance`, not from the uploader's group, so a Super Admin uploading for a state publishes under that state.
 - Documents with no Group (Bharat Vistaar `bv`, `default`) keep the Shared Provider and ADR 0003's unprefixed ids, unchanged.
 - A Group with no provider configured skips the publish with a warning, like an unmapped Knowledge Kind. It is not a failure. A real publish failure stays fatal, per ADR 0004.
-- Only the provider id is configured per Group, as one JSON map in `NETWORK_GROUP_PROVIDER_IDS` (keys case-insensitive). The catalog and resource ids are derived, so onboarding a Group is one map entry. A malformed map stops both the API and the worker from booting, so a bad deploy can't quietly skip every Group.
+- Only the provider id is configured per Group, in a JSON file whose path is `NETWORK_GROUP_PROVIDERS_CONFIG_PATH` (keys case-insensitive), defaulting to a bundled empty `pipeline/network_group_providers.json` so no provider id is baked into the image. The catalog and resource ids are derived, so onboarding a Group is one entry in that file. A missing or malformed file stops both the API and the worker from booting, so a bad deploy can't quietly skip every Group.
 - The provider descriptor code is the shared one prefixed with the group code (`mh-oan-knowledge-provider`).
 - A Group skip is recorded with `reason_code: group_provider_not_configured` and shown as a warning on the document page, but only while it is the document's latest publish attempt. A Knowledge Kind skip shows nothing.
 - "No Group" follows the configured `PORTAL_INSTANCE` and `DEFAULT_INSTANCE` values rather than hardcoding `bv` and `default`.
