@@ -1396,12 +1396,6 @@ async def promote_document_to_prod_qdrant(
             catalog_version = on_scheme_document_promoted(workflow_id)
         except Exception as exc:
             activity.logger.warning("Catalog update after promote failed: %s", exc)
-        try:
-            from .master_catalog_pg import sync_catalog_entry
-
-            await asyncio.to_thread(sync_catalog_entry, workflow_id, "live")
-        except Exception as exc:
-            activity.logger.warning("Master catalog (Postgres/Redis) sync after promote failed: %s", exc)
     return {
         **result,
         "collection": prod_collection,
@@ -1467,12 +1461,6 @@ async def ingest_document_from_db(
         status="indexed",
         details=result.get("index_stats"),
     )
-    try:
-        from .master_catalog_pg import sync_catalog_entry
-
-        await asyncio.to_thread(sync_catalog_entry, workflow_id, "dev")
-    except Exception as exc:
-        activity.logger.warning("Master catalog (Postgres/Redis) sync after DEV ingest failed: %s", exc)
     return result
 
 
