@@ -34,7 +34,6 @@ from .discovery_publish_service import (
 from .document_repository import DocumentRepository
 from .instances import instance_display_name
 from .network_constants import RESULT_REJECTED
-from .network_group import group_for_instance
 from .ocr import ocr_pdf as run_ocr_pdf
 from .ocr import ocr_pdf_in_segments as run_ocr_pdf_in_segments
 from .translation import load_translation_config, translate_pages
@@ -702,7 +701,6 @@ def _prepare_records(
             "workflow_id": workflow_id or "",
             "instance": resolved_instance,
             "instance_name": instance_name,
-            "group": group_for_instance(resolved_instance),
             "type": "scheme" if is_scheme else "document",
             "source": "docs-pipeline",
             "filename": external_slug,
@@ -823,7 +821,6 @@ def _passage_schema_definition(use_tensor_prefix_field: bool = True) -> dict:
         {"name": "workflow_id", "type": "text", "features": ["filter"]},
         {"name": "instance", "type": "text", "features": ["filter"]},
         {"name": "instance_name", "type": "text", "features": ["filter"]},
-        {"name": "group", "type": "text", "features": ["filter"]},
         {"name": "type", "type": "text", "features": ["filter"]},
         {"name": "source", "type": "text", "features": ["filter"]},
         {"name": "filename", "type": "text", "features": ["filter"]},
