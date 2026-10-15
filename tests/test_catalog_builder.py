@@ -3,8 +3,6 @@
 import pytest
 
 from pipeline.catalog_builder import (
-    Group,
-    ProviderNaming,
     build_catalog,
     is_publishable_kind,
     normalize_document_kind,
@@ -15,14 +13,15 @@ from pipeline.network_constants import (
     SCHEMES_CATALOG_ID,
     SCHEMES_RESOURCE_ID,
 )
+from pipeline.network_provider import Group
 
-BV_ADVISORY_PROVIDER = {
+PROVIDER = {
     "id": "advisory.bv.provider.oan.dev",
     "descriptor": {"code": "advisory.bv.provider.oan.dev", "name": "Advisories from documents"},
 }
-BV_SCHEMES_PROVIDER = {
-    "id": "scheme.bv.provider.oan.dev",
-    "descriptor": {"code": "scheme.bv.provider.oan.dev", "name": "Schemes from documents"},
+MH_PROVIDER = {
+    "id": "advisory.mh.provider.oan.dev",
+    "descriptor": {"code": "advisory.mh.provider.oan.dev", "name": "Maharashtra Advisories from documents"},
 }
 
 # Forbidden by the KnowledgeAdvisory schema under informationMode OnDemand.
@@ -38,7 +37,7 @@ FORBIDDEN_ADVISORY_ATTRIBUTES = (
 
 
 def _attributes(kind):
-    return build_catalog(kind)["resources"][0]["resourceAttributes"]
+    return build_catalog(kind, PROVIDER)["resources"][0]["resourceAttributes"]
 
 
 class TestNormalizeDocumentKind:
@@ -60,18 +59,18 @@ class TestNormalizeDocumentKind:
 class TestBuildAdvisoryCatalog:
     @pytest.mark.unit
     def test_catalog_envelope_fields(self):
-        catalog = build_catalog("advisory")
+        catalog = build_catalog("advisory", PROVIDER)
 
         assert catalog["id"] == ADVISORY_CATALOG_ID
         assert "bppId" not in catalog
         assert "bppUri" not in catalog
         assert catalog["descriptor"] == {"name": "Agricultural advisory from documents"}
         assert catalog["isActive"] is True
-        assert catalog["provider"] == BV_ADVISORY_PROVIDER
+        assert catalog["provider"] == PROVIDER
 
     @pytest.mark.unit
     def test_exactly_one_resource_with_a_stable_id(self):
-        catalog = build_catalog("advisory")
+        catalog = build_catalog("advisory", PROVIDER)
 
         assert len(catalog["resources"]) == 1
         resource = catalog["resources"][0]
@@ -98,18 +97,18 @@ class TestBuildAdvisoryCatalog:
 class TestBuildSchemeCatalog:
     @pytest.mark.unit
     def test_catalog_envelope_fields(self):
-        catalog = build_catalog("scheme")
+        catalog = build_catalog("scheme", PROVIDER)
 
         assert catalog["id"] == SCHEMES_CATALOG_ID
         assert "bppId" not in catalog
         assert "bppUri" not in catalog
         assert catalog["descriptor"] == {"name": "Schemes from documents"}
         assert catalog["isActive"] is True
-        assert catalog["provider"] == BV_SCHEMES_PROVIDER
+        assert catalog["provider"] == PROVIDER
 
     @pytest.mark.unit
     def test_exactly_one_resource_with_a_stable_id(self):
-        catalog = build_catalog("scheme")
+        catalog = build_catalog("scheme", PROVIDER)
 
         assert len(catalog["resources"]) == 1
         resource = catalog["resources"][0]
@@ -139,7 +138,7 @@ class TestUnmappedKinds:
     @pytest.mark.unit
     @pytest.mark.parametrize("kind", ["document", "video", "how_to_faq", "", None])
     def test_returns_none_so_the_caller_skips_publishing(self, kind):
-        assert build_catalog(kind) is None
+        assert build_catalog(kind, PROVIDER) is None
         assert is_publishable_kind(kind) is False
 
     @pytest.mark.unit
@@ -151,136 +150,67 @@ class TestUnmappedKinds:
 class TestBuilderIsolation:
     @pytest.mark.unit
     def test_mutating_a_built_catalog_does_not_leak_into_the_next(self):
-        first = build_catalog("advisory")
+        first = build_catalog("advisory", PROVIDER)
         first["resources"][0]["resourceAttributes"]["topics"].append("tampered")
 
-        second = build_catalog("advisory")
+        second = build_catalog("advisory", PROVIDER)
 
         assert second["resources"][0]["resourceAttributes"]["topics"] == ["Crop production"]
 
     @pytest.mark.unit
     def test_mutating_a_built_catalogs_provider_does_not_leak_into_the_next(self):
-        first = build_catalog("advisory")
+        first = build_catalog("advisory", PROVIDER)
         first["provider"]["descriptor"]["name"] = "tampered"
 
-        second = build_catalog("advisory")
+        second = build_catalog("advisory", PROVIDER)
 
-        assert second["provider"] == BV_ADVISORY_PROVIDER
+        assert second["provider"] == PROVIDER
 
 
 MAHARASHTRA = Group(code="mh", name="Maharashtra")
 
 
-class TestGroupProviderCatalog:
+class TestGroupCatalog:
     @pytest.mark.unit
     @pytest.mark.parametrize(
-        "kind,catalog_id,resource_id,provider_id,name",
+        "kind,catalog_id,resource_id",
         [
             (
                 "advisory",
                 "mh-cat-oan-knowledge-provider-advisories",
                 "mh-res-oan-knowledge-provider-advisories",
-                "advisory.mh.provider.oan.dev",
-                "Maharashtra Advisories from documents",
             ),
             (
                 "scheme",
                 "mh-cat-oan-knowledge-provider-schemes",
                 "mh-res-oan-knowledge-provider-schemes",
-                "scheme.mh.provider.oan.dev",
-                "Maharashtra Schemes from documents",
             ),
         ],
     )
-    def test_ids_and_names_carry_the_group(self, kind, catalog_id, resource_id, provider_id, name):
-        catalog = build_catalog(kind, MAHARASHTRA)
+    def test_ids_carry_the_group_and_the_catalog_takes_the_providers_name(self, kind, catalog_id, resource_id):
+        catalog = build_catalog(kind, MH_PROVIDER, MAHARASHTRA)
 
         assert catalog["id"] == catalog_id
-        assert catalog["descriptor"] == {"name": name}
+        assert catalog["descriptor"] == {"name": "Maharashtra Advisories from documents"}
         assert catalog["resources"][0]["id"] == resource_id
-        assert catalog["provider"] == {
-            "id": provider_id,
-            "descriptor": {"code": provider_id, "name": name},
-        }
+        assert catalog["provider"] == MH_PROVIDER
 
     @pytest.mark.unit
     @pytest.mark.parametrize("kind", ["advisory", "scheme"])
-    def test_resource_attributes_match_the_shared_provider(self, kind):
-        grouped = build_catalog(kind, MAHARASHTRA)["resources"][0]
-        shared = build_catalog(kind)["resources"][0]
+    def test_resource_attributes_match_the_shared_catalog(self, kind):
+        grouped = build_catalog(kind, MH_PROVIDER, MAHARASHTRA)["resources"][0]
+        shared = build_catalog(kind, PROVIDER)["resources"][0]
 
         assert grouped["resourceAttributes"] == shared["resourceAttributes"]
         assert grouped["descriptor"] == shared["descriptor"]
 
     @pytest.mark.unit
     def test_unmapped_kind_still_publishes_nothing(self):
-        assert build_catalog("document", MAHARASHTRA) is None
+        assert build_catalog("document", MH_PROVIDER, MAHARASHTRA) is None
 
     @pytest.mark.unit
-    def test_no_group_uses_the_shared_instance(self):
-        catalog = build_catalog("advisory", None)
+    def test_no_group_keeps_the_unprefixed_ids(self):
+        catalog = build_catalog("advisory", PROVIDER, None)
 
         assert catalog["id"] == ADVISORY_CATALOG_ID
-        assert catalog["provider"] == BV_ADVISORY_PROVIDER
-
-
-class TestProviderNaming:
-    NAMING = ProviderNaming(
-        shared_instance="portal",
-        id_template="{instance}-{kind}.example.net",
-        group_name_template="{provider_name} ({group_name})",
-        provider_names={"advisory": "Advice", "scheme": "Schemes"},
-    )
-
-    @pytest.mark.unit
-    def test_shared_provider_follows_the_configured_naming(self):
-        catalog = build_catalog("scheme", None, self.NAMING)
-
-        assert catalog["id"] == SCHEMES_CATALOG_ID
-        assert catalog["provider"] == {
-            "id": "portal-scheme.example.net",
-            "descriptor": {"code": "portal-scheme.example.net", "name": "Schemes"},
-        }
-
-    @pytest.mark.unit
-    def test_group_provider_follows_the_configured_naming(self):
-        catalog = build_catalog("advisory", MAHARASHTRA, self.NAMING)
-
-        assert catalog["descriptor"] == {"name": "Advice (Maharashtra)"}
-        assert catalog["provider"] == {
-            "id": "mh-advisory.example.net",
-            "descriptor": {"code": "mh-advisory.example.net", "name": "Advice (Maharashtra)"},
-        }
-
-
-class TestProviderIdOverrides:
-    NAMING = ProviderNaming(
-        provider_id_overrides={
-            "ka": {"advisory": "advisory.ka.com", "scheme": "scheme.ka.com"},
-            "tn": {"scheme": "scheme.tn.com"},
-        }
-    )
-
-    @pytest.mark.unit
-    @pytest.mark.parametrize("kind,provider_id", [("advisory", "advisory.ka.com"), ("scheme", "scheme.ka.com")])
-    def test_overridden_group_uses_its_own_provider_id(self, kind, provider_id):
-        catalog = build_catalog(kind, Group(code="ka", name="Karnataka"), self.NAMING)
-
-        assert catalog["provider"]["id"] == provider_id
-        assert catalog["provider"]["descriptor"]["code"] == provider_id
-        assert catalog["id"].startswith("ka-")
-
-    @pytest.mark.unit
-    def test_a_kind_without_an_override_falls_back_to_the_template(self):
-        catalog = build_catalog("advisory", Group(code="tn", name="Tamil Nadu"), self.NAMING)
-
-        assert catalog["provider"]["id"] == "advisory.tn.provider.oan.dev"
-
-    @pytest.mark.unit
-    def test_group_without_overrides_uses_the_defaults(self):
-        catalog = build_catalog("scheme", MAHARASHTRA, self.NAMING)
-
-        assert catalog["provider"] == {
-            "id": "scheme.mh.provider.oan.dev",
-            "descriptor": {"code": "scheme.mh.provider.oan.dev", "name": "Maharashtra Schemes from documents"},
-        }
+        assert catalog["provider"] == PROVIDER
