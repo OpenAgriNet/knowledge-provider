@@ -16,8 +16,11 @@ from typing import Optional
 
 import httpx
 
-from .catalog_builder import build_catalog
+from .catalog_builder import build_catalog, is_publishable_kind, normalize_document_kind
+from .instances import instance_display_name
 from .network_constants import BECKN_VERSION, RESULT_ACCEPTED
+from .network_group import load_provider_naming
+from .network_provider import Group
 
 logger = logging.getLogger(__name__)
 
@@ -41,12 +44,14 @@ class DiscoveryPublishService:
             raise RuntimeError("NETWORK_SENDER_ID must be set to publish to the network.")
 
         self.timeout = timeout
+        self.provider_naming = load_provider_naming()
 
     def publish(
         self,
         transaction_id: str,
         document_kind: Optional[str],
         workflow_id: Optional[str] = None,
+        group: Optional[str] = None,
     ) -> dict:
         """
         POST a catalog/publish envelope for `document_kind`.
@@ -59,21 +64,20 @@ class DiscoveryPublishService:
         with `skipped=True`: the spec declares `message.catalogs` as
         `minItems: 1`, so there is no valid "publish nothing" request to send.
         """
-        catalog = build_catalog(document_kind)
-        if catalog is None:
+        if not is_publishable_kind(document_kind):
             logger.info(
                 "workflow_id=%s document_kind=%s network_publish_skipped=True",
                 workflow_id,
                 document_kind,
             )
-            return {
-                "skipped": True,
-                "envelope": None,
-                "status_code": None,
-                "response_body": None,
-                "result_status": None,
-                "errors": [],
-            }
+            return self._skipped()
+
+        catalog_group = None
+        if group is not None:
+            catalog_group = Group(code=group, name=instance_display_name(group))
+
+        provider = self.provider_naming.provider(normalize_document_kind(document_kind), catalog_group)
+        catalog = build_catalog(document_kind, provider, catalog_group)
 
         envelope = {
             "context": {
@@ -153,6 +157,17 @@ class DiscoveryPublishService:
             "response_body": response.text,
             "result_status": result_status,
             "errors": errors,
+        }
+
+    @staticmethod
+    def _skipped() -> dict:
+        return {
+            "skipped": True,
+            "envelope": None,
+            "status_code": None,
+            "response_body": None,
+            "result_status": None,
+            "errors": [],
         }
 
     def _read_result(

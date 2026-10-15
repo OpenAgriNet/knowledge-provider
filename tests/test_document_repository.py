@@ -76,3 +76,26 @@ class TestAgainstRealSqlite:
     @pytest.mark.db
     def test_missing_document_reads_as_none(self, db_connection):
         assert DocumentRepository().get_document_kind("no-such-workflow") is None
+
+
+class TestGetDocumentGroup:
+    @pytest.fixture(autouse=True)
+    def _default_no_group_instances(self, monkeypatch):
+        monkeypatch.delenv("PORTAL_INSTANCE", raising=False)
+        monkeypatch.delenv("DEFAULT_INSTANCE", raising=False)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "instance,group",
+        [("mh", "mh"), ("MH", "mh"), ("bv", None), ("default", None), (None, None)],
+    )
+    def test_group_comes_from_the_documents_instance(self, instance, group):
+        repo = DocumentRepository(FakeDb(document={"instance": instance}))
+
+        assert repo.get_document_group("wf-1") == group
+
+    @pytest.mark.unit
+    def test_returns_none_for_a_missing_document(self):
+        repo = DocumentRepository(FakeDb(document=None))
+
+        assert repo.get_document_group("wf-nope") is None

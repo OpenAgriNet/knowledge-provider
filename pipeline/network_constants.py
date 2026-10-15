@@ -33,12 +33,8 @@ SCHEME_TOPICS = ["Government schemes"]
 
 DEFAULT_DOCUMENT_KIND = "document"
 
-# Same provider on every catalog - this pipeline publishes as one provider
-# regardless of knowledge kind.
-CATALOG_PROVIDER = {
-    "id": "knowledge-provider",
-    "descriptor": {
-        "code": "oan-knowledge-provider",
-        "name": "OAN Knowledge Provider",
-    },
-}
+ADVISORY_PROVIDER_NAME = "Advisories from documents"
+SCHEMES_PROVIDER_NAME = "Schemes from documents"
+
+PROVIDER_ID_TEMPLATE = "{kind}.{instance}.provider.oan.dev"
+GROUP_PROVIDER_NAME_TEMPLATE = "{group_name} {provider_name}"

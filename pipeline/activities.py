@@ -1464,10 +1464,11 @@ async def publish_catalog_to_network(workflow_id: str, transaction_id: str) -> d
 
     repository = DocumentRepository()
     document_kind = normalize_document_kind(repository.get_document_kind(workflow_id))
+    group = repository.get_document_group(workflow_id)
 
     service = DiscoveryPublishService()
     result = await asyncio.to_thread(
-        service.publish, transaction_id, document_kind, workflow_id
+        service.publish, transaction_id, document_kind, workflow_id, group
     )
 
     if result["skipped"]:

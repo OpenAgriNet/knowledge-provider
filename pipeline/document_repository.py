@@ -9,6 +9,7 @@ so a caller never unpacks a raw document row.
 from typing import Optional
 
 from . import db
+from .network_group import group_for_instance
 
 
 class DocumentRepository:
@@ -28,3 +29,9 @@ class DocumentRepository:
         if not doc:
             return None
         return doc.get("document_kind")
+
+    def get_document_group(self, workflow_id: str) -> Optional[str]:
+        doc = self._db.get_document(workflow_id)
+        if not doc:
+            return None
+        return group_for_instance(doc.get("instance"))

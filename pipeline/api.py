@@ -103,6 +103,7 @@ from .models import (
     SearchSettingsUpdate,
     SettingsAuditResponse,
 )
+from .network_group import validate_network_provider_config
 from .workflows import (
     ChunkingOnlyWorkflow,
     DocumentPipelineWorkflow,
@@ -136,6 +137,8 @@ MINIO_BUCKET = "documents"
 async def lifespan(app: FastAPI):
     """Initialize Temporal and MinIO clients on startup."""
     global temporal_client, minio_client, MINIO_BUCKET
+
+    validate_network_provider_config()
 
     auth_cfg = load_auth_config()
     validate_auth_config(auth_cfg)

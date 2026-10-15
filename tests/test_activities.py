@@ -526,7 +526,7 @@ class TestPublishCatalogToNetworkActivity:
             def __init__(self):
                 pass
 
-            def publish(self, transaction_id, document_kind, workflow_id=None):
+            def publish(self, transaction_id, document_kind, workflow_id=None, group=None):
                 assert transaction_id == "txn-1"
                 assert document_kind == "advisory"
                 assert workflow_id == "wf-1"
@@ -574,7 +574,7 @@ class TestPublishCatalogToNetworkActivity:
         import pipeline.db as db
 
         class FakeService:
-            def publish(self, transaction_id, document_kind, workflow_id=None):
+            def publish(self, transaction_id, document_kind, workflow_id=None, group=None):
                 raise RuntimeError("discovery service unreachable")
 
         monkeypatch.setattr(activities, "DiscoveryPublishService", FakeService)
@@ -596,7 +596,7 @@ class TestPublishCatalogToNetworkActivity:
         import pipeline.db as db
 
         class FakeService:
-            def publish(self, transaction_id, document_kind, workflow_id=None):
+            def publish(self, transaction_id, document_kind, workflow_id=None, group=None):
                 return {
                     "skipped": True,
                     "envelope": None,
@@ -641,7 +641,7 @@ class TestPublishCatalogToNetworkActivity:
         import pipeline.db as db
 
         class FakeService:
-            def publish(self, transaction_id, document_kind, workflow_id=None):
+            def publish(self, transaction_id, document_kind, workflow_id=None, group=None):
                 return {
                     "skipped": False,
                     "envelope": {"context": {"messageId": "msg-3"}},
@@ -675,7 +675,7 @@ class TestPublishCatalogToNetworkActivity:
         errors = [{"code": "SCH_SCHEMA_VALIDATION_FAILED", "message": "topics is required"}]
 
         class FakeService:
-            def publish(self, transaction_id, document_kind, workflow_id=None):
+            def publish(self, transaction_id, document_kind, workflow_id=None, group=None):
                 return {
                     "skipped": False,
                     "envelope": {"context": {"messageId": "msg-4"}},
@@ -704,6 +704,85 @@ class TestPublishCatalogToNetworkActivity:
         assert excinfo.value.non_retryable is True
         # The reason must survive the failure, so the artifact is written first.
         assert recorded["metadata"]["errors"] == errors
+
+
+class TestPublishCatalogToNetworkGroups:
+    @staticmethod
+    def _wire(monkeypatch, document, service_result, seen):
+        import pipeline.activities as activities
+        import pipeline.db as db
+
+        class FakeService:
+            def publish(self, transaction_id, document_kind, workflow_id=None, group=None):
+                seen["group"] = group
+                return service_result
+
+        monkeypatch.setattr(activities, "DiscoveryPublishService", FakeService)
+        monkeypatch.setattr(
+            activities,
+            "_upload_file_to_minio",
+            lambda *a, **k: ("minio://documents/x.json", 1, "application/json"),
+        )
+        monkeypatch.setattr(db, "get_document", lambda workflow_id: document)
+        monkeypatch.setattr(db, "get_latest_document_job", lambda workflow_id: None)
+        recorded = {}
+        monkeypatch.setattr(db, "add_document_artifact", lambda **kwargs: recorded.update(kwargs))
+        return recorded
+
+    _PUBLISHED = {
+        "skipped": False,
+        "envelope": {"context": {"messageId": "msg-g"}},
+        "status_code": 200,
+        "response_body": "{}",
+        "result_status": "ACCEPTED",
+        "errors": [],
+    }
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("instance,group", [("mh", "mh"), ("MH", "mh"), ("bv", None), ("default", None)])
+    async def test_passes_the_documents_group(self, monkeypatch, instance, group):
+        import pipeline.activities as activities
+
+        monkeypatch.delenv("PORTAL_INSTANCE", raising=False)
+        monkeypatch.delenv("DEFAULT_INSTANCE", raising=False)
+        seen = {}
+        self._wire(
+            monkeypatch,
+            {"document_kind": "advisory", "instance": instance},
+            self._PUBLISHED,
+            seen,
+        )
+
+        await activities.publish_catalog_to_network("wf-g", "txn-g")
+
+        assert seen["group"] == group
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_unmapped_kind_records_a_skip(self, monkeypatch):
+        import pipeline.activities as activities
+
+        skipped = {
+            "skipped": True,
+            "envelope": None,
+            "status_code": None,
+            "response_body": None,
+            "result_status": None,
+            "errors": [],
+        }
+        recorded = self._wire(
+            monkeypatch,
+            {"document_kind": "document", "instance": "mh"},
+            skipped,
+            {},
+        )
+
+        result = await activities.publish_catalog_to_network("wf-u", "txn-u")
+
+        assert result["status"] == "skipped"
+        assert recorded["artifact_type"] == "network_publish_skipped"
+        assert recorded["metadata"]["reason"] == "no network catalog is mapped to this document kind"
 
 
 class TestWorkerActivityRegistration:
