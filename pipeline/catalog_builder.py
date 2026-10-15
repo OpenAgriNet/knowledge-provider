@@ -11,31 +11,27 @@ docs/ADR/0003-static-ondemand-network-catalog-per-knowledge-kind.md.
 """
 
 import copy
-from dataclasses import dataclass, field
-from typing import Mapping, Optional
+from typing import Optional
 
 from .network_constants import (
     ADVISORY_CATALOG_ID,
     ADVISORY_CATALOG_NAME,
-    ADVISORY_PROVIDER_NAME,
     ADVISORY_RESOURCE_ID,
     ADVISORY_RESOURCE_NAME,
     ADVISORY_SUBJECT_CATEGORIES,
     ADVISORY_TOPICS,
     DEFAULT_DOCUMENT_KIND,
-    GROUP_PROVIDER_NAME_TEMPLATE,
     INFORMATION_MODE,
-    PROVIDER_ID_TEMPLATE,
     SCHEMA_CONTEXT_BASE,
     SCHEME_SUBJECT_CATEGORIES,
     SCHEME_TOPICS,
     SCHEMES_CATALOG_ID,
     SCHEMES_CATALOG_NAME,
-    SCHEMES_PROVIDER_NAME,
     SCHEMES_RESOURCE_ID,
     SCHEMES_RESOURCE_NAME,
     SERVED_LANGUAGES,
 )
+from .network_provider import Group
 
 _ADVISORY_RESOURCE_ATTRIBUTES = {
     "@context": f"{SCHEMA_CONTEXT_BASE}/KnowledgeAdvisory/v0.1/context.jsonld",
@@ -79,36 +75,6 @@ _KNOWLEDGE_KIND_CATALOGS = {
 PUBLISHABLE_DOCUMENT_KINDS = tuple(_KNOWLEDGE_KIND_CATALOGS)
 
 
-@dataclass(frozen=True)
-class Group:
-    code: str
-    name: str
-
-
-@dataclass(frozen=True)
-class ProviderNaming:
-    shared_instance: str = "bv"
-    id_template: str = PROVIDER_ID_TEMPLATE
-    group_name_template: str = GROUP_PROVIDER_NAME_TEMPLATE
-    provider_names: Mapping[str, str] = field(
-        default_factory=lambda: {
-            "advisory": ADVISORY_PROVIDER_NAME,
-            "scheme": SCHEMES_PROVIDER_NAME,
-        }
-    )
-    provider_id_overrides: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
-
-    def provider(self, kind: str, group: Optional[Group]) -> dict:
-        instance = group.code if group is not None else self.shared_instance
-        provider_id = self.provider_id_overrides.get(instance, {}).get(kind) or self.id_template.format(
-            kind=kind, instance=instance
-        )
-        name = self.provider_names[kind]
-        if group is not None:
-            name = self.group_name_template.format(group_name=group.name, provider_name=name)
-        return {"id": provider_id, "descriptor": {"code": provider_id, "name": name}}
-
-
 def normalize_document_kind(document_kind: Optional[str]) -> str:
     """Coerce a stored `documents.document_kind` to its lookup form."""
     return (document_kind or DEFAULT_DOCUMENT_KIND).strip().lower()
@@ -120,8 +86,8 @@ def is_publishable_kind(document_kind: Optional[str]) -> bool:
 
 def build_catalog(
     document_kind: Optional[str],
+    provider: dict,
     group: Optional[Group] = None,
-    naming: ProviderNaming = ProviderNaming(),
 ) -> Optional[dict]:
     """Return the catalog to announce for `document_kind`, or None.
 
@@ -129,15 +95,14 @@ def build_catalog(
     operator-entered custom slug. Callers must skip the publish rather than send
     an empty `catalogs` array, which the spec rejects (`minItems: 1`).
     """
-    kind = normalize_document_kind(document_kind)
-    spec = _KNOWLEDGE_KIND_CATALOGS.get(kind)
+    spec = _KNOWLEDGE_KIND_CATALOGS.get(normalize_document_kind(document_kind))
     if spec is None:
         return None
 
     catalog_id = spec["catalog_id"]
     catalog_name = spec["catalog_name"]
     resource_id = spec["resource_id"]
-    provider = naming.provider(kind, group)
+    provider = copy.deepcopy(provider)
     if group is not None:
         prefix = f"{group.code}-"
         catalog_id = prefix + catalog_id

@@ -16,10 +16,11 @@ from typing import Optional
 
 import httpx
 
-from .catalog_builder import Group, build_catalog, is_publishable_kind
+from .catalog_builder import build_catalog, is_publishable_kind, normalize_document_kind
 from .instances import instance_display_name
 from .network_constants import BECKN_VERSION, RESULT_ACCEPTED
 from .network_group import load_provider_naming
+from .network_provider import Group
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +76,8 @@ class DiscoveryPublishService:
         if group is not None:
             catalog_group = Group(code=group, name=instance_display_name(group))
 
-        catalog = build_catalog(document_kind, catalog_group, self.provider_naming)
+        provider = self.provider_naming.provider(normalize_document_kind(document_kind), catalog_group)
+        catalog = build_catalog(document_kind, provider, catalog_group)
 
         envelope = {
             "context": {

@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from .catalog_builder import PUBLISHABLE_DOCUMENT_KINDS, ProviderNaming
 from .instances import PORTAL_INSTANCE
 from .network_constants import (
     ADVISORY_PROVIDER_NAME,
@@ -13,6 +12,7 @@ from .network_constants import (
     PROVIDER_ID_TEMPLATE,
     SCHEMES_PROVIDER_NAME,
 )
+from .network_provider import PROVIDER_KINDS, ProviderNaming
 
 GROUP_PROVIDERS_CONFIG_PATH_ENV = "NETWORK_GROUP_PROVIDERS_CONFIG_PATH"
 DEFAULT_GROUP_PROVIDERS_CONFIG_PATH = Path(__file__).with_name("network_group_providers.json")
@@ -74,9 +74,9 @@ def parse_provider_id_overrides(raw: Optional[str], source: str) -> dict[str, di
         for kind, value in kinds.items():
             normalized_kind = kind.strip().lower() if isinstance(kind, str) else ""
             provider_id = value.strip() if isinstance(value, str) else ""
-            if normalized_kind not in PUBLISHABLE_DOCUMENT_KINDS:
+            if normalized_kind not in PROVIDER_KINDS:
                 raise NetworkProviderConfigError(
-                    f"{source} entry {key!r} kind {kind!r} must be one of {list(PUBLISHABLE_DOCUMENT_KINDS)}"
+                    f"{source} entry {key!r} kind {kind!r} must be one of {list(PROVIDER_KINDS)}"
                 )
             if not provider_id:
                 raise NetworkProviderConfigError(
