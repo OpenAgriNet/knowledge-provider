@@ -16,10 +16,10 @@ from typing import Optional
 
 import httpx
 
-from .catalog_builder import GroupProvider, build_catalog
+from .catalog_builder import Group, build_catalog, is_publishable_kind
 from .instances import instance_display_name
 from .network_constants import BECKN_VERSION, RESULT_ACCEPTED
-from .network_group import load_group_provider_ids
+from .network_group import load_group_codes, load_provider_naming
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,8 @@ class DiscoveryPublishService:
             raise RuntimeError("NETWORK_SENDER_ID must be set to publish to the network.")
 
         self.timeout = timeout
-        self.group_provider_ids = load_group_provider_ids()
+        self.group_codes = load_group_codes()
+        self.provider_naming = load_provider_naming()
 
     def publish(
         self,
@@ -66,7 +67,7 @@ class DiscoveryPublishService:
         with `skipped=True`: the spec declares `message.catalogs` as
         `minItems: 1`, so there is no valid "publish nothing" request to send.
         """
-        if build_catalog(document_kind) is None:
+        if not is_publishable_kind(document_kind):
             logger.info(
                 "workflow_id=%s document_kind=%s network_publish_skipped=True",
                 workflow_id,
@@ -74,10 +75,9 @@ class DiscoveryPublishService:
             )
             return self._skipped(SKIP_UNMAPPED_KIND)
 
-        group_provider = None
+        catalog_group = None
         if group is not None:
-            provider_id = self.group_provider_ids.get(group)
-            if provider_id is None:
+            if group not in self.group_codes:
                 logger.warning(
                     "workflow_id=%s document_kind=%s group=%s network_publish_skipped=True "
                     "reason=%s",
@@ -87,13 +87,9 @@ class DiscoveryPublishService:
                     SKIP_GROUP_PROVIDER_NOT_CONFIGURED,
                 )
                 return self._skipped(SKIP_GROUP_PROVIDER_NOT_CONFIGURED)
-            group_provider = GroupProvider(
-                code=group,
-                name=instance_display_name(group),
-                provider_id=provider_id,
-            )
+            catalog_group = Group(code=group, name=instance_display_name(group))
 
-        catalog = build_catalog(document_kind, group_provider)
+        catalog = build_catalog(document_kind, catalog_group, self.provider_naming)
 
         envelope = {
             "context": {

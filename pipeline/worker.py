@@ -26,7 +26,7 @@ from .activities import (
     run_ocr_and_store,
     update_document_state,
 )
-from .network_group import load_group_provider_ids
+from .network_group import validate_network_provider_config
 from .workflows import (
     ChunkingOnlyWorkflow,
     DocumentPipelineWorkflow,
@@ -54,7 +54,7 @@ TASK_QUEUE = "ocr-pipeline"
 
 async def main():
     """Start the worker."""
-    load_group_provider_ids()
+    validate_network_provider_config()
 
     translation_provider = os.environ.get("TRANSLATION_PROVIDER", "gemma_vllm").strip().lower()
     if translation_provider in {"gemma_vllm", "gemma4", "gemma"}:

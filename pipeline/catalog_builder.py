@@ -11,24 +11,27 @@ docs/ADR/0003-static-ondemand-network-catalog-per-knowledge-kind.md.
 """
 
 import copy
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Mapping, Optional
 
 from .network_constants import (
     ADVISORY_CATALOG_ID,
     ADVISORY_CATALOG_NAME,
+    ADVISORY_PROVIDER_NAME,
     ADVISORY_RESOURCE_ID,
     ADVISORY_RESOURCE_NAME,
     ADVISORY_SUBJECT_CATEGORIES,
     ADVISORY_TOPICS,
-    CATALOG_PROVIDER,
     DEFAULT_DOCUMENT_KIND,
+    GROUP_PROVIDER_NAME_TEMPLATE,
     INFORMATION_MODE,
+    PROVIDER_ID_TEMPLATE,
     SCHEMA_CONTEXT_BASE,
     SCHEME_SUBJECT_CATEGORIES,
     SCHEME_TOPICS,
     SCHEMES_CATALOG_ID,
     SCHEMES_CATALOG_NAME,
+    SCHEMES_PROVIDER_NAME,
     SCHEMES_RESOURCE_ID,
     SCHEMES_RESOURCE_NAME,
     SERVED_LANGUAGES,
@@ -58,7 +61,6 @@ _SCHEME_RESOURCE_ATTRIBUTES = {
 
 _KNOWLEDGE_KIND_CATALOGS = {
     "advisory": {
-        "group_label": "Knowledge Advisories",
         "catalog_id": ADVISORY_CATALOG_ID,
         "catalog_name": ADVISORY_CATALOG_NAME,
         "resource_id": ADVISORY_RESOURCE_ID,
@@ -66,7 +68,6 @@ _KNOWLEDGE_KIND_CATALOGS = {
         "resource_attributes": _ADVISORY_RESOURCE_ATTRIBUTES,
     },
     "scheme": {
-        "group_label": "Knowledge Schemes",
         "catalog_id": SCHEMES_CATALOG_ID,
         "catalog_name": SCHEMES_CATALOG_NAME,
         "resource_id": SCHEMES_RESOURCE_ID,
@@ -79,10 +80,30 @@ PUBLISHABLE_DOCUMENT_KINDS = tuple(_KNOWLEDGE_KIND_CATALOGS)
 
 
 @dataclass(frozen=True)
-class GroupProvider:
+class Group:
     code: str
     name: str
-    provider_id: str
+
+
+@dataclass(frozen=True)
+class ProviderNaming:
+    shared_instance: str = "bv"
+    id_template: str = PROVIDER_ID_TEMPLATE
+    group_name_template: str = GROUP_PROVIDER_NAME_TEMPLATE
+    provider_names: Mapping[str, str] = field(
+        default_factory=lambda: {
+            "advisory": ADVISORY_PROVIDER_NAME,
+            "scheme": SCHEMES_PROVIDER_NAME,
+        }
+    )
+
+    def provider(self, kind: str, group: Optional[Group]) -> dict:
+        instance = group.code if group is not None else self.shared_instance
+        provider_id = self.id_template.format(kind=kind, instance=instance)
+        name = self.provider_names[kind]
+        if group is not None:
+            name = self.group_name_template.format(group_name=group.name, provider_name=name)
+        return {"id": provider_id, "descriptor": {"code": provider_id, "name": name}}
 
 
 def normalize_document_kind(document_kind: Optional[str]) -> str:
@@ -90,9 +111,14 @@ def normalize_document_kind(document_kind: Optional[str]) -> str:
     return (document_kind or DEFAULT_DOCUMENT_KIND).strip().lower()
 
 
+def is_publishable_kind(document_kind: Optional[str]) -> bool:
+    return normalize_document_kind(document_kind) in _KNOWLEDGE_KIND_CATALOGS
+
+
 def build_catalog(
     document_kind: Optional[str],
-    group_provider: Optional[GroupProvider] = None,
+    group: Optional[Group] = None,
+    naming: ProviderNaming = ProviderNaming(),
 ) -> Optional[dict]:
     """Return the catalog to announce for `document_kind`, or None.
 
@@ -100,26 +126,20 @@ def build_catalog(
     operator-entered custom slug. Callers must skip the publish rather than send
     an empty `catalogs` array, which the spec rejects (`minItems: 1`).
     """
-    spec = _KNOWLEDGE_KIND_CATALOGS.get(normalize_document_kind(document_kind))
+    kind = normalize_document_kind(document_kind)
+    spec = _KNOWLEDGE_KIND_CATALOGS.get(kind)
     if spec is None:
         return None
 
     catalog_id = spec["catalog_id"]
     catalog_name = spec["catalog_name"]
     resource_id = spec["resource_id"]
-    provider = copy.deepcopy(CATALOG_PROVIDER)
-    if group_provider is not None:
-        prefix = f"{group_provider.code}-"
+    provider = naming.provider(kind, group)
+    if group is not None:
+        prefix = f"{group.code}-"
         catalog_id = prefix + catalog_id
         resource_id = prefix + resource_id
-        catalog_name = f"{group_provider.name} - {spec['group_label']}"
-        provider = {
-            "id": group_provider.provider_id,
-            "descriptor": {
-                "code": prefix + CATALOG_PROVIDER["descriptor"]["code"],
-                "name": catalog_name,
-            },
-        }
+        catalog_name = provider["descriptor"]["name"]
 
     catalog = {
         "id": catalog_id,
