@@ -19,12 +19,9 @@ import httpx
 from .catalog_builder import Group, build_catalog, is_publishable_kind
 from .instances import instance_display_name
 from .network_constants import BECKN_VERSION, RESULT_ACCEPTED
-from .network_group import load_group_codes, load_provider_naming
+from .network_group import load_provider_naming
 
 logger = logging.getLogger(__name__)
-
-SKIP_UNMAPPED_KIND = "unmapped_kind"
-SKIP_GROUP_PROVIDER_NOT_CONFIGURED = "group_provider_not_configured"
 
 
 class DiscoveryPublishService:
@@ -46,7 +43,6 @@ class DiscoveryPublishService:
             raise RuntimeError("NETWORK_SENDER_ID must be set to publish to the network.")
 
         self.timeout = timeout
-        self.group_codes = load_group_codes()
         self.provider_naming = load_provider_naming()
 
     def publish(
@@ -73,20 +69,10 @@ class DiscoveryPublishService:
                 workflow_id,
                 document_kind,
             )
-            return self._skipped(SKIP_UNMAPPED_KIND)
+            return self._skipped()
 
         catalog_group = None
         if group is not None:
-            if group not in self.group_codes:
-                logger.warning(
-                    "workflow_id=%s document_kind=%s group=%s network_publish_skipped=True "
-                    "reason=%s",
-                    workflow_id,
-                    document_kind,
-                    group,
-                    SKIP_GROUP_PROVIDER_NOT_CONFIGURED,
-                )
-                return self._skipped(SKIP_GROUP_PROVIDER_NOT_CONFIGURED)
             catalog_group = Group(code=group, name=instance_display_name(group))
 
         catalog = build_catalog(document_kind, catalog_group, self.provider_naming)
@@ -164,7 +150,6 @@ class DiscoveryPublishService:
         result_status, errors = self._read_result(response, catalog["id"], workflow_id)
         return {
             "skipped": False,
-            "skip_reason": None,
             "envelope": envelope,
             "status_code": response.status_code,
             "response_body": response.text,
@@ -173,10 +158,9 @@ class DiscoveryPublishService:
         }
 
     @staticmethod
-    def _skipped(reason: str) -> dict:
+    def _skipped() -> dict:
         return {
             "skipped": True,
-            "skip_reason": reason,
             "envelope": None,
             "status_code": None,
             "response_body": None,

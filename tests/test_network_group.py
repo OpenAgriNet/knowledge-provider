@@ -7,9 +7,9 @@ from pipeline.network_group import (
     GROUP_PROVIDERS_CONFIG_PATH_ENV,
     NetworkProviderConfigError,
     group_for_instance,
-    load_group_codes,
+    load_provider_id_overrides,
     load_provider_naming,
-    parse_group_codes,
+    parse_provider_id_overrides,
 )
 
 
@@ -52,31 +52,42 @@ class TestGroupForInstance:
         assert group_for_instance("mh") == "mh"
 
 
-class TestParseGroupCodes:
+class TestParseProviderIdOverrides:
     @pytest.mark.unit
     @pytest.mark.parametrize("raw", [None, "", "   "])
-    def test_unset_means_no_group_is_onboarded(self, raw):
-        assert parse_group_codes(raw, "providers.json") == frozenset()
+    def test_unset_means_no_overrides(self, raw):
+        assert parse_provider_id_overrides(raw, "providers.json") == {}
 
     @pytest.mark.unit
-    def test_codes_are_case_insensitive_and_trimmed(self):
-        assert parse_group_codes('[" MH ", "ka"]', "providers.json") == {"mh", "ka"}
+    def test_codes_and_kinds_are_case_insensitive_and_ids_trimmed(self):
+        parsed = parse_provider_id_overrides(
+            '{" KA ": {"Advisory": " advisory.ka.com ", "scheme": "scheme.ka.com"}, "tn": {"scheme": "s.tn"}}',
+            "providers.json",
+        )
+
+        assert parsed == {
+            "ka": {"advisory": "advisory.ka.com", "scheme": "scheme.ka.com"},
+            "tn": {"scheme": "s.tn"},
+        }
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
         "raw",
         [
             "not json",
-            '{"mh": "mh.provider.oan.dev"}',
-            '"mh"',
-            "[42]",
-            '[""]',
-            '["MH", "mh"]',
+            '["ka"]',
+            '{"ka": "advisory.ka.com"}',
+            '{"ka": {}}',
+            '{"": {"advisory": "advisory.ka.com"}}',
+            '{"ka": {"video": "video.ka.com"}}',
+            '{"ka": {"advisory": ""}}',
+            '{"ka": {"advisory": 42}}',
+            '{"KA": {"advisory": "a"}, "ka": {"advisory": "b"}}',
         ],
     )
-    def test_malformed_list_is_rejected(self, raw):
+    def test_malformed_overrides_are_rejected(self, raw):
         with pytest.raises(NetworkProviderConfigError, match="providers.json"):
-            parse_group_codes(raw, "providers.json")
+            parse_provider_id_overrides(raw, "providers.json")
 
 
 def _providers_file(monkeypatch, tmp_path, content):
@@ -86,19 +97,19 @@ def _providers_file(monkeypatch, tmp_path, content):
     return path
 
 
-class TestLoadGroupCodes:
+class TestLoadProviderIdOverrides:
     @pytest.mark.unit
     def test_reads_the_configured_file(self, monkeypatch, tmp_path):
-        _providers_file(monkeypatch, tmp_path, '["mh"]')
+        _providers_file(monkeypatch, tmp_path, '{"ka": {"advisory": "advisory.ka.com"}}')
 
-        assert load_group_codes() == {"mh"}
+        assert load_provider_id_overrides() == {"ka": {"advisory": "advisory.ka.com"}}
 
     @pytest.mark.unit
     def test_unset_path_uses_the_bundled_empty_default(self, monkeypatch):
         monkeypatch.delenv(GROUP_PROVIDERS_CONFIG_PATH_ENV, raising=False)
 
         assert DEFAULT_GROUP_PROVIDERS_CONFIG_PATH.is_file()
-        assert load_group_codes() == frozenset()
+        assert load_provider_id_overrides() == {}
 
     @pytest.mark.unit
     def test_missing_file_raises(self, monkeypatch, tmp_path):
@@ -106,20 +117,23 @@ class TestLoadGroupCodes:
         monkeypatch.setenv(GROUP_PROVIDERS_CONFIG_PATH_ENV, str(missing))
 
         with pytest.raises(NetworkProviderConfigError, match="absent.json"):
-            load_group_codes()
+            load_provider_id_overrides()
 
     @pytest.mark.unit
     def test_malformed_file_raises(self, monkeypatch, tmp_path):
         _providers_file(monkeypatch, tmp_path, "{broken")
 
         with pytest.raises(NetworkProviderConfigError, match="network_group_providers.json"):
-            load_group_codes()
+            load_provider_id_overrides()
 
     @pytest.mark.unit
     def test_example_file_is_valid(self):
         example = Path(__file__).parents[1] / "deploy" / "network_group_providers.example.json"
 
-        assert "mh" in parse_group_codes(example.read_text(), str(example))
+        assert parse_provider_id_overrides(example.read_text(), str(example))["ka"] == {
+            "advisory": "advisory.ka.com",
+            "scheme": "scheme.ka.com",
+        }
 
 
 class TestLoadProviderNaming:
@@ -134,7 +148,9 @@ class TestLoadProviderNaming:
             monkeypatch.delenv(name, raising=False)
 
     @pytest.mark.unit
-    def test_defaults(self):
+    def test_defaults(self, monkeypatch):
+        monkeypatch.delenv(GROUP_PROVIDERS_CONFIG_PATH_ENV, raising=False)
+
         naming = load_provider_naming()
 
         assert naming.shared_instance == "bv"
@@ -144,6 +160,13 @@ class TestLoadProviderNaming:
             "advisory": "Advisories from documents",
             "scheme": "Schemes from documents",
         }
+        assert naming.provider_id_overrides == {}
+
+    @pytest.mark.unit
+    def test_carries_the_provider_id_overrides(self, monkeypatch, tmp_path):
+        _providers_file(monkeypatch, tmp_path, '{"ka": {"scheme": "scheme.ka.com"}}')
+
+        assert load_provider_naming().provider_id_overrides == {"ka": {"scheme": "scheme.ka.com"}}
 
     @pytest.mark.unit
     def test_reads_overrides(self, monkeypatch):

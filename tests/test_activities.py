@@ -760,48 +760,11 @@ class TestPublishCatalogToNetworkGroups:
 
     @pytest.mark.unit
     @pytest.mark.asyncio
-    async def test_unconfigured_group_records_a_warning_skip(self, monkeypatch, caplog):
-        import logging
-
+    async def test_unmapped_kind_records_a_skip(self, monkeypatch):
         import pipeline.activities as activities
-        from pipeline.discovery_publish_service import SKIP_GROUP_PROVIDER_NOT_CONFIGURED
 
         skipped = {
             "skipped": True,
-            "skip_reason": SKIP_GROUP_PROVIDER_NOT_CONFIGURED,
-            "envelope": None,
-            "status_code": None,
-            "response_body": None,
-            "result_status": None,
-            "errors": [],
-        }
-        recorded = self._wire(
-            monkeypatch,
-            {"document_kind": "advisory", "instance": "mh"},
-            skipped,
-            {},
-        )
-
-        with caplog.at_level(logging.WARNING):
-            result = await activities.publish_catalog_to_network("wf-s", "txn-s")
-
-        assert result["status"] == "skipped"
-        assert recorded["artifact_type"] == "network_publish_skipped"
-        metadata = recorded["metadata"]
-        assert metadata["reason_code"] == SKIP_GROUP_PROVIDER_NOT_CONFIGURED
-        assert metadata["group"] == "mh"
-        assert "Maharashtra (mh)" in metadata["reason"]
-        assert any("Maharashtra (mh)" in r.getMessage() for r in caplog.records if r.levelno == logging.WARNING)
-
-    @pytest.mark.unit
-    @pytest.mark.asyncio
-    async def test_unmapped_kind_skip_carries_its_reason_code(self, monkeypatch):
-        import pipeline.activities as activities
-        from pipeline.discovery_publish_service import SKIP_UNMAPPED_KIND
-
-        skipped = {
-            "skipped": True,
-            "skip_reason": SKIP_UNMAPPED_KIND,
             "envelope": None,
             "status_code": None,
             "response_body": None,
@@ -815,9 +778,11 @@ class TestPublishCatalogToNetworkGroups:
             {},
         )
 
-        await activities.publish_catalog_to_network("wf-u", "txn-u")
+        result = await activities.publish_catalog_to_network("wf-u", "txn-u")
 
-        assert recorded["metadata"]["reason_code"] == SKIP_UNMAPPED_KIND
+        assert result["status"] == "skipped"
+        assert recorded["artifact_type"] == "network_publish_skipped"
+        assert recorded["metadata"]["reason"] == "no network catalog is mapped to this document kind"
 
 
 class TestWorkerActivityRegistration:

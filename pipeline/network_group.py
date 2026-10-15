@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from .catalog_builder import ProviderNaming
+from .catalog_builder import PUBLISHABLE_DOCUMENT_KINDS, ProviderNaming
 from .instances import PORTAL_INSTANCE
 from .network_constants import (
     ADVISORY_PROVIDER_NAME,
@@ -45,27 +45,46 @@ def group_for_instance(instance: Optional[str]) -> Optional[str]:
     return code
 
 
-def parse_group_codes(raw: Optional[str], source: str) -> frozenset[str]:
+def parse_provider_id_overrides(raw: Optional[str], source: str) -> dict[str, dict[str, str]]:
     if raw is None or not raw.strip():
-        return frozenset()
+        return {}
 
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise NetworkProviderConfigError(f"{source} is not valid JSON: {exc}") from exc
 
-    if not isinstance(parsed, list):
-        raise NetworkProviderConfigError(f"{source} must be a JSON array of group codes")
+    if not isinstance(parsed, dict):
+        raise NetworkProviderConfigError(
+            f"{source} must be a JSON object of instance code to {{kind: provider id}}"
+        )
 
-    codes: set[str] = set()
-    for entry in parsed:
-        code = entry.strip().lower() if isinstance(entry, str) else ""
+    overrides: dict[str, dict[str, str]] = {}
+    for key, kinds in parsed.items():
+        code = key.strip().lower() if isinstance(key, str) else ""
         if not code:
-            raise NetworkProviderConfigError(f"{source} entry {entry!r} must be a non-empty group code")
-        if code in codes:
-            raise NetworkProviderConfigError(f"{source} names group {code!r} more than once")
-        codes.add(code)
-    return frozenset(codes)
+            raise NetworkProviderConfigError(f"{source} entry {key!r} must be a non-empty instance code")
+        if code in overrides:
+            raise NetworkProviderConfigError(f"{source} names instance {code!r} more than once")
+        if not isinstance(kinds, dict) or not kinds:
+            raise NetworkProviderConfigError(
+                f"{source} entry {key!r} must map knowledge kinds to provider ids"
+            )
+        provider_ids: dict[str, str] = {}
+        for kind, value in kinds.items():
+            normalized_kind = kind.strip().lower() if isinstance(kind, str) else ""
+            provider_id = value.strip() if isinstance(value, str) else ""
+            if normalized_kind not in PUBLISHABLE_DOCUMENT_KINDS:
+                raise NetworkProviderConfigError(
+                    f"{source} entry {key!r} kind {kind!r} must be one of {list(PUBLISHABLE_DOCUMENT_KINDS)}"
+                )
+            if not provider_id:
+                raise NetworkProviderConfigError(
+                    f"{source} entry {key!r} kind {kind!r} must have a non-empty provider id"
+                )
+            provider_ids[normalized_kind] = provider_id
+        overrides[code] = provider_ids
+    return overrides
 
 
 def group_providers_config_path() -> Path:
@@ -73,13 +92,13 @@ def group_providers_config_path() -> Path:
     return Path(configured) if configured else DEFAULT_GROUP_PROVIDERS_CONFIG_PATH
 
 
-def load_group_codes() -> frozenset[str]:
+def load_provider_id_overrides() -> dict[str, dict[str, str]]:
     path = group_providers_config_path()
     try:
         raw = path.read_text(encoding="utf-8")
     except OSError as exc:
-        raise NetworkProviderConfigError(f"Group provider config {path} cannot be read: {exc}") from exc
-    return parse_group_codes(raw, str(path))
+        raise NetworkProviderConfigError(f"Provider id overrides {path} cannot be read: {exc}") from exc
+    return parse_provider_id_overrides(raw, str(path))
 
 
 def _checked_template(env_name: str, default: str, **placeholders: str) -> str:
@@ -111,9 +130,9 @@ def load_provider_naming() -> ProviderNaming:
             "advisory": _env(ADVISORY_PROVIDER_NAME_ENV, ADVISORY_PROVIDER_NAME),
             "scheme": _env(SCHEMES_PROVIDER_NAME_ENV, SCHEMES_PROVIDER_NAME),
         },
+        provider_id_overrides=load_provider_id_overrides(),
     )
 
 
 def validate_network_provider_config() -> None:
-    load_group_codes()
     load_provider_naming()

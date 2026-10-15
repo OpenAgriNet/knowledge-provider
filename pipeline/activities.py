@@ -26,11 +26,7 @@ from temporalio.exceptions import ApplicationError
 from . import document_validity, scheme_catalog
 from .catalog_builder import normalize_document_kind
 from .chunking import chunk_pages, load_chunking_config
-from .discovery_publish_service import (
-    SKIP_GROUP_PROVIDER_NOT_CONFIGURED,
-    SKIP_UNMAPPED_KIND,
-    DiscoveryPublishService,
-)
+from .discovery_publish_service import DiscoveryPublishService
 from .document_repository import DocumentRepository
 from .instances import instance_display_name
 from .network_constants import RESULT_REJECTED
@@ -1478,21 +1474,10 @@ async def publish_catalog_to_network(workflow_id: str, transaction_id: str) -> d
     if result["skipped"]:
         artifact_type = "network_publish_skipped"
         filename = "network_publish_skipped.json"
-        skip_reason = result.get("skip_reason") or SKIP_UNMAPPED_KIND
-        if skip_reason == SKIP_GROUP_PROVIDER_NOT_CONFIGURED:
-            reason = (
-                "Not published: no network provider is configured for "
-                f"{instance_display_name(group)} ({group})"
-            )
-            activity.logger.warning("workflow_id=%s %s", workflow_id, reason)
-        else:
-            reason = "no network catalog is mapped to this document kind"
         exchange = {
             "skipped": True,
             "document_kind": document_kind,
-            "group": group,
-            "reason_code": skip_reason,
-            "reason": reason,
+            "reason": "no network catalog is mapped to this document kind",
         }
     else:
         artifact_type = "network_publish_payload"

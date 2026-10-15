@@ -54,7 +54,6 @@ import {
   summarizeAuditAction,
   summarizeAvailableAction,
 } from '../lib/pipelineUi'
-import { groupProviderSkipReason } from '../lib/networkPublish'
 
 function getChunkEmptyMessage(doc) {
   const stage = doc?.stage
@@ -852,7 +851,6 @@ export default function DocumentOpsView() {
     (doc?.document_kind && doc.document_kind !== 'document') || doc?.scheme_code || doc?.scheme_name
   )
   const ingestBlockedByClassification = doc?.stage === 'ready_for_ingestion' && !isDocClassified
-  const networkPublishWarning = groupProviderSkipReason(doc?.artifacts)
   const sortedPages = useMemo(() => [...pages].sort((a, b) => a.page_number - b.page_number), [pages])
   const reviewedPages = useMemo(() => pages.filter(p => p.is_reviewed).length, [pages])
   const reviewedChunks = useMemo(() => chunks.filter(c => c.is_reviewed).length, [chunks])
@@ -1000,10 +998,6 @@ export default function DocumentOpsView() {
             {' — '}
             You can browse this document but cannot upload, edit, approve, delete, or run pipeline actions.
           </div>
-        ) : null}
-
-        {networkPublishWarning ? (
-          <PanelNotice tone="warning" title="Publish to Network skipped" message={networkPublishWarning} />
         ) : null}
 
         <div className="flex min-w-0 flex-col gap-2 xl:flex-row xl:items-center xl:gap-3">
