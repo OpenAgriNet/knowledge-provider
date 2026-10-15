@@ -29,11 +29,11 @@ The state a document belongs to, named by its state code (`mh` for Maharashtra) 
 _Avoid_: "tenant"; "state" or "instance" in new features. Never call Bharat Vistaar a Group.
 
 **Group Provider**:
-The network provider a Group's documents are announced under in Publish to Network, with its own catalog per Knowledge Kind, set per deployment. A Group without one configured publishes nothing.
+The network provider a Group's documents are announced under in Publish to Network, one per Knowledge Kind, each with its own catalog. Every Group has one; a deployment may give a Group its own provider id instead of the default.
 _Avoid_: "state provider".
 
 **Shared Provider**:
-The single network provider used by documents with no Group (Bharat Vistaar, `default`), keeping the original catalog ids.
+The network provider used by documents with no Group (Bharat Vistaar, `default`), one per Knowledge Kind, keeping the original catalog ids.
 _Avoid_: "national provider", "central provider".
 
 **Knowledge Kind**:
