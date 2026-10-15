@@ -2,12 +2,13 @@
 Builds the Network Catalog Envelope's catalog for a document's knowledge kind.
 
 One catalog holding exactly one OnDemand resource per kind, identical for every
-document of that kind - a seeker that matches the resource comes back to ask the
-actual question, so there is nothing per-document to put on the wire.
+document of that kind and Group - a seeker that matches the resource comes back
+to ask the actual question, so there is nothing per-document to put on the wire.
 
-Pure: no env, no I/O. Values live in network_constants.py and the transport in
-discovery_publish_service.py. See
-docs/ADR/0003-static-ondemand-network-catalog-per-knowledge-kind.md.
+Pure: no env, no I/O. Values live in network_constants.py, the provider in
+network_provider.py and the transport in discovery_publish_service.py. See
+docs/ADR/0003-static-ondemand-network-catalog-per-knowledge-kind.md and
+docs/ADR/0006-publish-to-network-under-per-group-provider.md.
 """
 
 import copy
