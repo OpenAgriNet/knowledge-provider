@@ -51,10 +51,18 @@ Interactive API docs once running: `http://localhost:8001/docs`.
 
 ### Everything lives in `pipeline/`, not split into microservices
 
-`pipeline/api.py` (~4.3k lines) is a single FastAPI app with all routes declared directly via `@app.get/post/patch/delete` — there is no router-per-resource split. When adding an endpoint, find the existing block by resource (documents, pages, chunks, artifacts, catalog, audit, admin) and add near its siblings rather than creating a new file.
+`pipeline/api/` layout:
+- `api.py` — the FastAPI app and most routes. `__init__.py` only re-exports `app`.
+- `search.py` — `POST /search` as an `APIRouter`. Remaining resources move out the same way; see `TODO(api-split)` in `api.py`.
+
+Rules:
+- Add a new endpoint to its resource's router file if one exists, else near its siblings in `api.py`.
+- Update `tests/test_api_routes.py` whenever a route is added, removed or renamed.
+- Patch module globals (e.g. `temporal_client`) on `pipeline.api.api`, not the package.
+- Walk routes with `tests/route_inventory.py`, not `app.routes`: FastAPI hides included routers there.
 
 Core modules (all under `pipeline/`):
-- `api.py` — FastAPI app, all HTTP routes
+- `api/` — FastAPI app and routers (see layout above)
 - `workflows.py` — Temporal workflow definitions (`DocumentPipelineWorkflow` is the main one; also `ReingestionWorkflow`, `PromoteToProdWorkflow`, `TranslationOnlyWorkflow`, `OcrOnlyWorkflow`, `ChunkingOnlyWorkflow`)
 - `activities.py` — Temporal activities invoked by the workflows (OCR, translate, chunk, ingest, state updates)
 - `worker.py` — Temporal worker process; registers workflows/activities on task queue `ocr-pipeline`
@@ -62,7 +70,7 @@ Core modules (all under `pipeline/`):
 - `document_repository.py` — `DocumentRepository`, a domain layer over `db.py` for document reads; `db.py` stays one-function-per-query with no domain knowledge
 - `network_constants.py` — fixed values sent on the network (catalog/resource ids, topics, languages, Beckn version). The file v2 edits when the AI layer starts deriving them
 - `catalog_builder.py` — pure builder mapping a document's knowledge kind (`advisory`/`scheme`) to the single `OnDemand` Beckn catalog announced for that kind; returns `None` for any other kind. No env, no I/O
-- `document_validity.py` — pure module owning Document Validity: the period a document's chunks answer searches in, the upload-day start with no end by default, and the clock injection point. Shared by `api.py` (stamping the default at upload), `scheme_catalog.py` (validating a reviewer's edit), `activities.py` (stamping chunk payloads) and `vector_store/qdrant_store.py` (filtering at search time). `db.py` stores the dates it is handed and defaults nothing
+- `document_validity.py` — pure module owning Document Validity: the period a document's chunks answer searches in, the upload-day start with no end by default, and the clock injection point. Shared by `api/api.py` (stamping the default at upload), `scheme_catalog.py` (validating a reviewer's edit), `activities.py` (stamping chunk payloads) and `vector_store/qdrant_store.py` (filtering at search time). `db.py` stores the dates it is handed and defaults nothing
 - `discovery_publish_service.py` — `DiscoveryPublishService`: owns the Publish to Network env vars and the HTTP call. Deliberately Temporal-free
 - `models.py` — Pydantic models, including `DocumentStage` enum and `PIPELINE_STAGES` (the stepper-UI stage list)
 - `config.py` — `Config` dataclass reading env vars, with defaults

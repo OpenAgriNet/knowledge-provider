@@ -118,7 +118,7 @@ Redis is already wired (`app/core/cache.py` — aiocache + Redis, prefix `sva-ca
 flowchart TB
   subgraph DocsPipeline["docs-pipeline"]
     UI["Operator UI<br/>document_kind + scheme metadata"]
-    API["FastAPI pipeline/api.py<br/>disable + scheme Qdrant delete + version bump<br/>scheme-metadata PATCH + version bump"]
+    API["FastAPI pipeline/api/<br/>disable + scheme Qdrant delete + version bump<br/>scheme-metadata PATCH + version bump"]
     SQLite[("SQLite<br/>documents + scheme_catalog_*")]
     Worker["Temporal worker<br/>promote + catalog version"]
     QPROD[("Qdrant PROD<br/>schemes-index")]
@@ -219,7 +219,7 @@ Docs-pipeline currently emits `type: "document"` without scheme fields. Default 
 
 #### Naming: `document_kind` (not `content_type`)
 
-`chunks.content_type` already exists (chunk semantics: `body` / heading / etc. in `pipeline/models.py`, `db.py`). Upload MIME is also called `content_type` in `api.py`.  
+`chunks.content_type` already exists (chunk semantics: `body` / heading / etc. in `pipeline/models.py`, `db.py`). Upload MIME is also called `content_type` in `pipeline/api/api.py`.  
 
 **Use `document_kind` on `documents`:**
 
@@ -466,7 +466,7 @@ PROD_SCHEME_VECTOR_DB_COLLECTION_NAME=schemes-index
 
 #### Disable / remove from search (critical)
 
-Extend `DELETE /documents/{workflow_id}` (`disable_document` in `pipeline/api.py`):
+Extend `DELETE /documents/{workflow_id}` (`disable_document` in `pipeline/api/api.py`):
 
 When `remove_from_search=true` (default):
 
@@ -495,7 +495,7 @@ Restore (`POST .../restore`) remains SQLite-only (existing behavior); restoring 
 
 ### 3. Master Catalog API (docs-pipeline)
 
-Hosted on the existing FastAPI app (`pipeline/api.py`). All catalog routes under **`/catalog/v1/`** only.
+Hosted on the existing FastAPI app (`pipeline/api/`). All catalog routes under **`/catalog/v1/`** only.
 
 #### Endpoints
 
@@ -609,7 +609,7 @@ CATALOG_ALLOW_ANON_IN_DEV=false
 
 - Constant-time compare against the key set (`hmac.compare_digest` in a loop / `secrets.compare_digest`)
 - Deny-by-default when `CATALOG_AUTH_ENABLED=true`
-- Rate limit catalog routes (slowapi already used in `api.py`) — e.g. 60/min per IP for version, 10/min for snapshot
+- Rate limit catalog routes (slowapi already used in `pipeline/api/api.py`) — e.g. 60/min per IP for version, 10/min for snapshot
 - Audit log every `rebuild` with actor
 - **Deployment:** bind catalog routes only on internal network / private hostname (not public internet). Nginx allowlist for OAN/provider CIDRs when possible
 - Client env: `SCHEME_CATALOG_URL`, `SCHEME_CATALOG_SERVICE_KEY` (single key from the list)
@@ -1099,7 +1099,7 @@ Snapshot size estimate: ~50 schemes × ~1 KB ≈ **50 KB**.
 | Pipeline models / stages | `docs-pipeline/pipeline/models.py` |
 | Promote to PROD | `docs-pipeline/pipeline/activities.py` → `promote_document_to_prod_qdrant` |
 | Record payload prep | `docs-pipeline/pipeline/activities.py` → `_prepare_records` |
-| Disable (DEV index only today) | `docs-pipeline/pipeline/api.py` → `disable_document` |
+| Disable (DEV index only today) | `docs-pipeline/pipeline/api/api.py` → `disable_document` |
 | Qdrant PAYLOAD_FIELDS | `docs-pipeline/pipeline/vector_store/qdrant_store.py` |
 | OAN scheme search | `bharat-oan-api/helpers/scheme_qdrant_search.py` |
 | OAN search tool | `bharat-oan-api/agents/tools/search.py` |
@@ -1169,7 +1169,7 @@ Incremental, independently reviewable. Order is dependency-aware.
 | | |
 |---|---|
 | **Title** | `feat(docs-pipeline): document_kind and scheme metadata on documents` |
-| **Files** | `pipeline/db.py`, `pipeline/models.py`, `pipeline/api.py` (`PATCH .../scheme-metadata`), tests |
+| **Files** | `pipeline/db.py`, `pipeline/models.py`, `pipeline/api/api.py` (`PATCH .../scheme-metadata`), tests |
 | **Depends on** | — |
 | **Description** | Add columns `document_kind`, `scheme_code`, `scheme_name`, `scheme_aliases_json`, `tool_routing`, `catalog_visible`, `network_visible`. PATCH endpoint. **No** catalog API yet; **no** Qdrant payload change. Document naming vs `chunks.content_type`. |
 
@@ -1178,7 +1178,7 @@ Incremental, independently reviewable. Order is dependency-aware.
 | | |
 |---|---|
 | **Title** | `feat(docs-pipeline): scheme Qdrant payload, schemes-index routing, disable deletes PROD points` |
-| **Files** | `pipeline/activities.py` (`_prepare_records` plumbing from document row, promote routing), `pipeline/vector_store/qdrant_store.py` (`PAYLOAD_FIELDS` + delete-by-doc_id for schemes), `pipeline/api.py` (`disable_document`), `ENV.md`, tests including promote → disable → no points |
+| **Files** | `pipeline/activities.py` (`_prepare_records` plumbing from document row, promote routing), `pipeline/vector_store/qdrant_store.py` (`PAYLOAD_FIELDS` + delete-by-doc_id for schemes), `pipeline/api/api.py` (`disable_document`), `ENV.md`, tests including promote → disable → no points |
 | **Depends on** | PR 1 |
 | **Description** | Emit scheme payload fields; route to `PROD_SCHEME_VECTOR_DB_COLLECTION_NAME`; forbid scheme→documents-index; on disable+`remove_from_search`, delete PROD scheme vectors. |
 
@@ -1187,7 +1187,7 @@ Incremental, independently reviewable. Order is dependency-aware.
 | | |
 |---|---|
 | **Title** | `feat(docs-pipeline): Master Catalog API v1 with service-key auth` |
-| **Files** | `pipeline/db.py` (catalog tables, rebuild, `bump_catalog_version`), `pipeline/api.py` (`/catalog/v1/*`), service-key dep, promote/metadata/disable hooks for version++, `schemas/catalog-snapshot.schema.json`, bootstrap seed for **13** vector codes + legacy seed + routing_exceptions, tests |
+| **Files** | `pipeline/db.py` (catalog tables, rebuild, `bump_catalog_version`), `pipeline/api/api.py` (`/catalog/v1/*`), service-key dep, promote/metadata/disable hooks for version++, `schemas/catalog-snapshot.schema.json`, bootstrap seed for **13** vector codes + legacy seed + routing_exceptions, tests |
 | **Depends on** | PR 1; **PR 2 recommended before real promote-based entries** — staging may enable catalog with **bootstrap-only** entries before full promote path |
 | **Description** | Snapshot/list/version/tool-prompt; auth via `CATALOG_SERVICE_API_KEYS`; rebuild admin-only; version on promote, metadata PATCH, disable, rebuild. |
 

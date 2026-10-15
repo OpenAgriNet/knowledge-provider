@@ -78,25 +78,26 @@ def mock_minio_client():
 
 
 @pytest.fixture
-def test_client(mock_temporal_client, mock_minio_client):
+def test_client(db_connection, mock_temporal_client, mock_minio_client):
     """Create FastAPI TestClient with mocked dependencies.
 
     Neutralizes the app's real lifespan (which otherwise connects to a live
     Temporal server and MinIO) before entering TestClient — see
     test_scheme_catalog.py's asgi_client fixture for the same pattern.
+
+    Depends on ``db_connection`` for a file-backed SQLite: an in-memory one
+    lives per connection, so its tables are gone by the time a route opens
+    its own connection.
     """
     from contextlib import asynccontextmanager
 
     from fastapi.testclient import TestClient
 
-    from pipeline import api
+    from pipeline.api import api
 
     # Patch the global clients
     api.temporal_client = mock_temporal_client
     api.minio_client = mock_minio_client
-
-    # Initialize database
-    api.db.init_db()
 
     @asynccontextmanager
     async def _noop_lifespan(_app):
@@ -109,6 +110,34 @@ def test_client(mock_temporal_client, mock_minio_client):
             yield client
     finally:
         api.app.router.lifespan_context = original
+
+
+class CapturingVectorStore:
+    """Stands in for the vector store: records the kwargs of every search call
+    and answers with whatever ``hits`` the test put on it."""
+
+    backend = "qdrant"
+
+    def __init__(self):
+        self.captured: dict = {}
+        self.hits: list[dict] = []
+
+    def search(self, **kwargs):
+        from datetime import date
+
+        self.captured.update(kwargs)
+        valid_on = kwargs.get("valid_on")
+        if valid_on is None and kwargs.get("apply_validity", True):
+            valid_on = date.today().isoformat()
+        return {"hits": list(self.hits), "valid_on": valid_on}
+
+
+@pytest.fixture
+def capturing_store(monkeypatch):
+    """The API's vector store swapped for a CapturingVectorStore."""
+    store = CapturingVectorStore()
+    monkeypatch.setattr("pipeline.vector_store.get_vector_store", lambda: store)
+    return store
 
 
 @pytest.fixture
