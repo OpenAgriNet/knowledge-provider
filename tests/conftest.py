@@ -78,12 +78,16 @@ def mock_minio_client():
 
 
 @pytest.fixture
-def test_client(mock_temporal_client, mock_minio_client):
+def test_client(db_connection, mock_temporal_client, mock_minio_client):
     """Create FastAPI TestClient with mocked dependencies.
 
     Neutralizes the app's real lifespan (which otherwise connects to a live
     Temporal server and MinIO) before entering TestClient — see
     test_scheme_catalog.py's asgi_client fixture for the same pattern.
+
+    Depends on ``db_connection`` for a file-backed SQLite: an in-memory one
+    lives per connection, so its tables are gone by the time a route opens
+    its own connection.
     """
     from contextlib import asynccontextmanager
 
@@ -94,9 +98,6 @@ def test_client(mock_temporal_client, mock_minio_client):
     # Patch the global clients
     api.temporal_client = mock_temporal_client
     api.minio_client = mock_minio_client
-
-    # Initialize database
-    api.db.init_db()
 
     @asynccontextmanager
     async def _noop_lifespan(_app):

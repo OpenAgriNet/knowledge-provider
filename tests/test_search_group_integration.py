@@ -33,10 +33,9 @@ def bag_of_words_vector(text: str) -> list[float]:
 
 
 @pytest.fixture
-def local_store(monkeypatch, db_connection, test_client):
+def local_store(monkeypatch, test_client):
     """A real QdrantVectorStore over an in-memory engine, loaded with CHUNKS and
-    wired in as the API's vector store. ``db_connection`` comes first so the
-    API has a file-backed settings table even when this file runs alone."""
+    wired in as the API's vector store."""
     monkeypatch.setenv("EMBEDDING_VECTOR_SIZE", str(VECTOR_SIZE))
     monkeypatch.setattr(qdrant_store, "embed_passages", lambda texts, **_: [bag_of_words_vector(t) for t in texts])
     monkeypatch.setattr(qdrant_store, "embed_query", lambda query, **_: bag_of_words_vector(query))
