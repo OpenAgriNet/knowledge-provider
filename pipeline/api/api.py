@@ -1,0 +1,4016 @@
+"""
+FastAPI REST API for the Temporal-based OCR pipeline.
+
+This API provides HTTP endpoints that interact with Temporal workflows.
+"""
+
+import asyncio
+import hashlib
+import json
+import logging
+import os
+import time
+from contextlib import asynccontextmanager
+from datetime import datetime
+from io import BytesIO
+from pathlib import Path
+from typing import Optional
+
+# Load repo-root .env so KEYCLOAK_ADMIN_* etc. work without manual `source .env`
+try:
+    from dotenv import load_dotenv
+
+    # parents[0] = pipeline/api, [1] = pipeline, [2] = repo root
+    _env_path = Path(__file__).resolve().parents[2] / ".env"
+    if _env_path.is_file():
+        load_dotenv(_env_path, override=False)
+except Exception:
+    pass
+
+from urllib.parse import quote
+
+from fastapi import FastAPI, File, Header, HTTPException, Query, Request, UploadFile
+from fastapi import Path as PathParam
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from minio import Minio
+from pydantic import BaseModel, Field
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
+from temporalio.client import Client, WorkflowFailureError
+
+from .. import db, document_validity, scheme_catalog
+from ..auth.config import load_auth_config, validate_auth_config
+from ..auth.deps import (
+    CurrentUser,
+    RequireAdmin,
+    RequireApproveIngestion,
+    RequireManageUsers,
+    RequirePipeline,
+    RequireReview,
+    RequireSearch,
+    RequireUpload,
+)
+from ..auth.email_otp import (
+    exchange_authorization_code,
+    normalize_email,
+    refresh_tokens,
+    send_otp,
+    verify_otp,
+)
+from ..auth.keycloak_admin import (
+    list_access_options,
+    list_realm_users,
+    provision_user,
+    set_user_access,
+)
+from ..auth.models import AuthUser
+from ..auth.permissions import Permission
+from ..auth.tenancy import (
+    PORTAL_INSTANCE,
+    allowed_instances,
+    assert_document_instance_access,
+    normalize_instance,
+    resolve_create_instance,
+    unrestricted,
+    user_can_access_instance,
+)
+from ..instances import prod_stage_disabled
+from ..models import (
+    PIPELINE_STAGES,
+    PROD_ONLY_STAGES,
+    AuditLogResponse,
+    BulkWorkflowActionRequest,
+    BulkWorkflowActionResponse,
+    BulkWorkflowActionResult,
+    ChunkUpdate,
+    DocumentCohortsResponse,
+    DocumentDetail,
+    DocumentGraph,
+    DocumentStage,
+    DocumentSummary,
+    OperationQueueEntry,
+    OperationQueueResponse,
+    PageUpdate,
+    RegisterFolderRequest,
+    RegisterRequest,
+    ReindexStateRequest,
+    SchemeMetadataUpdate,
+    SearchSettings,
+    SearchSettingsUpdate,
+    SettingsAuditResponse,
+)
+from ..workflows import (
+    ChunkingOnlyWorkflow,
+    DocumentPipelineWorkflow,
+    OcrOnlyWorkflow,
+    PromoteToProdWorkflow,
+    ReingestionWorkflow,
+    TranslationOnlyWorkflow,
+)
+
+LOG_LEVEL = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").strip().upper(), logging.INFO)
+# uvicorn only configures its own "uvicorn"/"uvicorn.access" loggers, so plain
+# logging.info() calls in this module (e.g. /search) are silently dropped
+# without configuring the root logger too - same LOG_LEVEL convention as
+# pipeline/worker.py.
+logging.basicConfig(
+    level=LOG_LEVEL,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    datefmt='%H:%M:%S',
+)
+
+TASK_QUEUE = "ocr-pipeline"
+
+# Global clients
+temporal_client: Optional[Client] = None
+minio_client: Optional[Minio] = None
+MINIO_BUCKET = "documents"
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize Temporal and MinIO clients on startup."""
+    global temporal_client, minio_client, MINIO_BUCKET
+
+    auth_cfg = load_auth_config()
+    validate_auth_config(auth_cfg)
+    if auth_cfg.disabled:
+        logging.warning(
+            "WARNING: AUTH_DISABLED=true — every caller is treated as synthetic "
+            "master_admin with unrestricted instance access. Do not expose this "
+            "API beyond the internal network or set AUTH_DISABLED=false until "
+            "the maintainer UI sends Bearer tokens."
+        )
+    else:
+        logging.info(
+            "Auth enabled: issuer=%s audience=%s jwks=%s",
+            auth_cfg.keycloak_issuer,
+            auth_cfg.keycloak_audience or "(none)",
+            auth_cfg.keycloak_jwks_url,
+        )
+
+    # Initialize SQLite database
+    print("Initializing SQLite database...")
+    db.init_db()
+
+    # Temporal
+    temporal_host = os.environ.get("TEMPORAL_HOST", "localhost:7233")
+    print(f"Connecting to Temporal at {temporal_host}")
+    temporal_client = await Client.connect(temporal_host)
+
+    # MinIO - credentials required via environment variables
+    minio_endpoint = os.environ.get("MINIO_ENDPOINT", "localhost:9000")
+    minio_access_key = os.environ.get("MINIO_ACCESS_KEY")
+    minio_secret_key = os.environ.get("MINIO_SECRET_KEY")
+    MINIO_BUCKET = os.environ.get("MINIO_BUCKET", "documents")
+
+    if not minio_access_key or not minio_secret_key:
+        raise RuntimeError("MINIO_ACCESS_KEY and MINIO_SECRET_KEY environment variables are required")
+
+    print(f"Connecting to MinIO at {minio_endpoint}")
+    minio_client = Minio(
+        minio_endpoint,
+        access_key=minio_access_key,
+        secret_key=minio_secret_key,
+        secure=False
+    )
+
+    # Ensure bucket exists
+    if not minio_client.bucket_exists(MINIO_BUCKET):
+        minio_client.make_bucket(MINIO_BUCKET)
+        print(f"Created MinIO bucket: {MINIO_BUCKET}")
+
+    yield
+    # Cleanup if needed
+
+
+app = FastAPI(
+    title="Document Ingestion Pipeline API",
+    description="""
+REST API for the Temporal-based document OCR pipeline with translation support.
+
+## Workflow Stages
+
+1. `registered` - Document registered
+2. `ocr_processing` - OCR in progress
+3. `ocr_review` - **Waiting for OCR review/approval**
+4. `translation_processing` - Translating non-English content
+5. `translation_review` - **Waiting for translation review/approval**
+6. `chunking` - Chunking in progress
+7. `chunk_review` - **Waiting for chunk review/approval**
+8. `ready_for_ingestion` - **Waiting for final approval before DEV ingest**
+9. `ingesting` - Ingesting to DEV Qdrant
+10. `approval_for_prod` - **Waiting for superadmin prod approval**
+11. `ingesting_prod` - Promoting vectors to PROD Qdrant
+12. `completed` - Done
+13. `failed` - Error occurred
+
+## Review Flow
+
+1. Start workflow with `POST /upload` or `POST /documents`
+2. Wait for `ocr_review` stage
+3. Review/edit pages with `GET/PATCH /documents/{id}/pages/{num}`
+4. Approve with `POST /documents/{id}/approve-ocr`
+5. Wait for `translation_review` stage
+6. Review/edit translations with `PATCH /documents/{id}/pages/{num}`
+7. Approve with `POST /documents/{id}/approve-translation`
+8. Wait for `chunk_review` stage
+9. Review/edit chunks with `GET/PATCH /documents/{id}/chunks/{num}`
+10. Approve with `POST /documents/{id}/approve-chunks`
+11. Wait for `ready_for_ingestion` stage
+12. Approve DEV ingest with `POST /documents/{id}/approve-ingestion`
+13. Wait for `approval_for_prod` stage
+14. Superadmin promote with `POST /documents/{id}/approve-prod` → `ingesting_prod` → `completed`
+    """,
+    version="2.0.0",
+    lifespan=lifespan
+)
+
+# CORS configuration - explicit origins for security
+ALLOWED_ORIGINS = os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(",")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+)
+
+# Rate limiting configuration
+# Default: 100 requests/minute for general endpoints, 10/minute for uploads
+RATE_LIMIT_DEFAULT = os.environ.get("RATE_LIMIT_DEFAULT", "100/minute")
+RATE_LIMIT_UPLOAD = os.environ.get("RATE_LIMIT_UPLOAD", "10/minute")
+# Login OTP endpoints are unauthenticated and mail real people, so they get their
+# own much tighter budget than the general default.
+RATE_LIMIT_OTP = os.environ.get("RATE_LIMIT_OTP", "10/minute")
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Routers split out of this module, one per resource. Register them here.
+from .search import router as search_router  # noqa: E402
+
+app.include_router(search_router)
+# TODO(api-split): extract the remaining resources into their own routers,
+# one file each under pipeline/api/, following search.py: documents, pages,
+# chunks, artifacts, vector indexes, catalog, audit, settings, auth, admin.
+# tests/test_api_routes.py pins the route table so a move cannot drop one.
+
+
+# Allowed base directories for file access (configurable via env)
+ALLOWED_FILE_PATHS = os.environ.get("ALLOWED_FILE_PATHS", "/app/books,/data/documents").split(",")
+ALLOWED_EXTENSIONS = {
+    ".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".csv", ".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"
+}
+
+
+def validate_file_path(filepath: str) -> str:
+    """
+    Validate that a file path is within allowed directories.
+    Prevents path traversal attacks.
+
+    Returns the validated filepath as a string.
+    Raises HTTPException if path is not allowed.
+    """
+    # Handle minio:// URIs - these are validated by MinIO access
+    if filepath.startswith("minio://"):
+        suffix = Path(filepath).suffix.lower()
+        if suffix not in ALLOWED_EXTENSIONS:
+            raise HTTPException(400, f"Unsupported file type: {suffix}")
+        return filepath  # Return string as-is, MinIO handles validation
+
+    path = Path(filepath).resolve()  # Resolve to absolute, canonical path
+
+    # Check if path is within any allowed directory
+    for allowed_base in ALLOWED_FILE_PATHS:
+        allowed_path = Path(allowed_base.strip()).resolve()
+        try:
+            path.relative_to(allowed_path)
+            # Path is within allowed directory
+            if not path.exists():
+                raise HTTPException(404, "File not found")
+            if not path.is_file():
+                raise HTTPException(400, "Path is not a file")
+            if path.suffix.lower() not in ALLOWED_EXTENSIONS:
+                raise HTTPException(400, f"Unsupported file type: {path.suffix.lower()}")
+            return str(path)
+        except ValueError:
+            continue  # Not within this allowed path, try next
+
+    # Path not within any allowed directory
+    raise HTTPException(403, "Access to this file path is not allowed")
+
+
+def get_filename_from_path(filepath: str) -> str:
+    """Extract filename from a filepath string (works for both local and minio:// paths)."""
+    if filepath.startswith("minio://"):
+        # minio://bucket/path/to/file.pdf -> file.pdf
+        return filepath.split("/")[-1]
+    return Path(filepath).name
+
+
+def get_workflow_id(filepath: str) -> str:
+    """Generate consistent workflow ID from filepath."""
+    return f"doc-{hashlib.md5(filepath.encode()).hexdigest()[:12]}"
+
+
+def _rerun_workflow_id(base_workflow_id: str) -> str:
+    """Generate a fresh workflow ID for explicit reruns of the same source."""
+    return f"{base_workflow_id}-rerun-{int(time.time())}"
+
+
+def _compute_file_fingerprint(filepath: Path) -> str:
+    md5 = hashlib.md5()
+    with filepath.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            md5.update(chunk)
+    return md5.hexdigest()
+
+
+def _instance_scope_for_user(user: AuthUser) -> Optional[list[str]]:
+    """None = unrestricted; otherwise only these instance ids."""
+    allowed = allowed_instances(user)
+    if allowed is None:
+        return None
+    return sorted(allowed)
+
+
+def _document_cohorts_payload(summary: dict, by_instance: Optional[list[dict]] = None) -> dict:
+    """Shape SQLite aggregate counts for DocumentCohortsResponse (all ints)."""
+    def _i(key: str, default: int = 0) -> int:
+        val = summary.get(key, default)
+        return int(val or 0)
+
+    return {
+        "total_documents": _i("total_documents"),
+        "authoritative_documents": _i("authoritative_documents"),
+        "legacy_documents": _i("legacy_documents"),
+        "completed_documents": _i("completed_documents"),
+        "review_queue": _i("review_queue"),
+        "failed_documents": _i("failed_documents"),
+        "needs_reindex": _i("needs_reindex"),
+        "running_jobs": _i("running_jobs"),
+        "by_stage": {
+            "ocr_review": _i("ocr_review_documents"),
+            "translation_review": _i("translation_review_documents"),
+            "chunk_review": _i("chunk_review_documents"),
+            "translation_processing": _i("translation_processing_documents"),
+            "chunking": _i("chunking_documents"),
+            "ready_for_ingestion": _i("ready_for_ingestion_documents"),
+            "failed": _i("failed_documents"),
+        },
+        "by_instance": by_instance or [],
+    }
+
+
+def _resolve_create_instance(user: AuthUser, requested: Optional[str] = None) -> str:
+    """Plan 2: stamp document.instance from Keycloak-allowed states / portal."""
+    return resolve_create_instance(user, requested)
+
+
+def _require_document_for_user(workflow_id: str, user: AuthUser) -> dict:
+    """Load a document or 404 if missing / outside the caller's instance scope."""
+    return assert_document_instance_access(user, db.get_document(workflow_id))
+
+
+def _document_for_user_or_none(workflow_id: str, user: AuthUser) -> Optional[dict]:
+    """Like _require_document_for_user but returns None instead of raising (bulk paths)."""
+    doc = db.get_document(workflow_id)
+    if not doc or not user_can_access_instance(user, doc.get("instance")):
+        return None
+    return doc
+
+
+def _parse_roles_field(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    text = str(value).strip()
+    if not text:
+        return []
+    if text.startswith("["):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                return [str(v).strip() for v in parsed if str(v).strip()]
+        except Exception:
+            pass
+    return [part.strip() for part in text.split(",") if part.strip()]
+
+
+def _actor_from_user(user) -> dict:
+    """Normalize AuthUser into serializable actor identity fields."""
+    if user is None:
+        return {
+            "user_id": "",
+            "username": "",
+            "email": "",
+            "roles": [],
+            "roles_csv": "",
+        }
+    roles = [str(r).strip() for r in (getattr(user, "roles", None) or []) if str(r).strip()]
+    return {
+        "user_id": (getattr(user, "user_id", None) or "").strip(),
+        "username": (getattr(user, "username", None) or "").strip(),
+        "email": (getattr(user, "email", None) or "").strip(),
+        "roles": roles,
+        "roles_csv": ",".join(roles),
+    }
+
+
+def _document_summary_from_row(doc: dict, current_job: Optional[dict] = None) -> DocumentSummary:
+    return DocumentSummary(
+        document_id=doc["document_id"],
+        canonical_document_id=doc.get("canonical_document_id"),
+        workflow_id=doc["workflow_id"],
+        filename=doc["filename"],
+        display_name=doc.get("display_name"),
+        source_filename=doc.get("source_filename"),
+        source_manifest_name=doc.get("source_manifest_name"),
+        source_file_fingerprint=doc.get("source_file_fingerprint"),
+        authoritative=bool(doc.get("source_manifest_name")),
+        instance=normalize_instance(doc.get("instance")),
+        stage=DocumentStage(doc["stage"]),
+        page_count=doc.get("page_count") or 0,
+        chunk_count=doc.get("chunk_count") or 0,
+        error_message=doc.get("error_message"),
+        created_at=doc.get("created_at"),
+        updated_at=doc.get("updated_at"),
+        reindex_required=bool(doc.get("reindex_required")),
+        reindex_reason=doc.get("reindex_reason"),
+        available_actions=_list_available_actions(
+            doc,
+            current_job if current_job is not None else db.get_latest_document_job(doc["workflow_id"]),
+        ),
+        uploaded_by_user_id=doc.get("uploaded_by_user_id"),
+        uploaded_by_username=doc.get("uploaded_by_username"),
+        uploaded_by_email=doc.get("uploaded_by_email"),
+        uploaded_by_roles=_parse_roles_field(doc.get("uploaded_by_roles")),
+        document_kind=(doc.get("document_kind") or "document"),
+        scheme_code=doc.get("scheme_code"),
+        scheme_name=doc.get("scheme_name"),
+        scheme_aliases=_parse_scheme_aliases(doc),
+        tool_routing=doc.get("tool_routing"),
+        catalog_visible=bool(int(doc["catalog_visible"])) if doc.get("catalog_visible") is not None else True,
+        network_visible=bool(int(doc["network_visible"])) if doc.get("network_visible") is not None else True,
+        prod_ready_requested_at=doc.get("prod_ready_requested_at"),
+        prod_ready_requested_by_username=doc.get("prod_ready_requested_by_username"),
+        valid_from=doc.get("valid_from"),
+        valid_to=doc.get("valid_to"),
+    )
+
+
+def _provenance_base_urls(request: Request) -> tuple[str, str]:
+    api_base = (os.environ.get("DOCS_PIPELINE_API_URL") or str(request.base_url)).rstrip("/")
+    ui_base = (os.environ.get("DOCS_PIPELINE_UI_URL") or "http://localhost:3000").rstrip("/")
+    return api_base, ui_base
+
+
+def _build_provenance_links(workflow_id: str, chunk_num: int, request: Request) -> dict[str, str]:
+    api_base, ui_base = _provenance_base_urls(request)
+    return {
+        "pdf_url": f"{api_base}/documents/{workflow_id}/pdf",
+        "document_url": f"{ui_base}/documents/{workflow_id}",
+        "chunk_url": f"{ui_base}/documents/{workflow_id}?tab=chunks&chunk={chunk_num}",
+    }
+
+
+def _list_available_actions(doc: dict, current_job: Optional[dict] = None) -> list[str]:
+    if not doc:
+        return []
+    if doc.get("is_disabled"):
+        return ["restore_document"]
+
+    stage = doc.get("stage")
+    actions = ["disable_document", "reconcile_document"]
+    if stage == "ocr_review":
+        actions.append("approve_ocr")
+    elif stage == "translation_review":
+        actions.append("approve_translation")
+    elif stage == "chunk_review":
+        actions.append("approve_chunks")
+    elif stage == "ready_for_ingestion":
+        actions.append("approve_ingestion")
+    elif stage == "approval_for_prod":
+        # A document already parked at this gate when DISABLE_PROD_SETTING was
+        # turned on keeps its approve action — otherwise it would be stranded
+        # with no way forward.
+        actions.append("approve_prod")
+        if not doc.get("prod_ready_requested_at"):
+            actions.append("request_prod_ready")
+    elif stage == "completed":
+        actions.append("reingest_document")
+        if not prod_stage_disabled():
+            actions.append("approve_prod")
+    elif stage == "failed":
+        if not doc.get("ocr_completed_at"):
+            actions.append("retry_ocr")
+        if doc.get("ocr_completed_at") and not doc.get("translation_completed_at"):
+            actions.append("retry_translation")
+        if doc.get("translation_completed_at"):
+            actions.append("retry_chunking")
+
+    if doc.get("reindex_required"):
+        actions.extend(["reingest_document", "clear_reindex_required"])
+    else:
+        actions.append("mark_reindex_required")
+
+    if current_job and current_job.get("status") == "running":
+        actions.append("inspect_runtime")
+
+    return sorted(set(actions))
+
+
+def _mark_reindex_required(workflow_id: str, reason: str, metadata: Optional[dict] = None) -> Optional[dict]:
+    doc = db.mark_document_reindex_required(workflow_id, True, reason)
+    if doc:
+        db.log_audit(
+            workflow_id=workflow_id,
+            document_id=doc.get("document_id", workflow_id),
+            action_type="mark_reindex_required",
+            field_name="reindex_required",
+            old_value="false",
+            new_value="true",
+            metadata={"reason": reason, **(metadata or {})},
+        )
+    return doc
+
+
+def delete_single_chunk_from_index(document_id: str, chunk_num: int, index_name: str = "documents-index") -> dict:
+    """Delete a single chunk from the vector index by doc_id + chunk_num."""
+    from ..vector_store import get_default_index_name, get_vector_store
+
+    try:
+        store = get_vector_store()
+        resolved_index = index_name or get_default_index_name()
+        return store.delete_chunk(resolved_index, document_id, chunk_num)
+    except Exception as e:
+        return {"deleted": False, "error": str(e)}
+
+
+def delete_chunks_from_index(document_id: str, index_name: str = "documents-index") -> dict:
+    """Delete all chunks for a document from the vector index."""
+    from ..vector_store import get_default_index_name, get_vector_store
+
+    try:
+        store = get_vector_store()
+        resolved_index = index_name or get_default_index_name()
+        result = store.delete_by_doc_id(resolved_index, document_id)
+        if "doc_id" not in result:
+            result["doc_id"] = document_id
+        return result
+    except Exception as e:
+        return {"deleted": 0, "doc_id": document_id, "error": str(e)}
+
+
+# =============================================================================
+# Login (unauthenticated — the session does not exist yet)
+#
+# Both SSO and email-OTP run their Keycloak token calls here rather than in the
+# browser. The client is confidential, so only the server can present the secret
+# the token endpoint requires — and that is precisely what lets both paths share
+# a single client id. See pipeline/auth/email_otp.py.
+# =============================================================================
+
+
+class OtpRequestBody(BaseModel):
+    email: str = Field(..., description="Email address to mail the login code to")
+
+
+class OtpVerifyBody(BaseModel):
+    email: str = Field(..., description="Same address the code was sent to")
+    code: str = Field(..., description="The 6-digit code from the email")
+
+
+class OtpRefreshBody(BaseModel):
+    refresh_token: str = Field(..., description="Refresh token from a prior verify")
+
+
+@app.post("/auth/otp/request")
+@limiter.limit(RATE_LIMIT_OTP)
+async def auth_otp_request(request: Request, body: OtpRequestBody):
+    """Mail a one-time login code.
+
+    Answers the same way for unknown addresses so this cannot be used to test
+    which emails have accounts. The client secret stays server-side, which is
+    the whole reason this is proxied rather than called from the browser.
+    """
+    email = normalize_email(body.email)
+    result = await asyncio.to_thread(send_otp, email)
+    logging.info("email-otp: login code requested for %s", email)
+    return result
+
+
+@app.post("/auth/otp/verify")
+@limiter.limit(RATE_LIMIT_OTP)
+async def auth_otp_verify(request: Request, body: OtpVerifyBody):
+    """Exchange a code for real Keycloak tokens (access / refresh / id).
+
+    Returns the same token shape as the Google SSO flow so the UI stores and
+    refreshes an OTP session exactly like an SSO one.
+    """
+    email = normalize_email(body.email)
+    tokens = await asyncio.to_thread(verify_otp, email, body.code)
+    logging.info("email-otp: login succeeded for %s", email)
+    return tokens
+
+
+class SsoExchangeBody(BaseModel):
+    code: str = Field(..., description="Authorization code from the Keycloak redirect")
+    redirect_uri: str = Field(..., description="Must match the redirect_uri used to start login")
+    code_verifier: str | None = Field(None, description="PKCE verifier the UI generated")
+
+
+@app.post("/auth/sso/exchange")
+@limiter.limit(RATE_LIMIT_OTP)
+async def auth_sso_exchange(request: Request, body: SsoExchangeBody):
+    """Complete a Google/Keycloak SSO login by exchanging the code for tokens.
+
+    The browser hands us the code it received on /auth/sso-callback; we add the
+    client secret and do the exchange. Returns the same token shape as
+    /auth/otp/verify, so the UI stores and refreshes both session kinds alike.
+    """
+    tokens = await asyncio.to_thread(
+        exchange_authorization_code, body.code, body.redirect_uri, body.code_verifier
+    )
+    logging.info("sso: code exchange succeeded")
+    return tokens
+
+
+@app.post("/auth/session/refresh")
+@app.post("/auth/otp/refresh")  # pre-SSO-exchange name; kept so older UI builds keep working
+@limiter.limit(RATE_LIMIT_DEFAULT)
+async def auth_session_refresh(request: Request, body: OtpRefreshBody):
+    """Renew a session — SSO or OTP, they are the same confidential client.
+
+    Unauthenticated by design — the refresh token *is* the credential, and the
+    caller's access token has usually expired by the time this runs.
+    """
+    return await asyncio.to_thread(refresh_tokens, body.refresh_token)
+
+
+# =============================================================================
+# Document Routes
+# =============================================================================
+
+@app.get("/auth/me")
+async def auth_me(user: CurrentUser):
+    """Return the authenticated caller (local bypass user when AUTH_DISABLED=true).
+
+    Identity fields (username/email/roles) come from the JWT when a Bearer token
+    is present, including in AUTH_DISABLED mode for UI display.
+    """
+    display_name = (user.username or "").strip()
+    return {
+        "user_id": user.user_id,
+        "username": user.username,
+        "name": display_name,
+        "email": user.email,
+        "roles": user.roles,
+        "permissions": sorted(p.value for p in user.permissions),
+        "instances": user.instances,
+        "envs": user.envs,
+        # Keycloak group paths (/states/MH/contributor, /global/super-admin)
+        # and derived per-state role map for tenant-aware UI.
+        "groups": list(user.groups or []),
+        "state_roles": dict(user.state_roles or {}),
+        "is_super_admin": bool(user.is_superadmin),
+        # Plan 2: portal instance code for BV / platform docs (not a state).
+        "portal_instance": PORTAL_INSTANCE,
+        "auth_disabled": user.token_disabled_mode,
+    }
+
+
+# =============================================================================
+# Super-admin user provisioning (Keycloak — no app DB access tables)
+# =============================================================================
+
+
+class ProvisionUserRequest(BaseModel):
+    """Fields a super admin must fill to create / update access."""
+
+    email: str = Field(..., description="Google SSO email (required)")
+    first_name: str = ""
+    last_name: str = ""
+    username: str = ""
+    access_type: str = Field(
+        ...,
+        description="super_admin | state",
+    )
+    state: str = Field("", description="State code e.g. MH (required for state access)")
+    role: str = Field(
+        "",
+        description="state_admin | state_view (required for state access; aliases: admin, view, contributor, reviewer)",
+    )
+    enabled: bool = True
+
+
+class SetUserAccessRequest(BaseModel):
+    """Change an existing user's single product role."""
+
+    access_type: str = Field(..., description="super_admin | bh_viewer | state")
+    state: str = Field("", description="State/centre code e.g. MH (required when access_type=state)")
+    role: str = Field(
+        "",
+        description=(
+            "state_admin | state_approver | state_contributor | state_view "
+            "(required when access_type=state)"
+        ),
+    )
+
+
+@app.get("/admin/access-options")
+async def admin_access_options(user: RequireManageUsers):
+    """Form options + required fields for the Users admin UI."""
+    return list_access_options()
+
+
+@app.get("/admin/users")
+async def admin_list_users(
+    user: RequireManageUsers,
+    search: str = "",
+    max_results: int = Query(100, ge=1, le=200),
+):
+    """List Keycloak users with groups/access labels (no delete)."""
+    return await asyncio.to_thread(list_realm_users, search=search, max_results=max_results)
+
+
+@app.post("/admin/users")
+async def admin_provision_user(data: ProvisionUserRequest, user: RequireManageUsers):
+    """Create or update a Keycloak user and assign group/role. Returns share text."""
+    return await asyncio.to_thread(
+        provision_user,
+        email=data.email,
+        first_name=data.first_name,
+        last_name=data.last_name,
+        username=data.username or None,
+        access_type=data.access_type,
+        state=data.state or None,
+        role=data.role or None,
+        enabled=data.enabled,
+    )
+
+
+@app.put("/admin/users/{user_id}/access")
+async def admin_set_user_access(
+    user_id: str, data: SetUserAccessRequest, user: RequireManageUsers
+):
+    """Change an existing user's role (super admin only).
+
+    A user holds exactly one product role: the new group replaces whatever
+    product groups they had. They must re-login for the new role to apply.
+    """
+    return await asyncio.to_thread(
+        set_user_access,
+        user_id=user_id,
+        access_type=data.access_type,
+        state=data.state or None,
+        role=data.role or None,
+    )
+
+
+@app.post("/documents", response_model=DocumentSummary)
+@limiter.limit(RATE_LIMIT_UPLOAD)
+async def start_document_workflow(
+    request: Request,  # Required for rate limiting
+    data: RegisterRequest,
+    user: RequireUpload,
+    auto_approve: bool = False,
+    chunk_size: int = 450,
+    chunk_overlap: int = 128,
+    min_tokens: int = 100,
+    index_name: str = "documents-index",
+    stop_after_ocr: bool = False,
+    instance: str = "",
+):
+    """
+    Start a new document processing workflow.
+
+    The workflow will:
+    1. Run OCR
+    2. Wait for approval (unless auto_approve=True)
+    3. Create chunks
+    4. Wait for approval (unless auto_approve=True)
+    5. Ingest to the vector index
+
+    Note: File path must be within allowed directories (ALLOWED_FILE_PATHS env var).
+    Rate limited to 10 requests/minute per IP.
+    Requires permission: upload (no-op while AUTH_DISABLED=true).
+    """
+    create_instance = _resolve_create_instance(user, instance)
+    # Validate file path to prevent path traversal attacks
+    filepath = validate_file_path(data.filepath)
+    source_filename = get_filename_from_path(filepath)
+    source_file_fingerprint = _compute_file_fingerprint(filepath)
+    canonical_document_id = source_file_fingerprint
+
+    workflow_id = get_workflow_id(str(filepath))
+    document_id = canonical_document_id
+
+    # Reuse only when SQLite still tracks this workflow.
+    # If SQLite was purged, avoid returning stale Temporal state and create a fresh run ID.
+    existing_doc = db.get_document(workflow_id)
+    if existing_doc:
+        # Same fingerprint/path must not leak or restart another tenant's doc.
+        existing_doc = assert_document_instance_access(user, existing_doc)
+        try:
+            handle = temporal_client.get_workflow_handle(workflow_id)
+            state = await handle.query("get_state")
+            if state:
+                return DocumentSummary(
+                    document_id=document_id,
+                    canonical_document_id=canonical_document_id,
+                    workflow_id=workflow_id,
+                    filename=source_filename,
+                    source_filename=source_filename,
+                    source_file_fingerprint=source_file_fingerprint,
+                    authoritative=bool(existing_doc.get("source_manifest_name")) if existing_doc else False,
+                    instance=normalize_instance(existing_doc.get("instance")),
+                    stage=DocumentStage(state.get("stage", "registered")),
+                    page_count=state.get("page_count", 0),
+                    chunk_count=state.get("chunk_count", 0),
+                    error_message=state.get("error_message"),
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            pass  # Workflow doesn't exist or is not queryable; proceed to new run
+    else:
+        workflow_id = _rerun_workflow_id(workflow_id)
+
+    # Start new workflow
+    handle = await temporal_client.start_workflow(
+        DocumentPipelineWorkflow.run,
+        args=[
+            document_id,
+            get_filename_from_path(filepath),
+            str(filepath),
+            chunk_size,
+            chunk_overlap,
+            min_tokens,
+            index_name,
+            auto_approve,
+            stop_after_ocr,
+            prod_stage_disabled(),
+        ],
+        id=workflow_id,
+        task_queue=TASK_QUEUE,
+    )
+
+    # Save to SQLite for visibility during processing
+    actor = _actor_from_user(user)
+    # The period this document is searchable in starts here, at the one moment
+    # that knows the upload day. A reviewer confirms or moves it later, on the
+    # form that sets the document type.
+    validity = document_validity.default_period()
+    db.upsert_document(
+        workflow_id=workflow_id,
+        document_id=document_id,
+        canonical_document_id=canonical_document_id,
+        filename=source_filename,
+        source_filename=source_filename,
+        source_file_fingerprint=source_file_fingerprint,
+        filepath=str(filepath),
+        stage="registered",
+        stop_after_ocr=stop_after_ocr,
+        instance=create_instance,
+        uploaded_by_user_id=actor.get("user_id") or None,
+        uploaded_by_username=actor.get("username") or None,
+        uploaded_by_email=actor.get("email") or None,
+        uploaded_by_roles=actor.get("roles_csv") or None,
+        valid_from=validity.start_date,
+        valid_to=validity.end_date,
+    )
+    job_id = db.create_document_job(
+        workflow_id=workflow_id,
+        job_type="ocr_only" if stop_after_ocr else "pipeline",
+        temporal_workflow_id=workflow_id,
+        status="running",
+        current_stage="registered",
+        config={
+            "auto_approve": auto_approve,
+            "chunk_size": chunk_size,
+            "chunk_overlap": chunk_overlap,
+            "min_tokens": min_tokens,
+            "index_name": index_name,
+            "stop_after_ocr": stop_after_ocr,
+            "uploaded_by": actor,
+        },
+    )
+    db.update_document_fields(workflow_id, latest_job_id=job_id)
+    _log_audit(
+        workflow_id=workflow_id,
+        action_type="document_upload",
+        entity_type="document",
+        field_name="registered",
+        new_value=source_filename,
+        metadata={"source": "register_endpoint", "instance": create_instance},
+        user=user,
+    )
+
+    return DocumentSummary(
+        document_id=document_id,
+        canonical_document_id=canonical_document_id,
+        workflow_id=workflow_id,
+        filename=source_filename,
+        source_filename=source_filename,
+        source_file_fingerprint=source_file_fingerprint,
+        authoritative=False,
+        instance=create_instance,
+        stage=DocumentStage.REGISTERED,
+        page_count=0,
+        chunk_count=0,
+        uploaded_by_user_id=actor.get("user_id") or None,
+        uploaded_by_username=actor.get("username") or None,
+        uploaded_by_email=actor.get("email") or None,
+        uploaded_by_roles=actor.get("roles") or [],
+    )
+
+
+@app.post("/upload", response_model=DocumentSummary)
+@limiter.limit(RATE_LIMIT_UPLOAD)
+async def upload_and_process(
+    request: Request,  # Required for rate limiting
+    user: RequireUpload,
+    file: UploadFile = File(...),
+    auto_approve: bool = False,
+    chunk_size: int = 450,
+    chunk_overlap: int = 128,
+    min_tokens: int = 100,
+    index_name: str = "documents-index",
+    stop_after_ocr: bool = False,
+    instance: str = "",
+):
+    """
+    Upload a supported file and start processing workflow.
+
+    The file is stored in MinIO and then processed through the pipeline.
+    Validates both file extension and PDF magic bytes for security.
+    Rate limited to 10 requests/minute per IP.
+    Requires permission: upload (no-op while AUTH_DISABLED=true).
+    """
+    create_instance = _resolve_create_instance(user, instance)
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in ALLOWED_EXTENSIONS:
+        raise HTTPException(400, f"Unsupported file type: {suffix}")
+
+    # Read file content
+    content = await file.read()
+    file_size = len(content)
+
+    # Validate PDF magic bytes (%PDF-) only for PDF uploads
+    if suffix == ".pdf":
+        pdf_magic = b"%PDF-"
+        if len(content) < 5 or content[:5] != pdf_magic:
+            raise HTTPException(400, "Invalid PDF file: file does not have valid PDF header")
+
+    # Generate unique object name
+    file_hash = hashlib.md5(content).hexdigest()
+    object_name = f"{file_hash}/{file.filename}"
+
+    # Upload to MinIO
+    content_type = "application/pdf" if suffix == ".pdf" else "application/octet-stream"
+    minio_client.put_object(
+        MINIO_BUCKET,
+        object_name,
+        BytesIO(content),
+        length=file_size,
+        content_type=content_type
+    )
+
+    # Use minio:// URI as filepath
+    minio_path = f"minio://{MINIO_BUCKET}/{object_name}"
+
+    workflow_id = get_workflow_id(minio_path)
+    document_id = file_hash
+    canonical_document_id = file_hash
+
+    # Reuse only when SQLite still tracks this workflow.
+    # If SQLite was purged, avoid returning stale Temporal state and create a fresh run ID.
+    existing_doc = db.get_document(workflow_id)
+    if existing_doc:
+        existing_doc = assert_document_instance_access(user, existing_doc)
+        try:
+            handle = temporal_client.get_workflow_handle(workflow_id)
+            state = await handle.query("get_state")
+            if state:
+                return DocumentSummary(
+                    document_id=document_id,
+                    canonical_document_id=canonical_document_id,
+                    workflow_id=workflow_id,
+                    filename=file.filename,
+                    source_filename=file.filename,
+                    source_file_fingerprint=file_hash,
+                    authoritative=bool(existing_doc.get("source_manifest_name")) if existing_doc else False,
+                    instance=normalize_instance(existing_doc.get("instance")),
+                    stage=DocumentStage(state.get("stage", "registered")),
+                    page_count=state.get("page_count", 0),
+                    chunk_count=state.get("chunk_count", 0),
+                    error_message=state.get("error_message"),
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+    else:
+        workflow_id = _rerun_workflow_id(workflow_id)
+
+    # Start new workflow
+    handle = await temporal_client.start_workflow(
+        DocumentPipelineWorkflow.run,
+        args=[
+            document_id,
+            file.filename,
+            minio_path,
+            chunk_size,
+            chunk_overlap,
+            min_tokens,
+            index_name,
+            auto_approve,
+            stop_after_ocr,
+            prod_stage_disabled(),
+        ],
+        id=workflow_id,
+        task_queue=TASK_QUEUE,
+    )
+
+    # Save to SQLite for visibility during processing
+    actor = _actor_from_user(user)
+    # See the manifest upload path above: the period starts at the upload.
+    validity = document_validity.default_period()
+    db.upsert_document(
+        workflow_id=workflow_id,
+        document_id=document_id,
+        canonical_document_id=canonical_document_id,
+        filename=file.filename,
+        source_filename=file.filename,
+        source_file_fingerprint=file_hash,
+        filepath=minio_path,
+        stage="registered",
+        stop_after_ocr=stop_after_ocr,
+        instance=create_instance,
+        uploaded_by_user_id=actor.get("user_id") or None,
+        uploaded_by_username=actor.get("username") or None,
+        uploaded_by_email=actor.get("email") or None,
+        uploaded_by_roles=actor.get("roles_csv") or None,
+        valid_from=validity.start_date,
+        valid_to=validity.end_date,
+    )
+    job_id = db.create_document_job(
+        workflow_id=workflow_id,
+        job_type="ocr_only" if stop_after_ocr else "pipeline",
+        temporal_workflow_id=workflow_id,
+        status="running",
+        current_stage="registered",
+        config={
+            "auto_approve": auto_approve,
+            "chunk_size": chunk_size,
+            "chunk_overlap": chunk_overlap,
+            "min_tokens": min_tokens,
+            "index_name": index_name,
+            "stop_after_ocr": stop_after_ocr,
+            "uploaded_by": actor,
+        },
+    )
+    original_artifact_id = db.add_document_artifact(
+        workflow_id=workflow_id,
+        job_id=job_id,
+        artifact_type="original_upload",
+        stage="registered",
+        storage_uri=minio_path,
+        mime_type=content_type,
+        filename=file.filename,
+        size_bytes=file_size,
+        metadata={"uploaded_via": "upload_endpoint", "uploaded_by": actor},
+    )
+    _log_audit(
+        workflow_id=workflow_id,
+        action_type="document_upload",
+        entity_type="document",
+        field_name="registered",
+        new_value=file.filename,
+        metadata={
+            "source": "upload_endpoint",
+            "instance": create_instance,
+            "size_bytes": file_size,
+            "auto_approve": auto_approve,
+        },
+        user=user,
+    )
+    source_type = "spreadsheet" if suffix in {".csv", ".xlsx"} else "document"
+    canonical_input_type = "spreadsheet" if suffix in {".csv", ".xlsx"} else "pdf"
+    db.update_document_fields(
+        workflow_id,
+        latest_job_id=job_id,
+        original_artifact_id=original_artifact_id,
+        source_type=source_type,
+        canonical_input_type=canonical_input_type,
+        stop_after_ocr=1 if stop_after_ocr else 0,
+    )
+
+    return DocumentSummary(
+        document_id=document_id,
+        canonical_document_id=canonical_document_id,
+        workflow_id=workflow_id,
+        filename=file.filename,
+        source_filename=file.filename,
+        source_file_fingerprint=file_hash,
+        authoritative=False,
+        instance=create_instance,
+        stage=DocumentStage.REGISTERED,
+        page_count=0,
+        chunk_count=0,
+        uploaded_by_user_id=actor.get("user_id") or None,
+        uploaded_by_username=actor.get("username") or None,
+        uploaded_by_email=actor.get("email") or None,
+        uploaded_by_roles=actor.get("roles") or [],
+    )
+
+
+@app.post("/documents/batch", response_model=list[DocumentSummary])
+@limiter.limit("5/minute")  # Stricter limit for batch operations
+async def start_batch_workflows(
+    request: Request,  # Required for rate limiting
+    data: RegisterFolderRequest,
+    user: RequireUpload,
+    auto_approve: bool = False,
+    chunk_size: int = 450,
+    chunk_overlap: int = 128,
+    min_tokens: int = 100,
+    stop_after_ocr: bool = False,
+    instance: str = "",
+):
+    """Start workflows for all supported documents in a directory."""
+    create_instance = _resolve_create_instance(user, instance)
+    directory = Path(data.directory)
+    if not directory.exists():
+        raise HTTPException(404, f"Directory not found: {data.directory}")
+
+    candidate_files = [p for p in directory.glob("*") if p.is_file() and p.suffix.lower() in ALLOWED_EXTENSIONS]
+    if not candidate_files:
+        raise HTTPException(400, "No supported files found")
+
+    results = []
+    for pdf_path in candidate_files:
+        try:
+            result = await start_document_workflow(
+                request,
+                RegisterRequest(filepath=str(pdf_path)),
+                user,
+                auto_approve=auto_approve,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                min_tokens=min_tokens,
+                stop_after_ocr=stop_after_ocr,
+                instance=create_instance,
+            )
+            results.append(result)
+        except Exception as e:
+            # Log full error, return sanitized message
+            logging.error(f"Batch workflow error for {pdf_path.name}: {str(e)}")
+            results.append(DocumentSummary(
+                document_id=hashlib.md5(str(pdf_path).encode()).hexdigest(),
+                workflow_id=get_workflow_id(str(pdf_path)),
+                filename=pdf_path.name,
+                authoritative=False,
+                stage=DocumentStage.FAILED,
+                page_count=0,
+                chunk_count=0,
+                error_message="Failed to start workflow",
+            ))
+
+    return results
+
+
+@app.get("/documents", response_model=list[DocumentSummary])
+async def list_documents(
+    user: CurrentUser,
+    stage: Optional[DocumentStage] = None,
+    limit: int = Query(100, le=500),
+    offset: int = Query(0, ge=0),
+    x_include_demo: Optional[str] = Header(None, alias="X-Include-Demo"),
+    x_include_disabled: Optional[str] = Header(None, alias="X-Include-Disabled")
+):
+    """
+    List all document workflows.
+
+    Uses SQLite for fast listing (no Temporal queries for performance).
+    Demo documents are excluded by default - use X-Include-Demo: true header to show them.
+    Disabled (soft-deleted) documents are excluded by default - use X-Include-Disabled: true to show them.
+    Results are limited to instances the caller can access.
+
+    Pagination:
+    - limit: Max documents to return (default 100, max 500)
+    - offset: Skip first N documents (default 0)
+    """
+    stage_filter = stage.value if stage else None
+    include_demo = x_include_demo and x_include_demo.lower() == "true"
+    include_disabled = x_include_disabled and x_include_disabled.lower() == "true"
+
+    # Use SQLite only for fast listing - no Temporal queries
+    docs = db.list_documents(
+        stage=stage_filter,
+        limit=limit,
+        offset=offset,
+        include_demo=include_demo,
+        include_disabled=include_disabled,
+        instances=_instance_scope_for_user(user),
+    )
+
+    return [_document_summary_from_row(doc) for doc in docs]
+
+
+@app.get("/documents/summary", response_model=DocumentCohortsResponse)
+async def get_documents_summary(
+    user: CurrentUser,
+    x_include_demo: Optional[str] = Header(None, alias="X-Include-Demo"),
+    x_include_disabled: Optional[str] = Header(None, alias="X-Include-Disabled")
+):
+    """Return aggregate SQLite counts for dashboard totals and migration planning."""
+    include_demo = x_include_demo and x_include_demo.lower() == "true"
+    include_disabled = x_include_disabled and x_include_disabled.lower() == "true"
+    instance_scope = _instance_scope_for_user(user)
+    summary = db.get_document_summary_counts(
+        include_demo=include_demo,
+        include_disabled=include_disabled,
+        instances=instance_scope,
+    )
+    by_instance = db.get_document_counts_by_instance(
+        include_demo=include_demo,
+        include_disabled=include_disabled,
+        instances=instance_scope,
+    )
+    return _document_cohorts_payload(summary, by_instance)
+
+
+@app.get("/documents/cohorts", response_model=DocumentCohortsResponse)
+async def get_document_cohorts(
+    user: CurrentUser,
+    x_include_demo: Optional[str] = Header(None, alias="X-Include-Demo"),
+    x_include_disabled: Optional[str] = Header(None, alias="X-Include-Disabled")
+):
+    """Return machine-friendly cohort counts for queueing and orchestration."""
+    include_demo = x_include_demo and x_include_demo.lower() == "true"
+    include_disabled = x_include_disabled and x_include_disabled.lower() == "true"
+    instance_scope = _instance_scope_for_user(user)
+    summary = db.get_document_summary_counts(
+        include_demo=include_demo,
+        include_disabled=include_disabled,
+        instances=instance_scope,
+    )
+    by_instance = db.get_document_counts_by_instance(
+        include_demo=include_demo,
+        include_disabled=include_disabled,
+        instances=instance_scope,
+    )
+    return _document_cohorts_payload(summary, by_instance)
+
+
+@app.get("/operations/queue", response_model=OperationQueueResponse)
+async def get_operations_queue(
+    user: RequireSearch,
+    limit: int = Query(100, le=500),
+    offset: int = Query(0, ge=0),
+    x_include_demo: Optional[str] = Header(None, alias="X-Include-Demo"),
+    x_include_disabled: Optional[str] = Header(None, alias="X-Include-Disabled"),
+):
+    """Return documents that currently need operator or agent action.
+
+    Results are limited to instances the caller can access (state users never
+    see portal ``bv`` or other states' documents).
+    """
+    include_demo = x_include_demo and x_include_demo.lower() == "true"
+    include_disabled = x_include_disabled and x_include_disabled.lower() == "true"
+    rows, total = db.list_operations_queue(
+        limit=limit,
+        offset=offset,
+        include_demo=include_demo,
+        include_disabled=include_disabled,
+        instances=_instance_scope_for_user(user),
+    )
+    items = [
+        OperationQueueEntry(
+            workflow_id=row["workflow_id"],
+            filename=row["filename"],
+            stage=row["stage"],
+            job_id=row.get("job_id"),
+            job_type=row.get("job_type"),
+            job_status=row.get("job_status"),
+            started_at=row.get("started_at"),
+            error_message=row.get("error_message") or row.get("reindex_reason"),
+            available_actions=_list_available_actions(row, row),
+        )
+        for row in rows
+    ]
+    return OperationQueueResponse(items=items, total=total)
+
+
+@app.get("/runs")
+async def list_runs(
+    user: RequireSearch,
+    limit: int = Query(100, le=500),
+    offset: int = Query(0, ge=0),
+    status: Optional[str] = None,
+):
+    """List recent document jobs visible to the caller (tenant/role scoped).
+
+    Restricted users only see jobs whose document ``instance`` is in their
+    allowed states. Super-admin / bypass users see all tenants.
+    """
+    return db.list_runs(
+        limit=limit,
+        offset=offset,
+        status=status,
+        instances=_instance_scope_for_user(user),
+    )
+
+
+@app.get("/runs/{job_id}")
+async def get_run(job_id: int, user: RequireSearch):
+    """Get a specific document job/run (404 if missing or outside tenant scope)."""
+    run = db.get_document_job(job_id)
+    if not run:
+        raise HTTPException(404, f"Run not found: {job_id}")
+    # Enforce same instance scope as list: hide other tenants' runs as 404.
+    workflow_id = run.get("workflow_id")
+    if workflow_id:
+        _require_document_for_user(str(workflow_id), user)
+    elif not unrestricted(user):
+        raise HTTPException(404, f"Run not found: {job_id}")
+    return run
+
+
+def _parse_scheme_aliases(doc: dict) -> list[str]:
+    return scheme_catalog.parse_aliases(doc.get("scheme_aliases_json"))
+
+
+def _build_document_detail(doc: dict) -> DocumentDetail:
+    workflow_id = doc["workflow_id"]
+    current_job = db.get_latest_document_job(workflow_id)
+    return DocumentDetail(
+        document_id=doc["document_id"],
+        canonical_document_id=doc.get("canonical_document_id"),
+        workflow_id=workflow_id,
+        filename=doc["filename"],
+        display_name=doc.get("display_name"),
+        source_filename=doc.get("source_filename"),
+        source_manifest_name=doc.get("source_manifest_name"),
+        source_file_fingerprint=doc.get("source_file_fingerprint"),
+        authoritative=bool(doc.get("source_manifest_name")),
+        instance=normalize_instance(doc.get("instance")),
+        filepath=doc["filepath"],
+        stage=DocumentStage(doc["stage"]),
+        page_count=doc.get("page_count", 0),
+        chunk_count=doc.get("chunk_count", 0),
+        error_message=doc.get("error_message"),
+        reindex_required=bool(doc.get("reindex_required")),
+        reindex_reason=doc.get("reindex_reason"),
+        available_actions=_list_available_actions(doc, current_job),
+        translated_count=db.count_translated_pages(workflow_id),
+        created_at=doc.get("created_at"),
+        updated_at=doc.get("updated_at"),
+        ocr_completed_at=doc.get("ocr_completed_at"),
+        translation_completed_at=doc.get("translation_completed_at"),
+        chunks_completed_at=doc.get("chunks_completed_at"),
+        ingested_at=doc.get("ingested_at"),
+        source_type=doc.get("source_type"),
+        canonical_input_type=doc.get("canonical_input_type"),
+        stop_after_ocr=bool(doc.get("stop_after_ocr")),
+        original_artifact_id=doc.get("original_artifact_id"),
+        normalized_artifact_id=doc.get("normalized_artifact_id"),
+        latest_job_id=doc.get("latest_job_id"),
+        current_job=current_job,
+        artifacts=db.list_document_artifacts(workflow_id),
+        index_status=db.list_document_index_status(workflow_id),
+        uploaded_by_user_id=doc.get("uploaded_by_user_id"),
+        uploaded_by_username=doc.get("uploaded_by_username"),
+        uploaded_by_email=doc.get("uploaded_by_email"),
+        uploaded_by_roles=_parse_roles_field(doc.get("uploaded_by_roles")),
+        document_kind=(doc.get("document_kind") or "document"),
+        scheme_code=doc.get("scheme_code"),
+        scheme_name=doc.get("scheme_name"),
+        scheme_aliases=_parse_scheme_aliases(doc),
+        tool_routing=doc.get("tool_routing"),
+        catalog_visible=bool(int(doc["catalog_visible"])) if doc.get("catalog_visible") is not None else True,
+        network_visible=bool(int(doc["network_visible"])) if doc.get("network_visible") is not None else True,
+        prod_ready_requested_at=doc.get("prod_ready_requested_at"),
+        prod_ready_requested_by_username=doc.get("prod_ready_requested_by_username"),
+        valid_from=doc.get("valid_from"),
+        valid_to=doc.get("valid_to"),
+    )
+
+
+def _catalog_service_keys() -> list[str]:
+    raw = (os.environ.get("CATALOG_SERVICE_API_KEYS") or "").strip()
+    if not raw:
+        return []
+    return [k.strip() for k in raw.split(",") if k.strip()]
+
+
+def _auth_disabled() -> bool:
+    return (os.environ.get("AUTH_DISABLED") or "").strip().lower() in ("1", "true", "yes")
+
+
+def _service_key_ok(request: Request) -> bool:
+    import hmac
+
+    keys = _catalog_service_keys()
+    if not keys:
+        return False
+    header = (
+        request.headers.get("X-Catalog-Service-Key")
+        or request.headers.get("x-catalog-service-key")
+        or ""
+    ).strip()
+    if not header:
+        return False
+    return any(hmac.compare_digest(header, k) for k in keys)
+
+
+def _require_catalog_read(request: Request, user: AuthUser) -> None:
+    """Service key, search/admin JWT, or AUTH_DISABLED without keys."""
+    from ..auth.permissions import Permission
+
+    if _service_key_ok(request):
+        return
+    if user.has_permission(Permission.ADMIN) or user.has_permission(Permission.SEARCH):
+        return
+    if _auth_disabled() and not _catalog_service_keys():
+        return
+    if _catalog_service_keys():
+        raise HTTPException(401, "Missing or invalid X-Catalog-Service-Key")
+    raise HTTPException(403, "Catalog access requires search or admin permission")
+
+
+def _delete_document_points_from_prod(doc: dict) -> dict:
+    """Best-effort delete of a promoted (non-scheme) document's vectors from PROD documents-index."""
+    doc_id = doc.get("document_id")
+    if not doc_id:
+        return {"deleted": False, "reason": "no_doc_id"}
+    prod_url = (os.environ.get("PROD_VECTOR_DB_URL") or "").strip()
+    if not prod_url:
+        return {"deleted": False, "reason": "no_prod_qdrant_url"}
+    prod_key = (os.environ.get("PROD_VECTOR_DB_API_KEY") or "").strip() or None
+    collection = (
+        os.environ.get("PROD_VECTOR_DB_COLLECTION_NAME")
+        or os.environ.get("VECTOR_DB_COLLECTION_NAME")
+        or "documents-index"
+    ).strip()
+    try:
+        from ..vector_store.qdrant_store import QdrantVectorStore, get_qdrant_client
+
+        client = get_qdrant_client(url=prod_url, api_key=prod_key)
+        store = QdrantVectorStore(client=client)
+        return store.delete_by_doc_id(collection, doc_id)
+    except Exception as exc:
+        return {"deleted": False, "error": str(exc), "collection": collection}
+
+
+def _delete_scheme_points_from_prod(doc: dict) -> dict:
+    """Best-effort delete of scheme vectors from PROD schemes-index."""
+    doc_id = doc.get("document_id")
+    if not doc_id:
+        return {"deleted": False, "reason": "no_doc_id"}
+    prod_url = (
+        (os.environ.get("PROD_SCHEME_VECTOR_DB_URL") or "").strip()
+        or (os.environ.get("PROD_VECTOR_DB_URL") or "").strip()
+    )
+    if not prod_url:
+        return {"deleted": False, "reason": "no_prod_qdrant_url"}
+    prod_key = (
+        (os.environ.get("PROD_SCHEME_VECTOR_DB_API_KEY") or "").strip()
+        or (os.environ.get("PROD_VECTOR_DB_API_KEY") or "").strip()
+        or None
+    )
+    collection = (
+        os.environ.get("PROD_SCHEME_VECTOR_DB_COLLECTION_NAME") or "schemes-index"
+    ).strip()
+    try:
+        from ..vector_store.qdrant_store import QdrantVectorStore, get_qdrant_client
+
+        client = get_qdrant_client(url=prod_url, api_key=prod_key)
+        store = QdrantVectorStore(client=client)
+        return store.delete_by_doc_id(collection, doc_id)
+    except Exception as exc:
+        return {"deleted": False, "error": str(exc), "collection": collection}
+
+
+def _build_stage_io_payload(workflow_id: str, current_stage: Optional[str] = None) -> dict:
+    artifacts = db.list_document_artifacts(workflow_id)
+    grouped: dict[str, dict] = {}
+    for stage_id, label, description in PIPELINE_STAGES:
+        grouped[stage_id] = {
+            "stage": stage_id,
+            "label": label,
+            "description": description,
+            "input_artifacts": [],
+            "output_artifacts": [],
+        }
+
+    input_types = {"original_upload", "normalized_pdf", "normalized_spreadsheet"}
+    for artifact in artifacts:
+        stage = artifact.get("stage") or "registered"
+        if stage not in grouped:
+            grouped[stage] = {
+                "stage": stage,
+                "label": stage.replace("_", " ").title(),
+                "description": "",
+                "input_artifacts": [],
+                "output_artifacts": [],
+            }
+        bucket = "input_artifacts" if artifact["artifact_type"] in input_types else "output_artifacts"
+        grouped[stage][bucket].append(artifact)
+
+    return {
+        "workflow_id": workflow_id,
+        "current_stage": current_stage,
+        "stages": list(grouped.values()),
+    }
+
+
+async def _get_runtime_payload(workflow_id: str, doc: Optional[dict] = None) -> dict:
+    doc = doc or db.get_document(workflow_id)
+    if not doc:
+        raise HTTPException(404, f"Document not found: {workflow_id}")
+    current_job = db.get_latest_document_job(workflow_id)
+    runtime_workflow_id = (
+        current_job.get("temporal_workflow_id")
+        if current_job and current_job.get("status") == "running" and current_job.get("temporal_workflow_id")
+        else workflow_id
+    )
+
+    chunking_progress = None
+    if current_job and current_job.get("config_json"):
+        try:
+            parsed_config = json.loads(current_job["config_json"]) if isinstance(current_job["config_json"], str) else current_job["config_json"]
+            if isinstance(parsed_config, dict):
+                chunking_progress = parsed_config.get("chunking_progress")
+        except Exception:
+            chunking_progress = None
+
+    runtime = {
+        "workflow_id": workflow_id,
+        "sqlite_stage": doc.get("stage"),
+        "sqlite_error_message": doc.get("error_message"),
+        "temporal_connected": temporal_client is not None,
+        "job": current_job,
+        "chunking_progress": chunking_progress,
+        "temporal": None,
+    }
+
+    if temporal_client is None:
+        return runtime
+
+    try:
+        handle = temporal_client.get_workflow_handle(runtime_workflow_id)
+        description = await handle.describe()
+        temporal_state = None
+        query_error = None
+        try:
+            temporal_state = await handle.query("get_state")
+        except Exception as exc:
+            query_error = str(exc)
+
+        runtime["temporal"] = {
+            "workflow_id": runtime_workflow_id,
+            "run_id": description.run_id,
+            "status": description.status.name,
+            "close_time": description.close_time.isoformat() if description.close_time else None,
+            "execution_time": description.execution_time.isoformat() if description.execution_time else None,
+            "state": temporal_state,
+            "query_error": query_error,
+        }
+    except Exception as exc:
+        runtime["temporal"] = {
+            "workflow_id": workflow_id,
+            "status": "UNAVAILABLE",
+            "error": str(exc),
+        }
+
+    return runtime
+
+
+@app.get("/documents/{workflow_id}", response_model=DocumentDetail)
+async def get_document(workflow_id: str, user: CurrentUser):
+    """Get document workflow state with artifacts and indexing metadata."""
+    doc = _require_document_for_user(workflow_id, user)
+    return _build_document_detail(doc)
+
+
+@app.get("/documents/{workflow_id}/error-details")
+async def get_workflow_error_details(workflow_id: str, user: RequireSearch):
+    """
+    Get detailed error information from Temporal for a failed workflow.
+    
+    Returns comprehensive error details including:
+    - Error message
+    - Stack trace (if available)
+    - Failure type
+    - Workflow execution status
+    
+    This endpoint queries Temporal directly to get the most detailed
+    error information available, which may be more complete than what's
+    stored in SQLite.
+    """
+    import traceback
+
+    # Enforce tenant scope before touching Temporal (404 hides other tenants).
+    _require_document_for_user(workflow_id, user)
+
+    try:
+        handle = temporal_client.get_workflow_handle(workflow_id)
+        description = await handle.describe()
+        
+        result = {
+            "workflow_id": workflow_id,
+            "run_id": description.run_id,
+            "status": description.status.name,
+            "error_message": None,
+            "error_type": None,
+            "stack_trace": None,
+            "has_error": False
+        }
+        
+        # If workflow is failed, try to get detailed error information
+        if description.status.name == "FAILED":
+            result["has_error"] = True
+            
+            # Try to get error from workflow result (this raises WorkflowFailureError for failed workflows)
+            try:
+                await handle.result()
+            except WorkflowFailureError as wf_err:
+                # Extract error details from the failure
+                result["error_message"] = str(wf_err)
+                result["error_type"] = type(wf_err).__name__
+                
+                # Try to get the underlying cause
+                if hasattr(wf_err, 'cause') and wf_err.cause:
+                    cause = wf_err.cause
+                    result["error_message"] = str(cause)
+                    result["error_type"] = type(cause).__name__
+                    
+                    # Get stack trace if available
+                    if hasattr(cause, '__traceback__') and cause.__traceback__:
+                        result["stack_trace"] = ''.join(traceback.format_tb(cause.__traceback__))
+                    elif hasattr(wf_err, '__traceback__') and wf_err.__traceback__:
+                        result["stack_trace"] = ''.join(traceback.format_tb(wf_err.__traceback__))
+                
+                # Also try to get failure details from the exception itself
+                if hasattr(wf_err, 'failure') and wf_err.failure:
+                    failure = wf_err.failure
+                    if hasattr(failure, 'message') and failure.message:
+                        result["error_message"] = failure.message
+                    if hasattr(failure, 'stack_trace') and failure.stack_trace:
+                        result["stack_trace"] = failure.stack_trace
+            except Exception as e:
+                # If result() doesn't work, try other methods
+                result["error_message"] = f"Could not retrieve error details: {str(e)}"
+        
+        # Also try to get error from workflow state query (fallback)
+        if not result["error_message"]:
+            try:
+                state = await handle.query("get_state")
+                if state and state.get("error_message"):
+                    result["error_message"] = state.get("error_message")
+                    result["has_error"] = True
+            except Exception:
+                pass  # Workflow might not support queries or be in wrong state
+        
+        return result
+        
+    except Exception as e:
+        # If workflow doesn't exist or can't be accessed
+        error_msg = str(e)
+        if "not found" in error_msg.lower() or "workflow" in error_msg.lower():
+            raise HTTPException(404, f"Workflow not found: {workflow_id}")
+        raise HTTPException(500, f"Error fetching workflow details: {error_msg}")
+
+
+@app.get("/documents/{workflow_id}/runtime")
+async def get_document_runtime(workflow_id: str, user: RequireSearch):
+    """Return live runtime status by combining SQLite state and Temporal workflow state."""
+    doc = _require_document_for_user(workflow_id, user)
+    return await _get_runtime_payload(workflow_id, doc=doc)
+
+
+@app.get("/documents/{workflow_id}/artifacts")
+async def list_document_artifacts(workflow_id: str, user: RequireSearch):
+    _require_document_for_user(workflow_id, user)
+    return db.list_document_artifacts(workflow_id)
+
+
+@app.get("/documents/{workflow_id}/artifacts/{artifact_id}")
+async def get_document_artifact(workflow_id: str, user: RequireSearch, artifact_id: int):
+    _require_document_for_user(workflow_id, user)
+    artifact = db.get_document_artifact(workflow_id, artifact_id)
+    if not artifact:
+        raise HTTPException(404, f"Artifact not found: {artifact_id}")
+    return artifact
+
+
+@app.get("/documents/{workflow_id}/artifacts/{artifact_id}/content")
+async def get_document_artifact_content(workflow_id: str, user: RequireSearch, artifact_id: int):
+    _require_document_for_user(workflow_id, user)
+    artifact = db.get_document_artifact(workflow_id, artifact_id)
+    if not artifact:
+        raise HTTPException(404, f"Artifact not found: {artifact_id}")
+
+    storage_uri = artifact["storage_uri"]
+    if storage_uri.startswith("minio://"):
+        path = storage_uri.replace("minio://", "")
+        bucket, object_name = path.split("/", 1)
+        response = minio_client.get_object(bucket, object_name)
+        return StreamingResponse(
+            response,
+            media_type=artifact.get("mime_type") or "application/octet-stream",
+            headers={"Content-Disposition": f'inline; filename="{artifact.get("filename") or "artifact"}"'},
+        )
+
+    file_path = Path(storage_uri)
+    if not file_path.exists():
+        raise HTTPException(404, "Artifact content not found")
+    return StreamingResponse(
+        open(file_path, "rb"),
+        media_type=artifact.get("mime_type") or "application/octet-stream",
+        headers={"Content-Disposition": f'inline; filename="{artifact.get("filename") or file_path.name}"'},
+    )
+
+
+@app.get("/documents/{workflow_id}/jobs")
+async def list_document_jobs(workflow_id: str, user: RequireSearch, limit: int = Query(20, le=100)):
+    _require_document_for_user(workflow_id, user)
+    return db.list_document_jobs(workflow_id, limit=limit)
+
+
+@app.get("/documents/{workflow_id}/stage-io")
+async def get_document_stage_io(workflow_id: str, user: RequireSearch):
+    doc = _require_document_for_user(workflow_id, user)
+    return _build_stage_io_payload(workflow_id, current_stage=doc.get("stage"))
+
+
+@app.get("/documents/{workflow_id}/allowed-actions")
+async def get_document_allowed_actions(workflow_id: str, user: RequireSearch):
+    """Return the currently valid machine-facing actions for a document."""
+    doc = _require_document_for_user(workflow_id, user)
+    return {
+        "workflow_id": workflow_id,
+        "stage": doc.get("stage"),
+        "reindex_required": bool(doc.get("reindex_required")),
+        "available_actions": _list_available_actions(doc, db.get_latest_document_job(workflow_id)),
+    }
+
+
+@app.get("/documents/{workflow_id}/graph", response_model=DocumentGraph)
+async def get_document_graph(workflow_id: str, user: RequireSearch):
+    """Return a document-centric graph of state, jobs, artifacts, index status, and runtime."""
+    doc = _require_document_for_user(workflow_id, user)
+    detail = _build_document_detail(doc)
+    return DocumentGraph(
+        workflow_id=workflow_id,
+        document=detail,
+        jobs=db.list_document_jobs(workflow_id, limit=100),
+        artifacts=detail.artifacts,
+        index_status=detail.index_status,
+        stage_io=_build_stage_io_payload(workflow_id, current_stage=doc.get("stage")),
+        runtime=await _get_runtime_payload(workflow_id, doc=doc),
+    )
+
+
+def _delete_artifacts_from_minio(workflow_id: str) -> dict:
+    """Remove every MinIO object backing a document's artifacts.
+
+    Artifacts are the only part of a document that lives outside SQLite and the
+    vector store — the original upload, the normalized PDF, and the OCR /
+    translation / chunk JSON snapshots. Nothing else reads them once the
+    document is gone, so a hard delete has to sweep them explicitly.
+    """
+    outcome = {"deleted": 0, "missing": 0, "errors": []}
+    try:
+        artifacts = db.list_document_artifacts(workflow_id)
+    except Exception as exc:
+        outcome["errors"].append(f"list artifacts: {exc}")
+        return outcome
+
+    for artifact in artifacts:
+        storage_uri = (artifact.get("storage_uri") or "").strip()
+        if not storage_uri:
+            continue
+        try:
+            if storage_uri.startswith("minio://"):
+                bucket, object_name = storage_uri.replace("minio://", "").split("/", 1)
+                minio_client.remove_object(bucket, object_name)
+                outcome["deleted"] += 1
+            else:
+                path = Path(storage_uri)
+                if path.exists():
+                    path.unlink()
+                    outcome["deleted"] += 1
+                else:
+                    outcome["missing"] += 1
+        except Exception as exc:
+            outcome["errors"].append(f"{storage_uri}: {exc}")
+    return outcome
+
+
+@app.delete("/documents/{workflow_id}")
+async def disable_document(
+    workflow_id: str,
+    user: CurrentUser,
+    remove_from_search: bool = Query(True),
+    purge: bool = Query(False),
+    keep_audit: bool = Query(True),
+):
+    """
+    Remove a document — soft delete by default, hard delete with ``purge=true``.
+
+    Both modes:
+    - Remove all chunks from the DEV vector index
+    - Delete PROD Qdrant points too, if this document was ever promoted
+      (schemes-index for scheme documents, documents-index otherwise)
+    - Remove the row from the Postgres master catalog and refresh the
+      Redis snapshots the AI layer reads, so a re-ingest starts clean
+    - For scheme documents, also rebuild the legacy SQLite scheme catalog
+    - Stop the workflow if it is still running
+
+    Soft delete (default) then marks the document disabled in SQLite and keeps
+    every row and artifact, so ``POST /documents/{id}/restore`` can bring it
+    back. Use X-Include-Disabled: true in list_documents to see it.
+
+    ``purge=true`` additionally deletes the MinIO artifacts (original upload,
+    normalized PDF, OCR/translation/chunk JSON) and every SQLite row (pages,
+    chunks, artifacts, jobs, index status, the document itself). This is
+    irreversible — restore has nothing left to restore. Audit rows are kept
+    unless ``keep_audit=false``, since they record the deletion itself.
+
+    Args:
+        workflow_id: The document workflow ID
+        remove_from_search: If True (default), removes chunks from the index
+        purge: If True, hard delete — also drops MinIO artifacts and SQLite rows
+        keep_audit: If False (and purge=True), also deletes the audit trail
+
+    Requires ``admin`` (super admin — any document), or ``delete_own``
+    (state admin — only documents they uploaded, inside their own state).
+    A purge is irreversible, so it stays super-admin only.
+    """
+    doc = _require_document_for_user(workflow_id, user)
+
+    if not user.has_permission(Permission.ADMIN):
+        if not user.has_permission_for_instance(Permission.DELETE_OWN, doc.get("instance")):
+            raise HTTPException(403, "Missing permission: delete_own")
+        if purge:
+            raise HTTPException(
+                403, "purge=true is restricted to super admins; delete without purge instead"
+            )
+        owner = (doc.get("uploaded_by_user_id") or "").strip()
+        if not owner or owner != (user.user_id or "").strip():
+            raise HTTPException(403, "You may only delete documents you uploaded")
+
+    # A purge that skipped the index would strand vectors no row points at any
+    # more, so "remove from everywhere" always includes the search cleanup.
+    if purge:
+        remove_from_search = True
+
+    result = {
+        "workflow_id": workflow_id,
+        "disabled": True,
+        "purged": purge,
+        "workflow_cancelled": False,
+        "workflow_terminated": False,
+        "vector_deleted": 0,
+        "scheme_qdrant_deleted": None,
+        "prod_qdrant_deleted": None,
+        "catalog_version": None,
+        "master_catalog_version": None,
+        "minio_artifacts_deleted": None,
+        "sqlite_rows_deleted": None,
+    }
+
+    # Stop the workflow if still running. A purge terminates rather than
+    # cancels: cancellation lets the workflow run its next activity, which
+    # would write rows back into the tables we are about to delete.
+    try:
+        handle = temporal_client.get_workflow_handle(workflow_id)
+        if purge:
+            await handle.terminate(reason=f"Document purged by {user.username or user.user_id}")
+            result["workflow_terminated"] = True
+        else:
+            await handle.cancel()
+            result["workflow_cancelled"] = True
+    except Exception:
+        pass  # Workflow already completed/cancelled
+
+    # Mark as disabled in SQLite (a purge deletes the row outright below, but
+    # this keeps the document hidden if a later step fails partway through)
+    db.set_document_disabled(workflow_id, True)
+
+    # Remove from the DEV vector index if requested
+    if remove_from_search:
+        doc_id = doc.get("document_id")
+        if doc_id:
+            vector_result = delete_chunks_from_index(doc_id)
+            result["vector_deleted"] = vector_result.get("deleted", 0)
+            if "error" in vector_result:
+                result["vector_error"] = vector_result["error"]
+
+        # PROD Qdrant cleanup, if this document was ever promoted
+        kind = (doc.get("document_kind") or "document").strip().lower()
+        if kind == "scheme" or doc.get("scheme_code"):
+            q_result = _delete_scheme_points_from_prod(doc)
+            result["scheme_qdrant_deleted"] = q_result
+            try:
+                result["catalog_version"] = scheme_catalog.on_scheme_document_disabled(
+                    workflow_id, scheme_code=doc.get("scheme_code")
+                )
+            except Exception as exc:
+                result["catalog_error"] = str(exc)
+        else:
+            result["prod_qdrant_deleted"] = _delete_document_points_from_prod(doc)
+
+        # Master catalog (Postgres) + Redis snapshot cleanup — mirrors the sync
+        # done on ingest/promote so a deleted document stops appearing to the
+        # AI layer immediately, and a later re-ingest starts from a clean slate.
+        try:
+            from ..master_catalog_pg import remove_catalog_entry
+
+            result["master_catalog_version"] = await asyncio.to_thread(remove_catalog_entry, workflow_id)
+        except Exception as exc:
+            result["master_catalog_error"] = str(exc)
+
+    # Hard delete: drop the artifacts and the SQLite rows themselves. Ordered
+    # storage-then-database so a failure mid-way leaves rows pointing at
+    # already-deleted objects (visible, fixable) rather than orphaned objects
+    # no row references any more (invisible, unreclaimable).
+    if purge:
+        result["minio_artifacts_deleted"] = await asyncio.to_thread(
+            _delete_artifacts_from_minio, workflow_id
+        )
+        # Audit is written before the purge so the trail survives keep_audit=True.
+        _log_audit(
+            workflow_id=workflow_id,
+            action_type="purge_document",
+            entity_type="document",
+            metadata={
+                "filename": doc.get("filename"),
+                "scheme_code": doc.get("scheme_code"),
+                "stage": doc.get("stage"),
+                "minio_artifacts_deleted": result["minio_artifacts_deleted"],
+                "keep_audit": keep_audit,
+            },
+            user=user,
+        )
+        result["sqlite_rows_deleted"] = db.purge_document(workflow_id, keep_audit=keep_audit)
+        result["disabled"] = False  # nothing left to be disabled
+        return result
+
+    # Log audit
+    _log_audit(
+        workflow_id=workflow_id,
+        action_type="disable_document",
+        entity_type="document",
+        metadata={
+            "remove_from_search": remove_from_search,
+            "vector_deleted": result["vector_deleted"],
+            "scheme_qdrant_deleted": result.get("scheme_qdrant_deleted"),
+            "prod_qdrant_deleted": result.get("prod_qdrant_deleted"),
+            "scheme_code": doc.get("scheme_code"),
+            "catalog_version": result.get("catalog_version"),
+            "master_catalog_version": result.get("master_catalog_version"),
+        },
+        user=user,
+    )
+
+    return result
+
+
+@app.patch("/documents/{workflow_id}/scheme-metadata")
+async def patch_scheme_metadata(
+    workflow_id: str,
+    body: SchemeMetadataUpdate,
+    user: RequireReview,
+):
+    """
+    Set document_kind / scheme fields used by Master Catalog and Qdrant scheme promote.
+
+    On completed docs, renaming scheme_code sets pending_reindex (excluded from live
+    vector_schemes until re-promote). Other metadata edits bump catalog version only.
+    """
+    _require_document_for_user(workflow_id, user)
+    try:
+        result = scheme_catalog.apply_scheme_metadata(
+            workflow_id,
+            document_kind=body.document_kind,
+            scheme_code=body.scheme_code,
+            scheme_name=body.scheme_name,
+            scheme_aliases=body.scheme_aliases,
+            tool_routing=body.tool_routing,
+            catalog_visible=body.catalog_visible,
+            network_visible=body.network_visible,
+            valid_from=body.valid_from,
+            valid_to=body.valid_to,
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    _log_audit(
+        workflow_id=workflow_id,
+        action_type="scheme_metadata_update",
+        entity_type="document",
+        metadata={
+            "body": body.model_dump(exclude_none=True),
+            "catalog_version": result.get("catalog_version"),
+            "pending_reindex": result.get("pending_reindex"),
+        },
+        user=user,
+    )
+    doc = result["document"]
+    return {
+        "workflow_id": workflow_id,
+        "document_kind": doc.get("document_kind"),
+        "scheme_code": doc.get("scheme_code"),
+        "scheme_name": doc.get("scheme_name"),
+        "scheme_aliases": scheme_catalog.parse_aliases(doc.get("scheme_aliases_json")),
+        "tool_routing": doc.get("tool_routing"),
+        "catalog_visible": bool(int(doc["catalog_visible"])) if doc.get("catalog_visible") is not None else True,
+        "network_visible": bool(int(doc["network_visible"])) if doc.get("network_visible") is not None else True,
+        "valid_from": doc.get("valid_from"),
+        "valid_to": doc.get("valid_to"),
+        "catalog_version": result.get("catalog_version"),
+        "requires_reindex": result.get("requires_reindex"),
+        "pending_reindex": result.get("pending_reindex"),
+        "reindex_reason": doc.get("reindex_reason"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Master Catalog API (AI tool / prompt sync)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/catalog/v1/version")
+async def catalog_version(request: Request, user: CurrentUser):
+    """Cheap poll for cache warmers: { version, updated_at }."""
+    _require_catalog_read(request, user)
+    scheme_catalog.ensure_catalog_schema()
+    scheme_catalog.bootstrap_catalog_if_empty()
+    meta = db.get_catalog_meta()
+    return {
+        "version": int(meta.get("version") or 0),
+        "updated_at": meta.get("updated_at"),
+        "notes": meta.get("notes"),
+    }
+
+
+@app.get("/catalog/v1/schemes")
+async def catalog_schemes(
+    request: Request,
+    user: CurrentUser,
+    instance: Optional[str] = Query(None),
+    status: str = Query("live"),
+    include_pending: bool = Query(False),
+    network_visible: Optional[bool] = Query(None),
+):
+    """List schemes from the master catalog (vector-indexed + filters)."""
+    _require_catalog_read(request, user)
+    scheme_catalog.bootstrap_catalog_if_empty()
+    snap = scheme_catalog.build_snapshot(
+        instance=instance,
+        status=status,
+        include_pending=include_pending,
+        network_visible=network_visible,
+    )
+    return {
+        "catalog_version": snap["catalog_version"],
+        "updated_at": snap["updated_at"],
+        "vector_schemes": snap["vector_schemes"],
+        "legacy_schemes": snap["legacy_schemes"],
+        "routing_exceptions": snap["routing_exceptions"],
+    }
+
+
+@app.get("/catalog/v1/snapshot")
+async def catalog_snapshot(
+    request: Request,
+    user: CurrentUser,
+    instance: Optional[str] = Query(None),
+    status: str = Query("live"),
+    include_pending: bool = Query(False),
+    network_visible: Optional[bool] = Query(None),
+):
+    """
+    Full catalog snapshot for OAN / provider warmers.
+
+    Includes vector_schemes, legacy_schemes, tool_prompts, routing_exceptions,
+    collections metadata, and monotonic catalog_version.
+    """
+    _require_catalog_read(request, user)
+    scheme_catalog.bootstrap_catalog_if_empty()
+    return scheme_catalog.build_snapshot(
+        instance=instance,
+        status=status,
+        include_pending=include_pending,
+        network_visible=network_visible,
+    )
+
+
+@app.get("/catalog/v1/tool-prompt")
+async def catalog_tool_prompt(request: Request, user: CurrentUser):
+    """Prompt fragments only (for AI system prompt assembly)."""
+    _require_catalog_read(request, user)
+    scheme_catalog.bootstrap_catalog_if_empty()
+    snap = scheme_catalog.build_snapshot()
+    return {
+        "catalog_version": snap["catalog_version"],
+        "updated_at": snap["updated_at"],
+        "tool_prompts": snap["tool_prompts"],
+        "routing_exceptions": snap["routing_exceptions"],
+        "vector_scheme_codes": [s["scheme_code"] for s in snap["vector_schemes"]],
+        "legacy_scheme_codes": [s["scheme_code"] for s in snap["legacy_schemes"]],
+    }
+
+
+@app.post("/catalog/v1/rebuild")
+async def catalog_rebuild(request: Request, user: RequireAdmin):
+    """Admin: recompute catalog entries from documents + preserve bootstrap codes."""
+    from ..auth.permissions import Permission
+
+    # Admin JWT always OK; service key also accepted for automation
+    if not _service_key_ok(request) and not user.has_permission(Permission.ADMIN):
+        raise HTTPException(403, "Rebuild requires admin")
+    scheme_catalog.ensure_catalog_schema()
+    # Ensure bootstrap seeds exist before rebuild merge
+    scheme_catalog.bootstrap_catalog_if_empty()
+    version = scheme_catalog.rebuild_catalog_from_documents(reason="admin_rebuild")
+    snap = scheme_catalog.build_snapshot()
+    _log_audit(
+        workflow_id="__catalog__",
+        action_type="catalog_rebuild",
+        entity_type="catalog",
+        metadata={"catalog_version": version, "vector_count": len(snap["vector_schemes"])},
+        user=user,
+    )
+    return {
+        "ok": True,
+        "catalog_version": version,
+        "vector_scheme_count": len(snap["vector_schemes"]),
+        "updated_at": snap["updated_at"],
+    }
+
+
+@app.post("/catalog/v1/bootstrap")
+async def catalog_bootstrap(request: Request, user: RequireAdmin, force: bool = Query(False)):
+    """Admin: seed 13 vector schemes if empty (or force=true)."""
+    result = scheme_catalog.bootstrap_catalog_if_empty(force=force)
+    return result
+
+
+@app.post("/documents/{workflow_id}/restore")
+async def restore_document(workflow_id: str, user: RequireAdmin):
+    """
+    Restore a soft-deleted (disabled) document.
+
+    Note: This only restores the document in SQLite. Chunks that were removed
+    from the vector index will NOT be automatically re-indexed. To re-index,
+    you would need to re-run the ingestion process.
+    """
+    _require_document_for_user(workflow_id, user)
+
+    db.set_document_disabled(workflow_id, False)
+
+    # Log audit
+    _log_audit(
+        workflow_id=workflow_id,
+        action_type="restore_document",
+        entity_type="document",
+        user=user,
+    )
+
+    return {"workflow_id": workflow_id, "restored": True}
+
+
+@app.post("/documents/{workflow_id}/reingest")
+async def reingest_document(
+    workflow_id: str,
+    user: RequirePipeline,
+    index_name: str = "documents-index",
+):
+    """
+    Re-ingest a completed document to the vector index.
+
+    Use this to re-ingest documents that completed but weren't properly
+    indexed (e.g., due to index schema changes). This starts a lightweight
+    workflow that uses chunks already stored in SQLite.
+
+    The document must have chunks stored in SQLite (typically from a
+    completed or previously ingested document).
+    """
+    # Get document from SQLite
+    doc = _require_document_for_user(workflow_id, user)
+
+    # Reingest skips the entire review pipeline (including ready_for_ingestion,
+    # where document type / scheme name get set) and jumps straight to pushing
+    # chunks to Qdrant. That's fine for re-pushing already-classified content
+    # (e.g. after an embedding/index change), but a trap if it's used as a
+    # substitute for the real approval flow on a never-classified document —
+    # it would silently ingest with document_kind='document' and no scheme
+    # metadata, the exact raw-hash/filename-fallback master_catalog rows we've
+    # had to clean up by hand. 'document' is never offered as a choice in the
+    # classification panel, so seeing it here means classification was never done.
+    if (doc.get("document_kind") or "document") == "document" and not doc.get("scheme_code") and not doc.get("scheme_name"):
+        raise HTTPException(
+            400,
+            "This document has never been classified (document type / scheme name not set). "
+            "Set it via PATCH /documents/{workflow_id}/scheme-metadata (or the classification "
+            "panel at the ready_for_ingestion stage) before reingesting — reingest skips that "
+            "review stage entirely and would otherwise ingest with no scheme metadata.",
+        )
+
+    # Get chunks from SQLite
+    chunks = db.get_chunks(workflow_id, include_excluded=False)
+    if not chunks:
+        raise HTTPException(400, "No chunks found for document. The document may need to be reprocessed from scratch.")
+
+    document_id = doc.get("document_id", "")
+    filename = doc.get("filename", "")
+    page_count = doc.get("page_count", 0)
+
+    # Generate unique workflow ID for re-ingestion
+    import time
+    reingest_workflow_id = f"{workflow_id}-reingest-{int(time.time())}"
+
+    # Start re-ingestion workflow
+    await temporal_client.start_workflow(
+        ReingestionWorkflow.run,
+        args=[
+            document_id,
+            filename,
+            workflow_id,  # original workflow_id for SQLite updates
+            page_count,
+            len(chunks),
+            index_name
+        ],
+        id=reingest_workflow_id,
+        task_queue=TASK_QUEUE,
+    )
+    db.create_document_job(
+        workflow_id=workflow_id,
+        job_type="reingest",
+        temporal_workflow_id=reingest_workflow_id,
+        status="running",
+        current_stage="ingesting",
+        config={"index_name": index_name, "chunk_count": len(chunks)},
+    )
+
+    # Log audit
+    _log_audit(
+        workflow_id=workflow_id,
+        action_type="reingest_started",
+        entity_type="document",
+        metadata={"reingest_workflow_id": reingest_workflow_id, "chunk_count": len(chunks)},
+        user=user,
+    )
+
+    return {
+        "workflow_id": workflow_id,
+        "reingest_workflow_id": reingest_workflow_id,
+        "chunk_count": len(chunks),
+        "status": "started"
+    }
+
+
+@app.post("/documents/{workflow_id}/retry-ingestion")
+async def retry_ingestion(
+    workflow_id: str,
+    user: RequirePipeline,
+    index_name: str = "documents-index",
+):
+    """Alias for reingesting a document when search is stale or missing."""
+    return await reingest_document(
+        workflow_id,
+        user=user,
+        index_name=index_name,
+    )
+
+
+@app.post("/documents/{workflow_id}/retry-ocr")
+async def retry_ocr(workflow_id: str, user: RequirePipeline):
+    """Retry OCR for an existing document and stop at OCR review."""
+    doc = _require_document_for_user(workflow_id, user)
+    filepath = doc.get("filepath")
+    if not filepath:
+        raise HTTPException(400, "Document has no source filepath for OCR retry")
+    temporal_workflow_id = f"{workflow_id}-retry-ocr-{int(datetime.utcnow().timestamp())}"
+    await temporal_client.start_workflow(
+        OcrOnlyWorkflow.run,
+        args=[workflow_id, doc["document_id"], doc["filename"], filepath],
+        id=temporal_workflow_id,
+        task_queue=TASK_QUEUE,
+    )
+    job_id = db.create_document_job(
+        workflow_id=workflow_id,
+        job_type="ocr_retry",
+        temporal_workflow_id=temporal_workflow_id,
+        status="running",
+        current_stage="ocr_processing",
+        config={"source": "api_retry_ocr"},
+    )
+    db.update_document_fields(workflow_id, latest_job_id=job_id, error_message=None)
+    _log_audit(
+        workflow_id=workflow_id,
+        action_type="retry_ocr",
+        entity_type="document",
+        metadata={"temporal_workflow_id": temporal_workflow_id},
+        user=user,
+    )
+    return {"workflow_id": workflow_id, "status": "started", "retry_workflow_id": temporal_workflow_id}
+
+
+@app.post("/documents/{workflow_id}/retry-translation")
+async def retry_translation(workflow_id: str, user: RequirePipeline):
+    """Retry translation for an existing document and stop at translation review."""
+    doc = _require_document_for_user(workflow_id, user)
+    if not db.get_pages(workflow_id):
+        raise HTTPException(400, "No OCR pages found for translation retry")
+    temporal_workflow_id = f"{workflow_id}-retry-translation-{int(datetime.utcnow().timestamp())}"
+    await temporal_client.start_workflow(
+        TranslationOnlyWorkflow.run,
+        args=[workflow_id, doc["document_id"], doc["filename"]],
+        id=temporal_workflow_id,
+        task_queue=TASK_QUEUE,
+    )
+    job_id = db.create_document_job(
+        workflow_id=workflow_id,
+        job_type="translation_retry",
+        temporal_workflow_id=temporal_workflow_id,
+        status="running",
+        current_stage="translation_processing",
+        config={"source": "api_retry_translation"},
+    )
+    db.update_document_fields(workflow_id, latest_job_id=job_id, error_message=None)
+    _log_audit(
+        workflow_id=workflow_id,
+        action_type="retry_translation",
+        entity_type="document",
+        metadata={"temporal_workflow_id": temporal_workflow_id},
+        user=user,
+    )
+    return {"workflow_id": workflow_id, "status": "started", "retry_workflow_id": temporal_workflow_id}
+
+
+@app.post("/documents/{workflow_id}/retry-chunking")
+async def retry_chunking(
+    workflow_id: str,
+    user: RequirePipeline,
+    chunk_size: int = 450,
+    chunk_overlap: int = 128,
+    min_tokens: int = 100,
+):
+    """Retry chunking for an existing document and stop at chunk review."""
+    doc = _require_document_for_user(workflow_id, user)
+    if not db.get_pages(workflow_id):
+        raise HTTPException(400, "No page content found for chunking retry")
+    temporal_workflow_id = f"{workflow_id}-retry-chunking-{int(datetime.utcnow().timestamp())}"
+    await temporal_client.start_workflow(
+        ChunkingOnlyWorkflow.run,
+        args=[
+            workflow_id,
+            doc["document_id"],
+            doc["filename"],
+            doc.get("page_count", 0),
+            chunk_size,
+            chunk_overlap,
+            min_tokens,
+        ],
+        id=temporal_workflow_id,
+        task_queue=TASK_QUEUE,
+    )
+    job_id = db.create_document_job(
+        workflow_id=workflow_id,
+        job_type="chunking_retry",
+        temporal_workflow_id=temporal_workflow_id,
+        status="running",
+        current_stage="chunking",
+        config={
+            "source": "api_retry_chunking",
+            "chunk_size": chunk_size,
+            "chunk_overlap": chunk_overlap,
+            "min_tokens": min_tokens,
+        },
+    )
+    db.update_document_fields(workflow_id, latest_job_id=job_id, error_message=None)
+    _log_audit(
+        workflow_id=workflow_id,
+        action_type="retry_chunking",
+        entity_type="document",
+        metadata={"temporal_workflow_id": temporal_workflow_id},
+        user=user,
+    )
+    return {"workflow_id": workflow_id, "status": "started", "retry_workflow_id": temporal_workflow_id}
+
+
+@app.post("/documents/{workflow_id}/mark-reindex-required")
+async def mark_reindex_required(workflow_id: str, payload: ReindexStateRequest, user: RequirePipeline):
+    """Mark a document as needing reindex after chunk edits or operational drift."""
+    _require_document_for_user(workflow_id, user)
+    updated = _mark_reindex_required(
+        workflow_id,
+        payload.reason or "Marked manually for reindex",
+        metadata={"source": "api"},
+    )
+    return {
+        "workflow_id": workflow_id,
+        "reindex_required": bool(updated.get("reindex_required")) if updated else True,
+        "reindex_reason": updated.get("reindex_reason") if updated else payload.reason,
+    }
+
+
+@app.post("/documents/{workflow_id}/clear-reindex-required")
+async def clear_reindex_required(workflow_id: str, user: RequirePipeline):
+    """Clear the reindex-required flag after verification or reingestion."""
+    doc = _require_document_for_user(workflow_id, user)
+    old_reason = doc.get("reindex_reason")
+    updated = db.mark_document_reindex_required(workflow_id, False)
+    _log_audit(
+        workflow_id=workflow_id,
+        action_type="clear_reindex_required",
+        entity_type="document",
+        field_name="reindex_required",
+        old_value="true",
+        new_value="false",
+        metadata={"reason": old_reason},
+        user=user,
+    )
+    return {
+        "workflow_id": workflow_id,
+        "reindex_required": bool(updated.get("reindex_required")) if updated else False,
+        "reindex_reason": updated.get("reindex_reason") if updated else None,
+    }
+
+
+@app.post("/documents/{workflow_id}/demo")
+async def set_document_demo(workflow_id: str, user: RequireAdmin, is_demo: bool = Query(True)):
+    """
+    Mark a document as demo.
+
+    Demo documents are excluded from the UI by default but always available
+    for API testing via include_demo=true parameter.
+    """
+    _require_document_for_user(workflow_id, user)
+    db.set_document_demo(workflow_id, is_demo)
+    return {"workflow_id": workflow_id, "is_demo": is_demo}
+
+
+async def _reconcile_single_document(doc: dict) -> dict:
+    workflow_id = doc.get("workflow_id")
+    current_stage = doc.get("stage")
+    materialized = db.reconcile_materialized_state(workflow_id)
+    if materialized and materialized.get("updated"):
+        doc = db.get_document(workflow_id) or doc
+        current_stage = doc.get("stage")
+        return {
+            "workflow_id": workflow_id,
+            "action": "materialized_state_reconciled",
+            "to": current_stage,
+            "page_count": doc.get("page_count", 0),
+            "chunk_count": doc.get("chunk_count", 0),
+            "job_status": materialized.get("job_status"),
+            "job_stage": materialized.get("job_stage"),
+        }
+
+    current_job = db.get_latest_document_job(workflow_id)
+    runtime_workflow_id = (
+        current_job.get("temporal_workflow_id")
+        if current_job and current_job.get("status") == "running" and current_job.get("temporal_workflow_id")
+        else workflow_id
+    )
+
+    try:
+        handle = temporal_client.get_workflow_handle(runtime_workflow_id)
+        state = await asyncio.wait_for(
+            handle.query("get_state"),
+            timeout=5.0,
+        )
+        temporal_stage = state.get("stage") if state else None
+        if temporal_stage and temporal_stage != current_stage:
+            db.update_document_stage(workflow_id, temporal_stage)
+            return {
+                "workflow_id": workflow_id,
+                "action": "stage_synced",
+                "from": current_stage,
+                "to": temporal_stage,
+                "temporal_workflow_id": runtime_workflow_id,
+            }
+        return {
+            "workflow_id": workflow_id,
+            "action": "no_change",
+            "stage": current_stage,
+            "temporal_workflow_id": runtime_workflow_id,
+        }
+    except asyncio.TimeoutError:
+        db.update_document_stage(workflow_id, "failed", error_message="Workflow query timed out")
+        return {
+            "workflow_id": workflow_id,
+            "action": "marked_failed",
+            "from": current_stage,
+            "reason": "query_timeout",
+        }
+    except Exception as exc:
+        error_msg = str(exc)
+        if "not found" in error_msg.lower() or "workflow task" in error_msg.lower():
+            db.update_document_stage(workflow_id, "failed", error_message="Workflow terminated or lost")
+            db.log_audit(
+                workflow_id=workflow_id,
+                document_id=doc.get("document_id", ""),
+                action_type="reconcile_failed",
+                metadata={"from_stage": current_stage, "reason": "workflow_not_found"},
+            )
+            return {
+                "workflow_id": workflow_id,
+                "action": "marked_failed",
+                "from": current_stage,
+                "reason": "workflow_not_found",
+            }
+        return {
+            "workflow_id": workflow_id,
+            "action": "error",
+            "from": current_stage,
+            "reason": error_msg,
+        }
+
+
+@app.post("/documents/{workflow_id}/reconcile")
+async def reconcile_single_document(workflow_id: str, user: RequirePipeline):
+    """Reconcile SQLite stage with Temporal state for one document."""
+    doc = _require_document_for_user(workflow_id, user)
+    return await _reconcile_single_document(doc)
+
+
+# =============================================================================
+# Approval Routes
+# =============================================================================
+
+_STAGE_APPROVAL_HINTS = {
+    "ocr_review": "POST /documents/{id}/approve-ocr",
+    "translation_review": "POST /documents/{id}/approve-translation",
+    "chunk_review": "POST /documents/{id}/approve-chunks",
+    "ready_for_ingestion": "POST /documents/{id}/approve-ingestion",
+    "approval_for_prod": "POST /documents/{id}/approve-prod",
+}
+
+
+async def _validate_approval_stage(workflow_id: str, expected_stage: str):
+    """Validate that workflow is in the expected stage before approval."""
+    try:
+        handle = temporal_client.get_workflow_handle(workflow_id)
+        state = await handle.query("get_state")
+        current_stage = state.get("stage") if isinstance(state, dict) else getattr(state, "stage", None)
+        if current_stage != expected_stage:
+            hint = _STAGE_APPROVAL_HINTS.get(str(current_stage or ""))
+            extra = f" Use {hint.replace('{id}', workflow_id)} instead." if hint else ""
+            raise HTTPException(
+                400,
+                (
+                    f"Cannot approve: workflow is in '{current_stage}' stage, "
+                    f"expected '{expected_stage}'.{extra}"
+                ),
+            )
+        return handle
+    except HTTPException:
+        raise
+    except Exception:
+        # Try SQLite fallback to check if workflow exists but is completed/failed
+        doc = db.get_document(workflow_id)
+        if doc:
+            current = doc.get("stage")
+            hint = _STAGE_APPROVAL_HINTS.get(str(current or ""))
+            extra = f" Use {hint.replace('{id}', workflow_id)} instead." if hint else ""
+            raise HTTPException(
+                400,
+                (
+                    f"Cannot approve: workflow is in '{current}' stage "
+                    f"(completed/failed workflows cannot be approved).{extra}"
+                ),
+            )
+        raise HTTPException(404, f"Workflow not found: {workflow_id}")
+
+
+async def _execute_bulk_approval_action(
+    request: BulkWorkflowActionRequest,
+    action: str,
+    expected_stage: str,
+    signal_method,
+    user: AuthUser,
+) -> BulkWorkflowActionResponse:
+    results: list[BulkWorkflowActionResult] = []
+    for workflow_id in request.workflow_ids:
+        doc = _document_for_user_or_none(workflow_id, user)
+        if not doc:
+            results.append(BulkWorkflowActionResult(
+                workflow_id=workflow_id,
+                ok=False,
+                action=action,
+                message="document_not_found",
+            ))
+            continue
+        current_stage = doc.get("stage")
+        if current_stage != expected_stage:
+            results.append(BulkWorkflowActionResult(
+                workflow_id=workflow_id,
+                ok=False,
+                action=action,
+                message=f"invalid_stage:{current_stage}",
+            ))
+            continue
+        if request.dry_run:
+            results.append(BulkWorkflowActionResult(
+                workflow_id=workflow_id,
+                ok=True,
+                action=action,
+                message="would_execute",
+            ))
+            continue
+        try:
+            handle = await _validate_approval_stage(workflow_id, expected_stage)
+            await handle.signal(signal_method)
+            results.append(BulkWorkflowActionResult(
+                workflow_id=workflow_id,
+                ok=True,
+                action=action,
+                message="queued",
+            ))
+        except Exception as exc:
+            results.append(BulkWorkflowActionResult(
+                workflow_id=workflow_id,
+                ok=False,
+                action=action,
+                message=str(exc),
+            ))
+
+    return BulkWorkflowActionResponse(
+        action=action,
+        dry_run=request.dry_run,
+        requested=len(request.workflow_ids),
+        succeeded=sum(1 for result in results if result.ok),
+        failed=sum(1 for result in results if not result.ok),
+        results=results,
+    )
+
+
+@app.post("/documents/bulk/approve-ocr", response_model=BulkWorkflowActionResponse)
+async def bulk_approve_ocr(request: BulkWorkflowActionRequest, user: RequireReview):
+    """Bulk-approve documents waiting in OCR review."""
+    return await _execute_bulk_approval_action(
+        request,
+        action="approve_ocr",
+        expected_stage="ocr_review",
+        signal_method=DocumentPipelineWorkflow.approve_ocr,
+        user=user,
+    )
+
+
+@app.post("/documents/bulk/approve-translation", response_model=BulkWorkflowActionResponse)
+async def bulk_approve_translation(request: BulkWorkflowActionRequest, user: RequireReview):
+    """Bulk-approve documents waiting in translation review."""
+    return await _execute_bulk_approval_action(
+        request,
+        action="approve_translation",
+        expected_stage="translation_review",
+        signal_method=DocumentPipelineWorkflow.approve_translation,
+        user=user,
+    )
+
+
+@app.post("/documents/bulk/approve-chunks", response_model=BulkWorkflowActionResponse)
+async def bulk_approve_chunks(request: BulkWorkflowActionRequest, user: RequireReview):
+    """Bulk-approve documents waiting in chunk review."""
+    return await _execute_bulk_approval_action(
+        request,
+        action="approve_chunks",
+        expected_stage="chunk_review",
+        signal_method=DocumentPipelineWorkflow.approve_chunks,
+        user=user,
+    )
+
+
+@app.post("/documents/bulk/reindex", response_model=BulkWorkflowActionResponse)
+async def bulk_reindex_documents(
+    request: BulkWorkflowActionRequest,
+    user: RequirePipeline,
+    index_name: str = "documents-index",
+):
+    """Bulk queue reingestion for completed or dirty documents."""
+    results: list[BulkWorkflowActionResult] = []
+    for workflow_id in request.workflow_ids:
+        doc = _document_for_user_or_none(workflow_id, user)
+        if not doc:
+            results.append(BulkWorkflowActionResult(workflow_id=workflow_id, ok=False, action="reindex", message="document_not_found"))
+            continue
+        if doc.get("stage") not in {"completed", "ready_for_ingestion", "chunk_review"} and not doc.get("reindex_required"):
+            results.append(BulkWorkflowActionResult(workflow_id=workflow_id, ok=False, action="reindex", message=f"invalid_stage:{doc.get('stage')}"))
+            continue
+        if request.dry_run:
+            results.append(BulkWorkflowActionResult(workflow_id=workflow_id, ok=True, action="reindex", message="would_execute"))
+            continue
+        try:
+            await reingest_document(workflow_id, user=user, index_name=index_name)
+            results.append(BulkWorkflowActionResult(workflow_id=workflow_id, ok=True, action="reindex", message="queued"))
+        except Exception as exc:
+            results.append(BulkWorkflowActionResult(workflow_id=workflow_id, ok=False, action="reindex", message=str(exc)))
+
+    return BulkWorkflowActionResponse(
+        action="reindex",
+        dry_run=request.dry_run,
+        requested=len(request.workflow_ids),
+        succeeded=sum(1 for result in results if result.ok),
+        failed=sum(1 for result in results if not result.ok),
+        results=results,
+    )
+
+
+@app.post("/documents/{workflow_id}/approve-ocr")
+async def approve_ocr(workflow_id: str, user: RequireReview):
+    """Approve OCR results and continue to chunking. Requires permission: review."""
+    _require_document_for_user(workflow_id, user)
+    handle = await _validate_approval_stage(workflow_id, "ocr_review")
+    await handle.signal(DocumentPipelineWorkflow.approve_ocr)
+
+    # Log approval
+    _log_audit(
+        workflow_id=workflow_id,
+        action_type="approval",
+        entity_type="document",
+        field_name="ocr_approved",
+        new_value=True,
+        metadata={"stage": "ocr_review", "next_stage": "translation_processing"},
+        user=user,
+    )
+
+    return {"approved": "ocr", "workflow_id": workflow_id}
+
+
+@app.post("/documents/{workflow_id}/approve-chunks")
+async def approve_chunks(workflow_id: str, user: RequireReview):
+    """Approve chunks and continue to prepare for ingestion."""
+    _require_document_for_user(workflow_id, user)
+    handle = await _validate_approval_stage(workflow_id, "chunk_review")
+    await handle.signal(DocumentPipelineWorkflow.approve_chunks)
+
+    # Log approval
+    _log_audit(
+        workflow_id=workflow_id,
+        action_type="approval",
+        entity_type="document",
+        field_name="chunks_approved",
+        new_value=True,
+        metadata={"stage": "chunk_review", "next_stage": "ready_for_ingestion"},
+        user=user,
+    )
+
+    return {"approved": "chunks", "workflow_id": workflow_id}
+
+
+@app.post("/documents/{workflow_id}/approve-translation")
+async def approve_translation(workflow_id: str, user: RequireReview):
+    """Approve translations and continue to chunking."""
+    _require_document_for_user(workflow_id, user)
+    handle = await _validate_approval_stage(workflow_id, "translation_review")
+    await handle.signal(DocumentPipelineWorkflow.approve_translation)
+
+    # Log approval
+    _log_audit(
+        workflow_id=workflow_id,
+        action_type="approval",
+        entity_type="document",
+        field_name="translation_approved",
+        new_value=True,
+        metadata={"stage": "translation_review", "next_stage": "chunking"},
+        user=user,
+    )
+
+    return {"approved": "translation", "workflow_id": workflow_id}
+
+
+@app.post("/documents/{workflow_id}/approve-ingestion")
+async def approve_ingestion(workflow_id: str, user: RequireApproveIngestion):
+    """Approve ingestion and continue to vector-index ingestion.
+
+    Requires APPROVE_INGESTION, not REVIEW: a ``state_contributor`` may approve
+    the OCR / translation / chunking gates but must not publish to DEV.
+    """
+    _require_document_for_user(workflow_id, user)
+    handle = await _validate_approval_stage(workflow_id, "ready_for_ingestion")
+    await handle.signal(DocumentPipelineWorkflow.approve_ingestion)
+
+    # Log approval
+    _log_audit(
+        workflow_id=workflow_id,
+        action_type="approval",
+        entity_type="document",
+        field_name="ingestion_approved",
+        new_value=True,
+        metadata={"stage": "ready_for_ingestion", "next_stage": "ingesting"},
+        user=user,
+    )
+
+    return {"approved": "ingestion", "workflow_id": workflow_id}
+
+
+@app.post("/documents/{workflow_id}/request-prod-ready")
+async def request_prod_ready(workflow_id: str, user: RequireReview):
+    """
+    state_admin: flag this document as ready for a super_admin to review for
+    PROD promotion. Purely informational — does not itself fire approve_prod
+    or promote anything; the super_admin still makes that call via
+    POST /documents/{id}/approve-prod. Mirrors the "request ingest" pattern
+    used elsewhere in this pipeline: a request is a separate, weaker signal
+    from the actual privileged action.
+    """
+    doc = _require_document_for_user(workflow_id, user)
+    stage = doc.get("stage")
+    if stage != "approval_for_prod":
+        raise HTTPException(
+            400,
+            f"Cannot request prod-ready: document is in '{stage}' stage "
+            "(expected 'approval_for_prod').",
+        )
+
+    updated = db.mark_prod_ready_requested(
+        workflow_id,
+        user_id=getattr(user, "user_id", None),
+        username=getattr(user, "username", None),
+    )
+
+    _log_audit(
+        workflow_id=workflow_id,
+        action_type="request_prod_ready",
+        entity_type="document",
+        field_name="prod_ready_requested_at",
+        new_value=updated.get("prod_ready_requested_at") if updated else None,
+        metadata={"stage": stage},
+        user=user,
+    )
+
+    return {
+        "requested": True,
+        "workflow_id": workflow_id,
+        "prod_ready_requested_at": updated.get("prod_ready_requested_at") if updated else None,
+        "prod_ready_requested_by_username": updated.get("prod_ready_requested_by_username") if updated else None,
+    }
+
+
+@app.post("/documents/{workflow_id}/approve-prod")
+async def approve_prod(
+    workflow_id: str,
+    user: RequireAdmin,
+):
+    """Superadmin-only: promote DEV-ingested vectors into PROD Qdrant."""
+    doc = _require_document_for_user(workflow_id, user)
+    stage = doc.get("stage")
+    # Promoting an already-completed document is a fresh PROD write, so it is
+    # blocked outright when PROD is disabled. A document still parked at the
+    # approval gate (started before the flag was set) is allowed through, or it
+    # would be stranded there forever.
+    if prod_stage_disabled() and stage != "approval_for_prod":
+        raise HTTPException(
+            400,
+            "PROD promotion is disabled (DISABLE_PROD_SETTING=true). "
+            "Documents finish at DEV ingest.",
+        )
+    if stage not in {"approval_for_prod", "completed"}:
+        raise HTTPException(
+            400,
+            f"Cannot approve for prod: document is in '{stage}' stage "
+            "(expected 'approval_for_prod' or 'completed').",
+        )
+
+    # Prefer signaling the running main workflow when it is waiting at approval_for_prod.
+    signaled = False
+    if stage == "approval_for_prod":
+        try:
+            handle = await _validate_approval_stage(workflow_id, "approval_for_prod")
+            await handle.signal(DocumentPipelineWorkflow.approve_prod)
+            signaled = True
+        except HTTPException:
+            signaled = False
+        except Exception:
+            signaled = False
+
+    promote_workflow_id = None
+    if not signaled:
+        import time
+
+        promote_workflow_id = f"{workflow_id}-promote-prod-{int(time.time())}"
+        await temporal_client.start_workflow(
+            PromoteToProdWorkflow.run,
+            args=[
+                doc.get("document_id") or workflow_id,
+                doc.get("filename") or workflow_id,
+                workflow_id,
+                int(doc.get("page_count") or 0),
+                int(doc.get("chunk_count") or 0),
+            ],
+            id=promote_workflow_id,
+            task_queue=TASK_QUEUE,
+        )
+        db.create_document_job(
+            workflow_id=workflow_id,
+            job_type="promote_prod",
+            temporal_workflow_id=promote_workflow_id,
+            status="running",
+            current_stage="ingesting_prod",
+        )
+        db.update_document_stage(
+            workflow_id=workflow_id,
+            stage="ingesting_prod",
+            page_count=doc.get("page_count"),
+            chunk_count=doc.get("chunk_count"),
+        )
+
+    if doc.get("prod_ready_requested_at"):
+        db.clear_prod_ready_requested(workflow_id)
+
+    _log_audit(
+        workflow_id=workflow_id,
+        action_type="approval",
+        entity_type="document",
+        field_name="prod_approved",
+        new_value=True,
+        metadata={
+            "stage": stage,
+            "next_stage": "ingesting_prod",
+            "signaled": signaled,
+            "promote_workflow_id": promote_workflow_id,
+        },
+        user=user,
+    )
+    return {
+        "approved": "prod",
+        "workflow_id": workflow_id,
+        "signaled": signaled,
+        "promote_workflow_id": promote_workflow_id,
+        "next_stage": "ingesting_prod",
+    }
+
+
+# =============================================================================
+# Audit Log Helper and Routes
+# =============================================================================
+
+def _log_audit(
+    workflow_id: str,
+    action_type: str,
+    entity_type: str = None,
+    entity_id: int = None,
+    field_name: str = None,
+    old_value=None,
+    new_value=None,
+    metadata: dict = None,
+    user=None,
+):
+    """
+    Helper to log audit entries with JSON serialization and optional actor identity.
+
+    Args:
+        workflow_id: The Temporal workflow ID
+        action_type: Type of action (page_edit, chunk_edit, approval, etc.)
+        entity_type: Type of entity (page, chunk)
+        entity_id: Entity identifier (page_number, chunk_number)
+        field_name: Name of the field changed
+        old_value: Previous value (will be JSON serialized if not string)
+        new_value: New value (will be JSON serialized if not string)
+        metadata: Additional context as dict
+        user: Optional AuthUser whose email/roles are stored on the audit row
+    """
+    # Get document_id from SQLite
+    doc = db.get_document(workflow_id)
+    document_id = doc["document_id"] if doc else workflow_id
+
+    # Serialize values to JSON if needed
+    old_str = json.dumps(old_value) if old_value is not None and not isinstance(old_value, str) else old_value
+    new_str = json.dumps(new_value) if new_value is not None and not isinstance(new_value, str) else new_value
+
+    actor = _actor_from_user(user)
+    meta = dict(metadata or {})
+    if actor.get("email") or actor.get("username") or actor.get("roles"):
+        meta.setdefault("actor", {
+            "user_id": actor.get("user_id"),
+            "username": actor.get("username"),
+            "email": actor.get("email"),
+            "roles": actor.get("roles"),
+        })
+
+    db.log_audit(
+        workflow_id=workflow_id,
+        document_id=document_id,
+        action_type=action_type,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        field_name=field_name,
+        old_value=old_str,
+        new_value=new_str,
+        metadata=meta or None,
+        actor_user_id=actor.get("user_id") or None,
+        actor_username=actor.get("username") or None,
+        actor_email=actor.get("email") or None,
+        actor_roles=actor.get("roles_csv") or None,
+    )
+
+
+@app.get("/audit", response_model=AuditLogResponse)
+async def get_all_audit_logs(
+    user: RequireSearch,
+    action_type: str = None,
+    limit: int = Query(50, le=200),
+    offset: int = 0
+):
+    """
+    Get global audit trail across all documents.
+
+    Returns a list of all changes including:
+    - Stage transitions
+    - Page edits
+    - Chunk edits
+    - Approvals
+    - Resets
+
+    Each entry includes the document filename for context.
+    """
+    scope = _instance_scope_for_user(user)
+    logs = db.get_all_audit_logs(
+        action_type=action_type,
+        limit=limit,
+        offset=offset,
+        instances=scope,
+    )
+    total = db.get_all_audit_log_count(action_type, instances=scope)
+
+    return AuditLogResponse(
+        logs=logs,
+        total=total,
+        limit=limit,
+        offset=offset
+    )
+
+
+@app.get("/documents/{workflow_id}/audit", response_model=AuditLogResponse)
+async def get_document_audit_log(
+    workflow_id: str,
+    user: RequireSearch,
+    action_type: str = None,
+    limit: int = Query(50, le=200),
+    offset: int = 0
+):
+    """
+    Get audit trail for a document.
+
+    Returns a list of all changes made to the document including:
+    - Stage transitions
+    - Page edits
+    - Chunk edits
+    - Approvals
+    - Resets
+    """
+    _require_document_for_user(workflow_id, user)
+    logs = db.get_audit_logs(
+        workflow_id=workflow_id,
+        action_type=action_type,
+        limit=limit,
+        offset=offset
+    )
+    total = db.get_audit_log_count(workflow_id, action_type)
+
+    return AuditLogResponse(
+        logs=logs,
+        total=total,
+        limit=limit,
+        offset=offset
+    )
+
+
+# =============================================================================
+# Page Routes (OCR Review)
+# =============================================================================
+
+@app.get("/documents/{workflow_id}/pages")
+async def list_pages(workflow_id: str, user: RequireSearch):
+    """Get all pages for a document. SQLite-first for speed."""
+    # Enforce tenant scope up front (404 hides other tenants' documents).
+    _require_document_for_user(workflow_id, user)
+    return db.get_pages(workflow_id)
+
+
+@app.get("/documents/{workflow_id}/pages/{page_num}")
+async def get_page(workflow_id: str, user: RequireSearch, page_num: int = PathParam(..., ge=1, le=10000, description="Page number (1-indexed)")):
+    """Get a specific page. SQLite-first for speed."""
+    _require_document_for_user(workflow_id, user)
+    page = db.get_page(workflow_id, page_num)
+    if page:
+        return page
+
+    raise HTTPException(404, f"Page {page_num} not found")
+
+
+@app.patch("/documents/{workflow_id}/pages/{page_num}")
+async def update_page(
+    workflow_id: str,
+    data: PageUpdate,
+    user: RequireReview,
+    page_num: int = PathParam(..., ge=1, le=10000, description="Page number (1-indexed)"),
+):
+    """Update a page (edit markdown, mark reviewed)."""
+    doc = _require_document_for_user(workflow_id, user)
+    old_page = db.get_page(workflow_id, page_num)
+    if not old_page:
+        raise HTTPException(404, f"Page {page_num} not found")
+
+    updated = db.update_page(
+        workflow_id,
+        page_num,
+        edited_markdown=data.edited_markdown,
+        is_reviewed=data.is_reviewed,
+        reviewer_notes=data.reviewer_notes,
+        edited_translation=data.edited_translation,
+        translation_reviewed=data.translation_reviewed,
+        translation_notes=data.translation_notes,
+    )
+    if not updated:
+        raise HTTPException(404, f"Page {page_num} not found")
+
+    # Log audits for changed fields
+    if data.edited_markdown is not None:
+        old_text = old_page.get("edited_markdown") or old_page.get("original_markdown", "")
+        _log_audit(
+            workflow_id=workflow_id,
+            action_type="page_edit",
+            entity_type="page",
+            entity_id=page_num,
+            field_name="edited_markdown",
+            old_value=old_text,
+            new_value=data.edited_markdown,
+        user=user,
+        )
+
+    if data.is_reviewed is not None:
+        _log_audit(
+            workflow_id=workflow_id,
+            action_type="page_edit",
+            entity_type="page",
+            entity_id=page_num,
+            field_name="is_reviewed",
+            old_value=old_page.get("is_reviewed", False),
+            new_value=data.is_reviewed,
+        user=user,
+        )
+
+    if data.reviewer_notes is not None:
+        _log_audit(
+            workflow_id=workflow_id,
+            action_type="page_edit",
+            entity_type="page",
+            entity_id=page_num,
+            field_name="reviewer_notes",
+            old_value=old_page.get("reviewer_notes"),
+            new_value=data.reviewer_notes,
+        user=user,
+        )
+
+    if data.edited_translation is not None:
+        old_translation = old_page.get("edited_translation") or old_page.get("translated_markdown", "")
+        _log_audit(
+            workflow_id=workflow_id,
+            action_type="translation_edit",
+            entity_type="page",
+            entity_id=page_num,
+            field_name="edited_translation",
+            old_value=old_translation,
+            new_value=data.edited_translation,
+        user=user,
+        )
+
+    if data.translation_reviewed is not None:
+        _log_audit(
+            workflow_id=workflow_id,
+            action_type="translation_edit",
+            entity_type="page",
+            entity_id=page_num,
+            field_name="translation_reviewed",
+            old_value=old_page.get("translation_reviewed", False),
+            new_value=data.translation_reviewed,
+        user=user,
+        )
+
+    if data.translation_notes is not None:
+        _log_audit(
+            workflow_id=workflow_id,
+            action_type="translation_edit",
+            entity_type="page",
+            entity_id=page_num,
+            field_name="translation_notes",
+            old_value=old_page.get("translation_notes"),
+            new_value=data.translation_notes,
+        user=user,
+        )
+
+    # Review flags/notes alone must not dirty the search index — only content edits.
+    content_changed = data.edited_markdown is not None or data.edited_translation is not None
+    if doc and content_changed and (
+        doc.get("chunk_count", 0) > 0
+        or doc.get("stage") in {"chunking", "chunk_review", "ready_for_ingestion", "ingesting", "approval_for_prod", "ingesting_prod", "completed"}
+    ):
+        _mark_reindex_required(
+            workflow_id,
+            "Page content changed after chunk generation; rechunk and reindex required",
+            metadata={"page_number": page_num},
+        )
+
+    return db.get_page(workflow_id, page_num)
+
+
+@app.post("/documents/{workflow_id}/pages/{page_num}/reset")
+async def reset_page(
+    workflow_id: str,
+    user: RequireReview,
+    page_num: int = PathParam(..., ge=1, le=10000, description="Page number (1-indexed)"),
+):
+    """Reset page to original OCR output."""
+    doc = _require_document_for_user(workflow_id, user)
+    old_page = db.get_page(workflow_id, page_num)
+    if not old_page:
+        raise HTTPException(404, f"Page {page_num} not found")
+    db.reset_page(workflow_id, page_num)
+
+    # Log reset action
+    _log_audit(
+        workflow_id=workflow_id,
+        action_type="page_reset",
+        entity_type="page",
+        entity_id=page_num,
+        field_name="edited_markdown",
+        old_value=old_page.get("edited_markdown") if old_page else None,
+        new_value=None,
+        metadata={"reset_to": "original_markdown"},
+        user=user,
+    )
+
+    if doc and (doc.get("chunk_count", 0) > 0 or doc.get("stage") in {"chunking", "chunk_review", "ready_for_ingestion", "ingesting", "approval_for_prod", "ingesting_prod", "completed"}):
+        _mark_reindex_required(
+            workflow_id,
+            "Page reset after chunk generation; rechunk and reindex required",
+            metadata={"page_number": page_num},
+        )
+
+    return db.get_page(workflow_id, page_num)
+
+
+# =============================================================================
+# Chunk Routes (Chunk Review)
+# =============================================================================
+
+@app.get("/chunks/search")
+async def search_chunks_across_documents(
+    user: RequireSearch,
+    q: str = Query("", description="Keyword search within chunk text"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    include_excluded: bool = Query(False, description="Include excluded chunks"),
+    stage: Optional[DocumentStage] = Query(None, description="Optional document stage filter"),
+):
+    """Search chunks across all documents for KB maintainer workflows."""
+    # Tenant-scope via the owning document's instance (None = unrestricted admin).
+    chunks, total = db.search_chunks(
+        query=q,
+        limit=limit,
+        offset=offset,
+        include_excluded=include_excluded,
+        stage=stage.value if stage else None,
+        instances=_instance_scope_for_user(user),
+    )
+    return {
+        "items": chunks,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "query": q,
+        "include_excluded": include_excluded,
+        "stage": stage.value if stage else None,
+    }
+
+
+@app.get("/documents/{workflow_id}/chunks")
+async def list_chunks(workflow_id: str, user: RequireSearch, include_excluded: bool = False):
+    """Get all chunks for a document. SQLite-first for speed."""
+    _require_document_for_user(workflow_id, user)
+    return db.get_chunks(workflow_id, include_excluded=include_excluded)
+
+
+@app.get("/documents/{workflow_id}/chunks/{chunk_num}")
+async def get_chunk(workflow_id: str, user: RequireSearch, chunk_num: int = PathParam(..., ge=1, le=10000, description="Chunk number (1-indexed)")):
+    """Get a specific chunk. SQLite-first for speed."""
+    _require_document_for_user(workflow_id, user)
+    chunk = db.get_chunk(workflow_id, chunk_num)
+    if chunk:
+        return chunk
+
+    raise HTTPException(404, f"Chunk {chunk_num} not found")
+
+
+@app.patch("/documents/{workflow_id}/chunks/{chunk_num}")
+async def update_chunk(
+    workflow_id: str,
+    data: ChunkUpdate,
+    user: RequireReview,
+    chunk_num: int = PathParam(..., ge=1, le=10000, description="Chunk number (1-indexed)"),
+):
+    """Update a chunk (edit text, mark reviewed, exclude)."""
+    doc = _require_document_for_user(workflow_id, user)
+    old_chunk = db.get_chunk(workflow_id, chunk_num)
+    if not old_chunk:
+        raise HTTPException(404, f"Chunk {chunk_num} not found")
+
+    updated = db.update_chunk(
+        workflow_id,
+        chunk_num,
+        edited_text=data.edited_text,
+        is_reviewed=data.is_reviewed,
+        is_excluded=data.is_excluded,
+        reviewer_notes=data.reviewer_notes,
+    )
+    if not updated:
+        raise HTTPException(404, f"Chunk {chunk_num} not found")
+
+    # Log audits for changed fields
+    if data.edited_text is not None:
+        old_text = old_chunk.get("edited_text") or old_chunk.get("original_text", "")
+        _log_audit(
+            workflow_id=workflow_id,
+            action_type="chunk_edit",
+            entity_type="chunk",
+            entity_id=chunk_num,
+            field_name="edited_text",
+            old_value=old_text,
+            new_value=data.edited_text,
+        user=user,
+        )
+
+    if data.is_reviewed is not None:
+        _log_audit(
+            workflow_id=workflow_id,
+            action_type="chunk_edit",
+            entity_type="chunk",
+            entity_id=chunk_num,
+            field_name="is_reviewed",
+            old_value=old_chunk.get("is_reviewed", False),
+            new_value=data.is_reviewed,
+        user=user,
+        )
+
+    if data.is_excluded is not None:
+        _log_audit(
+            workflow_id=workflow_id,
+            action_type="chunk_edit",
+            entity_type="chunk",
+            entity_id=chunk_num,
+            field_name="is_excluded",
+            old_value=old_chunk.get("is_excluded", False),
+            new_value=data.is_excluded,
+        user=user,
+        )
+
+        # If excluding a chunk and document is completed (already ingested), remove from the vector index
+        if data.is_excluded and not old_chunk.get("is_excluded", False):
+            if doc and doc.get("stage") == "completed":
+                doc_id = doc.get("document_id")
+                if doc_id:
+                    vector_result = delete_single_chunk_from_index(doc_id, chunk_num)
+                    if vector_result.get("deleted"):
+                        _log_audit(
+                            workflow_id=workflow_id,
+                            action_type="chunk_removed_from_search",
+                            entity_type="chunk",
+                            entity_id=chunk_num,
+                            metadata={"vector_id": vector_result.get("chunk_id")},
+        user=user,
+                        )
+
+    if data.reviewer_notes is not None:
+        _log_audit(
+            workflow_id=workflow_id,
+            action_type="chunk_edit",
+            entity_type="chunk",
+            entity_id=chunk_num,
+            field_name="reviewer_notes",
+            old_value=old_chunk.get("reviewer_notes"),
+            new_value=data.reviewer_notes,
+        user=user,
+        )
+
+    if data.edited_text is not None or data.is_excluded is not None:
+        _mark_reindex_required(
+            workflow_id,
+            "Chunk content changed; search index is out of sync",
+            metadata={"chunk_number": chunk_num},
+        )
+
+    return db.get_chunk(workflow_id, chunk_num)
+
+
+@app.post("/documents/{workflow_id}/chunks/{chunk_num}/reset")
+async def reset_chunk(
+    workflow_id: str,
+    user: RequireReview,
+    chunk_num: int = PathParam(..., ge=1, le=10000, description="Chunk number (1-indexed)"),
+):
+    """Reset chunk to original text."""
+    _require_document_for_user(workflow_id, user)
+    old_chunk = db.get_chunk(workflow_id, chunk_num)
+    if not old_chunk:
+        raise HTTPException(404, f"Chunk {chunk_num} not found")
+    db.reset_chunk(workflow_id, chunk_num)
+
+    # Log reset action
+    _log_audit(
+        workflow_id=workflow_id,
+        action_type="chunk_reset",
+        entity_type="chunk",
+        entity_id=chunk_num,
+        field_name="edited_text",
+        old_value=old_chunk.get("edited_text") if old_chunk else None,
+        new_value=None,
+        metadata={"reset_to": "original_text"},
+        user=user,
+    )
+    _mark_reindex_required(
+        workflow_id,
+        "Chunk reset; search index is out of sync",
+        metadata={"chunk_number": chunk_num},
+    )
+
+    return db.get_chunk(workflow_id, chunk_num)
+
+
+# =============================================================================
+# Export Routes
+# =============================================================================
+
+@app.get("/documents/{workflow_id}/export/markdown")
+async def export_markdown(workflow_id: str, user: RequireSearch):
+    """Export document as combined markdown."""
+    doc = _require_document_for_user(workflow_id, user)
+
+    pages = db.get_pages(workflow_id)
+    content = []
+    for page in pages:
+        md = (
+            page.get("edited_translation")
+            or page.get("translated_markdown")
+            or page.get("edited_markdown")
+            or page.get("original_markdown", "")
+        )
+        content.append(f"<!-- Page {page.get('page_number')} -->\n\n{md}")
+
+    return {
+        "filename": doc.get("filename", "").replace(".pdf", ".md"),
+        "content": "\n\n---\n\n".join(content)
+    }
+
+
+@app.get("/documents/{workflow_id}/export/chunks")
+async def export_chunks(workflow_id: str, user: RequireSearch, include_excluded: bool = False):
+    """Export chunks as JSON for vector-index ingestion."""
+    doc = _require_document_for_user(workflow_id, user)
+
+    chunks = db.get_chunks(workflow_id, include_excluded=include_excluded)
+    doc_id = doc.get("document_id", "")
+    filename = doc.get("filename", "")
+    name = filename.replace(".pdf", "")
+
+    records = []
+    for chunk in chunks:
+        text = chunk.get("edited_text") or chunk.get("original_text", "")
+        chunk_num = chunk.get("chunk_number", 0)
+
+        records.append({
+            "_id": hashlib.md5(f"{doc_id}_{chunk_num}_{text[:50]}".encode()).hexdigest(),
+            "doc_id": doc_id,
+            "name": name,
+            "text": text,
+            "chunk_num": chunk_num,
+            "token_count": chunk.get("token_count", 0),
+            "source": "docs-pipeline"
+        })
+
+    return records
+
+
+# =============================================================================
+# PDF Serving
+# =============================================================================
+
+def _inline_content_disposition(filename: str) -> str:
+    """Build a latin-1-safe Content-Disposition header for inline file display."""
+    # Strip CR/LF/NUL so a crafted filename cannot inject response headers.
+    safe_name = (filename or "document.pdf").replace('"', "'")
+    safe_name = "".join(ch for ch in safe_name if ch not in "\r\n\0").strip() or "document.pdf"
+    try:
+        safe_name.encode("latin-1")
+        return f'inline; filename="{safe_name}"'
+    except UnicodeEncodeError:
+        ascii_name = safe_name.encode("ascii", "ignore").decode("ascii").strip() or "document.pdf"
+        encoded_name = quote(safe_name)
+        return f"inline; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded_name}"
+
+
+@app.get("/documents/{workflow_id}/pdf")
+async def get_document_pdf(workflow_id: str, user: RequireSearch):
+    """
+    Get the original PDF file for a document.
+    Returns the PDF as a streaming response. SQLite-first for speed.
+    """
+    # SQLite-first - instant lookup, tenant-scoped (404 hides other tenants).
+    doc = _require_document_for_user(workflow_id, user)
+
+    filepath = doc.get("filepath", "")
+    filename = doc.get("filename", "document.pdf")
+
+    if not filepath:
+        raise HTTPException(404, f"Document has no PDF path: {workflow_id}")
+
+    try:
+        if filepath.startswith("minio://"):
+            # Parse minio://bucket/object/path
+            path = filepath.replace("minio://", "")
+            parts = path.split("/", 1)
+            bucket = parts[0]
+            object_name = parts[1] if len(parts) > 1 else ""
+
+            # Get object from MinIO
+            response = minio_client.get_object(bucket, object_name)
+
+            return StreamingResponse(
+                response,
+                media_type="application/pdf",
+                headers={
+                    "Content-Disposition": _inline_content_disposition(filename)
+                }
+            )
+        else:
+            # Local file
+            file_path = Path(filepath)
+            if not file_path.exists():
+                raise HTTPException(404, f"PDF file not found: {filepath}")
+
+            def file_iterator():
+                with open(file_path, "rb") as f:
+                    yield from f
+
+            return StreamingResponse(
+                file_iterator(),
+                media_type="application/pdf",
+                headers={
+                    "Content-Disposition": _inline_content_disposition(filename)
+                }
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Log the actual error server-side but don't expose details to client
+        logging.error(f"PDF serving error for {workflow_id}: {str(e)}")
+        raise HTTPException(500, "Error serving PDF file")
+
+
+@app.get("/provenance/chunk")
+async def resolve_provenance_chunk(
+    request: Request,
+    user: RequireSearch,
+    doc_id: Optional[str] = Query(None, description="workflow slug, SQLite document_id, or legacy vector-index doc_id"),
+    chunk_num: Optional[int] = Query(None, alias="chunk_num"),
+):
+    """
+    Resolve a retrieved chunk to workflow metadata and maintainer URLs.
+
+    Used by chat/retrieval clients when search hits lack workflow_id (legacy rows) or for enrichment.
+    """
+    from ..activities import _infer_section
+
+    resolved_doc_id = doc_id
+    resolved_chunk_num = chunk_num
+
+    if not resolved_doc_id or resolved_chunk_num is None:
+        raise HTTPException(400, "Provide doc_id and chunk_num")
+
+    provenance = db.resolve_chunk_provenance(doc_id=resolved_doc_id, chunk_num=int(resolved_chunk_num))
+    if not provenance:
+        raise HTTPException(404, "Chunk provenance not found")
+
+    workflow_id = provenance["workflow_id"]
+    # Tenant scope: a restricted caller may not resolve another tenant's chunk.
+    _require_document_for_user(workflow_id, user)
+    chunk = db.get_chunk(workflow_id, int(resolved_chunk_num))
+    if chunk:
+        text = chunk.get("edited_text") or chunk.get("original_text") or ""
+        provenance["section"] = _infer_section(text, chunk.get("section_title"))
+        provenance["excerpt"] = text[:320] + ("..." if len(text) > 320 else "")
+
+    links = _build_provenance_links(workflow_id, int(resolved_chunk_num), request)
+    return {**provenance, **links}
+
+
+@app.get("/documents/{workflow_id}/qdrant")
+async def get_document_qdrant_status(
+    workflow_id: str,
+    user: RequireSearch,
+    index_name: str = Query("documents-index"),
+):
+    """Return vector-index status/chunks for a document."""
+    from ..vector_store import get_default_index_name, get_vector_store
+
+    doc = _require_document_for_user(workflow_id, user)
+
+    index_doc_id = doc["document_id"]
+    resolved_index = index_name if index_name and index_name != "documents-index" else get_default_index_name()
+    store = get_vector_store()
+    backend = store.backend
+
+    try:
+        raw_hits = store.list_by_doc_id(resolved_index, index_doc_id, limit=1000)
+    except Exception as exc:
+        raise HTTPException(
+            503,
+            f"Vector backend '{backend}' unavailable for index status: {exc}",
+        ) from exc
+
+    hits = []
+    for hit in raw_hits:
+        normalized_hit = dict(hit)
+        chunk_num = normalized_hit.get("chunk_num")
+        normalized_hit.setdefault(
+            "_id",
+            f"{normalized_hit.get('doc_id', index_doc_id)}:{chunk_num if chunk_num is not None else 'unknown'}",
+        )
+        normalized_hit.setdefault("chunk_number", chunk_num)
+        hits.append(normalized_hit)
+    sqlite_chunks = db.get_chunks(workflow_id, include_excluded=True)
+    status = {
+        "workflow_id": workflow_id,
+        "index_name": resolved_index,
+        "backend": backend,
+        "index_doc_id": index_doc_id,
+        "doc_id": index_doc_id,
+        "sqlite_chunk_count": len([c for c in sqlite_chunks if not c.get("is_excluded")]),
+        "indexed_chunk_count": len(hits),
+        "status": "indexed" if hits else "missing",
+        "hits": hits,
+    }
+    db.upsert_document_index_status(
+        workflow_id=workflow_id,
+        index_name=resolved_index,
+        doc_id=index_doc_id,
+        chunk_count_indexed=len(hits),
+        last_verified_at=datetime.utcnow().isoformat(),
+        status=status["status"],
+        details={"sqlite_chunk_count": status["sqlite_chunk_count"], "backend": backend},
+    )
+    return status
+
+
+@app.get("/documents/{workflow_id}/qdrant/chunks")
+async def list_document_qdrant_chunks(
+    workflow_id: str,
+    user: RequireSearch,
+    index_name: str = Query("documents-index"),
+):
+    result = await get_document_qdrant_status(workflow_id, user, index_name=index_name)
+    return result["hits"]
+
+
+@app.get("/indexes/{index_name}/settings")
+async def get_vector_index_settings(index_name: str, user: RequireSearch):
+    from ..vector_store import get_vector_store
+
+    try:
+        return get_vector_store().get_settings(index_name)
+    except Exception as exc:
+        raise HTTPException(404, f"Index '{index_name}' settings unavailable: {exc}") from exc
+
+
+@app.get("/indexes/{index_name}/stats")
+async def get_vector_index_stats(index_name: str, user: RequireSearch):
+    from ..vector_store import get_vector_store
+
+    try:
+        return get_vector_store().get_stats(index_name)
+    except Exception as exc:
+        raise HTTPException(404, f"Index '{index_name}' stats unavailable: {exc}") from exc
+
+
+@app.get("/indexes/summary")
+async def get_vector_indexes_summary(
+    user: RequireSearch,
+    x_include_demo: Optional[str] = Header(None, alias="X-Include-Demo"),
+    x_include_disabled: Optional[str] = Header(None, alias="X-Include-Disabled"),
+):
+    """Summarize index coverage from SQLite-backed index status plus live vector-store stats."""
+    from ..vector_store import get_vector_store
+
+    include_demo = x_include_demo and x_include_demo.lower() == "true"
+    include_disabled = x_include_disabled and x_include_disabled.lower() == "true"
+    summaries = db.list_index_summaries(
+        include_demo=include_demo,
+        include_disabled=include_disabled,
+    )
+    if not summaries:
+        return []
+
+    store = get_vector_store()
+    backend = store.backend
+
+    results = []
+    for summary in summaries:
+        live_stats = None
+        live_error = None
+        try:
+            live_stats = store.get_stats(summary["index_name"])
+        except Exception as exc:
+            live_error = str(exc)
+        results.append({
+            **summary,
+            "backend": backend,
+            "live_stats": live_stats,
+            "live_error": live_error,
+        })
+    return results
+
+
+
+
+# =============================================================================
+# Health
+# =============================================================================
+
+@app.get("/health")
+async def health():
+    """Health check."""
+    return {
+        "status": "ok",
+        "temporal_connected": temporal_client is not None
+    }
+
+
+# =============================================================================
+# Vector index (passage schema)
+# =============================================================================
+
+@app.get("/admin/index/schema")
+async def get_vector_index_schema(
+    user: RequireAdmin,
+    index_name: str = Query("documents-index", description="Vector index / collection name"),
+):
+    """Report the live vector index's field schema vs. the canonical passage schema."""
+    from ..activities import _passage_schema_field_names
+    from ..vector_store import get_default_index_name, get_vector_store
+
+    resolved = index_name or get_default_index_name()
+    store = get_vector_store()
+    try:
+        index_settings = store.get_settings(resolved)
+    except Exception as exc:
+        raise HTTPException(404, f"Index '{resolved}' not found: {exc}") from exc
+
+    field_names = sorted(
+        f.get("name")
+        for f in (index_settings.get("allFields") or [])
+        if isinstance(f, dict) and f.get("name")
+    )
+    canonical_fields = sorted(_passage_schema_field_names())
+    missing_fields = sorted(set(canonical_fields) - set(field_names))
+
+    return {
+        "index_name": resolved,
+        "backend": store.backend,
+        "fields": field_names,
+        "canonical_passage_fields": canonical_fields,
+        "missing_canonical_fields": missing_fields,
+    }
+
+
+@app.post("/admin/index/create")
+async def create_vector_index(
+    user: RequireAdmin,
+    index_name: str = Query("documents-index", description="Vector index / collection name"),
+    recreate_if_exists: bool = Query(False, description="If true, delete existing index and create with passage schema"),
+):
+    """Create the vector index/collection — a cosine Qdrant collection sized from EMBEDDING_VECTOR_SIZE."""
+    _ = user
+    from ..vector_store import get_default_index_name, get_vector_store
+
+    resolved = index_name or get_default_index_name()
+    store = get_vector_store()
+    result = store.ensure_collection(resolved, recreate=recreate_if_exists)
+    return {
+        "index_name": resolved,
+        "backend": store.backend,
+        **result,
+    }
+
+
+@app.get("/admin/ingest-info")
+async def get_ingest_info(user: RequireAdmin):
+    """
+    Return what the running container's ingest code would send to the vector index.
+    Use this to verify the API/worker image has the passage schema (text_for_embedding, etc.).
+    """
+    from ..activities import _passage_schema_field_names, _prepare_records
+
+    passage_fields = sorted(_passage_schema_field_names())
+    has_text_for_embedding = "text_for_embedding" in set(passage_fields)
+    # One fake chunk to see exact record shape the worker would send
+    fake_chunk = {
+        "chunk_number": 0,
+        "original_text": "Sample text.",
+        "edited_text": None,
+        "is_excluded": False,
+        "token_count": 2,
+        "page_start": 1,
+        "page_end": 1,
+    }
+    sample_records = _prepare_records(
+        document_id="debug-document-id",
+        filename="debug.pdf",
+        chunks=[fake_chunk],
+        workflow_id="doc-debugsample12",
+    )
+    sample_record_keys = sorted(sample_records[0].keys()) if sample_records else []
+    return {
+        "passage_schema_fields": passage_fields,
+        "has_text_for_embedding": has_text_for_embedding,
+        "sample_record_keys": sample_record_keys,
+        "sample_has_passage_prefix": (
+            sample_records[0].get("text_for_embedding", "").startswith("passage:")
+            if sample_records else False
+        ),
+    }
+
+
+@app.post("/documents/reconcile")
+async def reconcile_document_states(user: RequirePipeline):
+    """
+    Reconcile SQLite document states with Temporal workflow states.
+
+    This endpoint checks all documents in processing/review stages and updates
+    SQLite if the Temporal workflow has terminated or failed. This fixes
+    inconsistencies caused by external workflow termination or worker crashes.
+
+    Returns a summary of documents checked and updated.
+    """
+    # Stages that indicate an active workflow (not terminal states)
+    active_stages = [
+        'ocr_processing', 'ocr_review',
+        'translation_processing', 'translation_review',
+        'chunking', 'chunk_review',
+        'ready_for_ingestion', 'ingesting'
+    ]
+
+    # Scope to caller's instances (None = unrestricted bypass / all tenants).
+    docs = db.list_documents(
+        limit=1000,
+        include_demo=True,
+        include_disabled=True,
+        instances=_instance_scope_for_user(user),
+    )
+    active_docs = [d for d in docs if d.get('stage') in active_stages]
+
+    results = {
+        "checked": len(active_docs),
+        "updated": 0,
+        "still_running": 0,
+        "details": []
+    }
+
+    for doc in active_docs:
+        detail = await _reconcile_single_document(doc)
+        results["details"].append(detail)
+        if detail.get("action") == "stage_synced" or detail.get("action") == "marked_failed":
+            results["updated"] += 1
+        elif detail.get("action") == "no_change":
+            results["still_running"] += 1
+
+    return results
+
+
+@app.get("/pipeline/stages")
+async def get_pipeline_stages(user: RequireSearch):
+    """Get the pipeline stages for UI stepper display.
+
+    The PROD stages are omitted when DISABLE_PROD_SETTING is on, so the stepper
+    shows the pipeline the documents will actually follow.
+    """
+    prod_disabled = prod_stage_disabled()
+    return [
+        {"id": stage[0], "label": stage[1], "description": stage[2]}
+        for stage in PIPELINE_STAGES
+        if not (prod_disabled and stage[0] in PROD_ONLY_STAGES)
+    ]
+
+
+# =============================================================================
+# Settings Routes
+# =============================================================================
+
+@app.get("/settings/search", response_model=SearchSettings)
+async def get_search_settings(user: RequireSearch):
+    """
+    Get current search settings.
+
+    Read-only search configuration. Gated with ``RequireSearch`` (not
+    ``RequireAdmin``) because any search-capable user needs these defaults
+    (index name, method, limits) to drive the search UI; mutating the
+    settings (PUT / reset) still requires ``RequireAdmin``.
+
+    Returns the current search configuration including:
+    - searchMethod: TENSOR, LEXICAL, or HYBRID
+    - limit: Number of results to return
+    - alpha: Balance between lexical (0) and semantic (1) for hybrid search
+    - rankingMethod: rrf or normalize_linear for hybrid search
+    - showHighlights: Whether to show highlighted matches
+    - efSearch: HNSW search accuracy parameter
+    """
+    return db.get_search_settings()
+
+
+@app.put("/settings/search", response_model=SearchSettings)
+async def update_search_settings_endpoint(settings: SearchSettingsUpdate, user: RequireAdmin):
+    """
+    Update search settings.
+
+    Only provided fields will be updated. Changes are logged to the audit trail.
+    """
+    _ = user
+    # Convert to dict, excluding None values
+    updates = {k: v for k, v in settings.model_dump().items() if v is not None}
+
+    if not updates:
+        raise HTTPException(400, "No settings provided to update")
+
+    return db.update_search_settings(updates)
+
+
+@app.get("/settings/search/audit", response_model=SettingsAuditResponse)
+async def get_search_settings_audit(
+    user: RequireAdmin,
+    limit: int = Query(50, le=200),
+    offset: int = 0
+):
+    """
+    Get audit trail for search settings changes.
+
+    Shows all historical changes to search settings with old/new values.
+    """
+    logs = db.get_settings_audit_logs(limit=limit, offset=offset)
+    total = db.get_settings_audit_count()
+
+    return SettingsAuditResponse(
+        logs=logs,
+        total=total,
+        limit=limit,
+        offset=offset
+    )
+
+
+@app.post("/settings/search/reset", response_model=SearchSettings)
+async def reset_search_settings(user: RequireAdmin):
+    """
+    Reset search settings to defaults.
+
+    Resets all search settings to their default values:
+    - searchMethod: HYBRID
+    - limit: 10
+    - alpha: 0.7
+    - rankingMethod: rrf
+    - showHighlights: true
+    - efSearch: 256
+    """
+    _ = user
+    defaults = {
+        "searchMethod": "HYBRID",
+        "limit": 12,
+        "alpha": 0.6,
+        "rankingMethod": "rrf",
+        "showHighlights": True,
+        "efSearch": 256,
+        "indexName": "documents-index",
+        "candidateCap": 120,
+        "candidateMultiplier": 10,
+        "maxChunksPerDoc": 2,
+        "useE5Prefix": True,
+        "excludeReference": True,
+        "queryExpansionProfile": "gu-v1",
+        "rerankMode": "none",
+        "hybridRrfK": 60,
+    }
+    return db.update_search_settings(defaults)

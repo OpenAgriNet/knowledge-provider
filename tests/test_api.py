@@ -815,7 +815,7 @@ class TestErrorHandling:
 class TestPdfHeaders:
     @pytest.mark.unit
     def test_inline_content_disposition_unicode_filename(self):
-        from pipeline.api import _inline_content_disposition
+        from pipeline.api.api import _inline_content_disposition
 
         header = _inline_content_disposition("રબર મેટ.pdf")
         header.encode("latin-1")
@@ -824,7 +824,7 @@ class TestPdfHeaders:
 
     @pytest.mark.unit
     def test_inline_content_disposition_strips_crlf(self):
-        from pipeline.api import _inline_content_disposition
+        from pipeline.api.api import _inline_content_disposition
 
         header = _inline_content_disposition("evil.pdf\r\nX-Injected: yes")
         assert "\r" not in header

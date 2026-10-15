@@ -93,7 +93,7 @@ def test_client(db_connection, mock_temporal_client, mock_minio_client):
 
     from fastapi.testclient import TestClient
 
-    from pipeline import api
+    from pipeline.api import api
 
     # Patch the global clients
     api.temporal_client = mock_temporal_client

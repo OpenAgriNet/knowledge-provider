@@ -243,7 +243,8 @@ def asgi_client(temp_db_path, mock_temporal_client, mock_minio_client):
 
     from fastapi.testclient import TestClient
 
-    from pipeline import api, db, scheme_catalog
+    from pipeline import db, scheme_catalog
+    from pipeline.api import api
 
     db.DB_PATH = temp_db_path
     db.init_db()

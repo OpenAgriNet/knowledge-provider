@@ -338,8 +338,8 @@ def test_upsert_does_not_reassign_instance(db_connection):
 
 def test_api_helpers_hide_cross_tenant_mutations(db_connection, monkeypatch):
     """Mutation helpers must 404 (not 403) for other tenants."""
-    import pipeline.api as api
     import pipeline.db as db_mod
+    from pipeline.api import api
 
     monkeypatch.setattr(api, "db", db_mod)
     db_mod.upsert_document(

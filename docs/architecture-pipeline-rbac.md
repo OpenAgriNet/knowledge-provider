@@ -403,7 +403,7 @@ flowchart TB
 | Stages enum | `pipeline/models.py` → `DocumentStage` |
 | Workflow + signals | `pipeline/workflows.py` |
 | DEV ingest / PROD promote activities | `pipeline/activities.py` |
-| Approve prod API | `pipeline/api/__init__.py` → `POST .../approve-prod` |
+| Approve prod API | `pipeline/api/api.py` → `POST .../approve-prod` |
 | Permissions | `pipeline/auth/permissions.py` |
 | Groups / super_admin | `pipeline/auth/groups.py` |
 | Tenancy | `pipeline/auth/tenancy.py` |
