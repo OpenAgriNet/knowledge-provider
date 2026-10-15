@@ -112,6 +112,34 @@ def test_client(db_connection, mock_temporal_client, mock_minio_client):
         api.app.router.lifespan_context = original
 
 
+class CapturingVectorStore:
+    """Stands in for the vector store: records the kwargs of every search call
+    and answers with whatever ``hits`` the test put on it."""
+
+    backend = "qdrant"
+
+    def __init__(self):
+        self.captured: dict = {}
+        self.hits: list[dict] = []
+
+    def search(self, **kwargs):
+        from datetime import date
+
+        self.captured.update(kwargs)
+        valid_on = kwargs.get("valid_on")
+        if valid_on is None and kwargs.get("apply_validity", True):
+            valid_on = date.today().isoformat()
+        return {"hits": list(self.hits), "valid_on": valid_on}
+
+
+@pytest.fixture
+def capturing_store(monkeypatch):
+    """The API's vector store swapped for a CapturingVectorStore."""
+    store = CapturingVectorStore()
+    monkeypatch.setattr("pipeline.vector_store.get_vector_store", lambda: store)
+    return store
+
+
 @pytest.fixture
 def sample_pdf_content():
     """Sample PDF content for upload tests."""
