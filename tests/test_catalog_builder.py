@@ -251,3 +251,36 @@ class TestProviderNaming:
             "id": "mh-advisory.example.net",
             "descriptor": {"code": "mh-advisory.example.net", "name": "Advice (Maharashtra)"},
         }
+
+
+class TestProviderIdOverrides:
+    NAMING = ProviderNaming(
+        provider_id_overrides={
+            "ka": {"advisory": "advisory.ka.com", "scheme": "scheme.ka.com"},
+            "tn": {"scheme": "scheme.tn.com"},
+        }
+    )
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("kind,provider_id", [("advisory", "advisory.ka.com"), ("scheme", "scheme.ka.com")])
+    def test_overridden_group_uses_its_own_provider_id(self, kind, provider_id):
+        catalog = build_catalog(kind, Group(code="ka", name="Karnataka"), self.NAMING)
+
+        assert catalog["provider"]["id"] == provider_id
+        assert catalog["provider"]["descriptor"]["code"] == provider_id
+        assert catalog["id"].startswith("ka-")
+
+    @pytest.mark.unit
+    def test_a_kind_without_an_override_falls_back_to_the_template(self):
+        catalog = build_catalog("advisory", Group(code="tn", name="Tamil Nadu"), self.NAMING)
+
+        assert catalog["provider"]["id"] == "advisory.tn.provider.oan.dev"
+
+    @pytest.mark.unit
+    def test_group_without_overrides_uses_the_defaults(self):
+        catalog = build_catalog("scheme", MAHARASHTRA, self.NAMING)
+
+        assert catalog["provider"] == {
+            "id": "scheme.mh.provider.oan.dev",
+            "descriptor": {"code": "scheme.mh.provider.oan.dev", "name": "Maharashtra Schemes from documents"},
+        }

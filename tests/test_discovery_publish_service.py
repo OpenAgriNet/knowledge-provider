@@ -466,7 +466,7 @@ class TestDiscoveryPublishServiceGroupProvider:
 
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
         monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
-        _use_group_providers(monkeypatch, tmp_path, '["MH"]')
+        _use_group_providers(monkeypatch, tmp_path, '{}')
         service = DiscoveryPublishService()
         client = _client_returning(
             _on_publish_response("mh-cat-oan-knowledge-provider-advisories", "ACCEPTED")
@@ -492,32 +492,49 @@ class TestDiscoveryPublishServiceGroupProvider:
         assert result["result_status"] == "ACCEPTED"
 
     @pytest.mark.unit
-    def test_unconfigured_group_is_skipped_without_an_http_call(self, monkeypatch, tmp_path):
-        from pipeline.discovery_publish_service import (
-            SKIP_GROUP_PROVIDER_NOT_CONFIGURED,
-            DiscoveryPublishService,
-        )
+    def test_group_without_an_override_publishes_under_the_default_provider(self, monkeypatch, tmp_path):
+        from pipeline.discovery_publish_service import DiscoveryPublishService
 
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
         monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
-        _use_group_providers(monkeypatch, tmp_path, '["mh"]')
+        _use_group_providers(monkeypatch, tmp_path, '{"ka": {"scheme": "scheme.ka.com"}}')
         service = DiscoveryPublishService()
-        client = MagicMock()
+        client = _client_returning(
+            _on_publish_response("mh-cat-oan-knowledge-provider-schemes", "ACCEPTED")
+        )
 
         with patch("pipeline.discovery_publish_service.httpx.Client", return_value=client):
-            result = service.publish(transaction_id="txn-ka", document_kind="advisory", group="ka")
+            result = service.publish(transaction_id="txn-mh", document_kind="scheme", group="mh")
 
-        client.post.assert_not_called()
-        assert result["skipped"] is True
-        assert result["skip_reason"] == SKIP_GROUP_PROVIDER_NOT_CONFIGURED
-        assert result["envelope"] is None
+        catalog = client.post.call_args.kwargs["json"]["message"]["catalogs"][0]
+        assert catalog["provider"]["id"] == "scheme.mh.provider.oan.dev"
+        assert result["skipped"] is False
 
     @pytest.mark.unit
-    def test_unmapped_kind_wins_over_an_unconfigured_group(self, monkeypatch, tmp_path):
-        from pipeline.discovery_publish_service import (
-            SKIP_UNMAPPED_KIND,
-            DiscoveryPublishService,
+    def test_overridden_group_publishes_under_its_configured_provider(self, monkeypatch, tmp_path):
+        from pipeline.discovery_publish_service import DiscoveryPublishService
+
+        monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
+        monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
+        _use_group_providers(monkeypatch, tmp_path, '{"KA": {"scheme": "scheme.ka.com"}}')
+        service = DiscoveryPublishService()
+        client = _client_returning(
+            _on_publish_response("ka-cat-oan-knowledge-provider-schemes", "ACCEPTED")
         )
+
+        with patch("pipeline.discovery_publish_service.httpx.Client", return_value=client):
+            service.publish(transaction_id="txn-ka", document_kind="scheme", group="ka")
+
+        catalog = client.post.call_args.kwargs["json"]["message"]["catalogs"][0]
+        assert catalog["id"] == "ka-cat-oan-knowledge-provider-schemes"
+        assert catalog["provider"] == {
+            "id": "scheme.ka.com",
+            "descriptor": {"code": "scheme.ka.com", "name": "Karnataka Schemes from documents"},
+        }
+
+    @pytest.mark.unit
+    def test_unmapped_kind_is_skipped_for_a_group(self, monkeypatch):
+        from pipeline.discovery_publish_service import DiscoveryPublishService
 
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
         monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
@@ -527,7 +544,7 @@ class TestDiscoveryPublishServiceGroupProvider:
         result = service.publish(transaction_id="txn-doc", document_kind="document", group="ka")
 
         assert result["skipped"] is True
-        assert result["skip_reason"] == SKIP_UNMAPPED_KIND
+        assert result["envelope"] is None
 
     @pytest.mark.unit
     def test_no_group_publishes_under_the_shared_provider(self, monkeypatch, tmp_path):
@@ -535,7 +552,7 @@ class TestDiscoveryPublishServiceGroupProvider:
 
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
         monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
-        _use_group_providers(monkeypatch, tmp_path, '["mh"]')
+        _use_group_providers(monkeypatch, tmp_path, '{}')
         service = DiscoveryPublishService()
         client = _client_returning(
             _on_publish_response("cat-oan-knowledge-provider-advisories", "ACCEPTED")
@@ -563,7 +580,7 @@ class TestDiscoveryPublishServiceGroupProvider:
         monkeypatch.setenv("NETWORK_PROVIDER_ID_TEMPLATE", "{kind}.{instance}.provider.oan.prod")
         monkeypatch.setenv("NETWORK_GROUP_PROVIDER_NAME_TEMPLATE", "{group_name} - {provider_name}")
         monkeypatch.setenv("NETWORK_SCHEMES_PROVIDER_NAME", "Government schemes")
-        _use_group_providers(monkeypatch, tmp_path, '["mh"]')
+        _use_group_providers(monkeypatch, tmp_path, '{}')
         service = DiscoveryPublishService()
         client = _client_returning(
             _on_publish_response("mh-cat-oan-knowledge-provider-schemes", "ACCEPTED")
