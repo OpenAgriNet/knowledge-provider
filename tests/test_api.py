@@ -501,6 +501,106 @@ class TestSearchValidity:
         assert "YYYY-MM-DD" in response.json()["detail"]
 
 
+class TestSearchGroup:
+    """`group` narrows a search to one group's chunks (story #202).
+
+    The API says `group`; the store and the chunk payload say `instance`.
+    The endpoint is the only place that maps one name to the other.
+    """
+
+    @staticmethod
+    def _capturing_store(monkeypatch, captured, hits=None):
+        class FakeStore:
+            backend = "qdrant"
+
+            def search(self, **kwargs):
+                captured.update(kwargs)
+                return {"hits": hits or [], "valid_on": kwargs.get("valid_on")}
+
+        monkeypatch.setattr("pipeline.vector_store.get_vector_store", lambda: FakeStore())
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_passes_the_group_to_the_store_as_instance(self, test_client, monkeypatch):
+        captured = {}
+        self._capturing_store(monkeypatch, captured)
+
+        response = test_client.post("/search", json={"query": "kisan", "group": "mh"})
+
+        assert response.status_code == 200
+        assert captured["instance"] == "mh"
+        assert response.json()["effective_config"]["group"] == "mh"
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    @pytest.mark.parametrize("raw", ["MH", "  mh ", " Mh\n"])
+    def test_normalises_case_and_whitespace(self, test_client, monkeypatch, raw):
+        captured = {}
+        self._capturing_store(monkeypatch, captured)
+
+        response = test_client.post("/search", json={"query": "kisan", "group": raw})
+
+        assert captured["instance"] == "mh"
+        assert response.json()["effective_config"]["group"] == "mh"
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    @pytest.mark.parametrize("body", [
+        {"query": "kisan"},
+        {"query": "kisan", "group": ""},
+        {"query": "kisan", "group": "   "},
+        {"query": "kisan", "group": None},
+    ])
+    def test_absent_or_empty_group_means_no_filter(self, test_client, monkeypatch, body):
+        captured = {}
+        self._capturing_store(monkeypatch, captured)
+
+        response = test_client.post("/search", json=body)
+
+        assert response.status_code == 200
+        assert captured["instance"] is None
+        assert response.json()["effective_config"]["group"] is None
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    @pytest.mark.parametrize("bad", [["mh"], 7, {"code": "mh"}])
+    def test_rejects_a_non_string_group(self, test_client, monkeypatch, bad):
+        captured = {}
+        self._capturing_store(monkeypatch, captured)
+
+        response = test_client.post("/search", json={"query": "kisan", "group": bad})
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "group must be a string"
+        assert captured == {}, "the store must not be called for a bad request"
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_unknown_group_is_an_empty_success(self, test_client, monkeypatch):
+        self._capturing_store(monkeypatch, {}, hits=[])
+
+        response = test_client.post("/search", json={"query": "kisan", "group": "xx"})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["hits"] == []
+        assert body["final_count"] == 0
+        assert body["effective_config"]["group"] == "xx"
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_group_composes_with_include_expired(self, test_client, monkeypatch):
+        captured = {}
+        self._capturing_store(monkeypatch, captured)
+
+        test_client.post(
+            "/search", json={"query": "kisan", "group": "mh", "include_expired": True}
+        )
+
+        assert captured["instance"] == "mh"
+        assert captured["apply_validity"] is False
+
+
 class TestPageEndpoints:
     """Tests for page operations."""
 

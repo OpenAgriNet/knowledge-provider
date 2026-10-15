@@ -169,6 +169,13 @@ def _rerank_hits(query: str, hits: list[dict], rerank_mode: str) -> list[dict]:
 
 
 
+def _requested_group(payload: dict) -> str | None:
+    raw = payload.get("group")
+    if raw is not None and not isinstance(raw, str):
+        raise HTTPException(400, "group must be a string")
+    return (raw or "").strip().lower() or None
+
+
 @router.post("/search")
 async def run_search(payload: dict, user: RequireSearch):
     from ..vector_store import get_default_index_name, get_vector_store
@@ -220,6 +227,7 @@ async def run_search(payload: dict, user: RequireSearch):
             valid_on = document_validity.parse_day(valid_on, "valid_on")
         except document_validity.DocumentValidityError as exc:
             raise HTTPException(400, str(exc)) from None
+    group = _requested_group(payload)
     expanded_query = _expand_query(query, query_expansion_profile)
     # Qdrant embeddings apply E5 prefixes internally; don't pre-prefix here.
     search_query = expanded_query
@@ -241,6 +249,7 @@ async def run_search(payload: dict, user: RequireSearch):
             ef_search=ef_search,
             apply_validity=not include_expired,
             valid_on=valid_on,
+            instance=group,
         )
     except Exception as error:
         raise HTTPException(400, f"Vector search failed ({backend}): {error}") from error
@@ -289,6 +298,7 @@ async def run_search(payload: dict, user: RequireSearch):
             "rerank_mode": rerank_mode,
             "apply_validity": not include_expired,
             "valid_on": result.get("valid_on"),
+            "group": group,
             "filter_string": None,
         },
         "candidate_count": len(hits),
