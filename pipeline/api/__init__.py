@@ -8,11 +8,8 @@ import asyncio
 import hashlib
 import json
 import logging
-import math
 import os
-import re
 import time
-from collections import Counter
 from contextlib import asynccontextmanager
 from datetime import datetime
 from io import BytesIO
@@ -23,7 +20,8 @@ from typing import Optional
 try:
     from dotenv import load_dotenv
 
-    _env_path = Path(__file__).resolve().parents[1] / ".env"
+    # parents[0] = pipeline/api, [1] = pipeline, [2] = repo root
+    _env_path = Path(__file__).resolve().parents[2] / ".env"
     if _env_path.is_file():
         load_dotenv(_env_path, override=False)
 except Exception:
@@ -42,9 +40,9 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from temporalio.client import Client, WorkflowFailureError
 
-from . import db, document_validity, scheme_catalog
-from .auth.config import load_auth_config, validate_auth_config
-from .auth.deps import (
+from .. import db, document_validity, scheme_catalog
+from ..auth.config import load_auth_config, validate_auth_config
+from ..auth.deps import (
     CurrentUser,
     RequireAdmin,
     RequireApproveIngestion,
@@ -54,22 +52,22 @@ from .auth.deps import (
     RequireSearch,
     RequireUpload,
 )
-from .auth.email_otp import (
+from ..auth.email_otp import (
     exchange_authorization_code,
     normalize_email,
     refresh_tokens,
     send_otp,
     verify_otp,
 )
-from .auth.keycloak_admin import (
+from ..auth.keycloak_admin import (
     list_access_options,
     list_realm_users,
     provision_user,
     set_user_access,
 )
-from .auth.models import AuthUser
-from .auth.permissions import Permission
-from .auth.tenancy import (
+from ..auth.models import AuthUser
+from ..auth.permissions import Permission
+from ..auth.tenancy import (
     PORTAL_INSTANCE,
     allowed_instances,
     assert_document_instance_access,
@@ -78,8 +76,8 @@ from .auth.tenancy import (
     unrestricted,
     user_can_access_instance,
 )
-from .instances import prod_stage_disabled
-from .models import (
+from ..instances import prod_stage_disabled
+from ..models import (
     PIPELINE_STAGES,
     PROD_ONLY_STAGES,
     AuditLogResponse,
@@ -103,8 +101,8 @@ from .models import (
     SearchSettingsUpdate,
     SettingsAuditResponse,
 )
-from .network_group import validate_network_provider_config
-from .workflows import (
+from ..network_group import validate_network_provider_config
+from ..workflows import (
     ChunkingOnlyWorkflow,
     DocumentPipelineWorkflow,
     OcrOnlyWorkflow,
@@ -125,7 +123,6 @@ logging.basicConfig(
 )
 
 TASK_QUEUE = "ocr-pipeline"
-_TOKEN_RE = re.compile(r"[\w\-]+", re.UNICODE)
 
 # Global clients
 temporal_client: Optional[Client] = None
@@ -256,6 +253,15 @@ RATE_LIMIT_OTP = os.environ.get("RATE_LIMIT_OTP", "10/minute")
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Routers split out of this module, one per resource. Register them here.
+from .search import router as search_router  # noqa: E402
+
+app.include_router(search_router)
+# TODO(api-split): extract the remaining resources into their own routers,
+# one file each under pipeline/api/, following search.py: documents, pages,
+# chunks, artifacts, vector indexes, catalog, audit, settings, auth, admin.
+# tests/test_api_routes.py pins the route table so a move cannot drop one.
 
 
 # Allowed base directories for file access (configurable via env)
@@ -538,160 +544,9 @@ def _mark_reindex_required(workflow_id: str, reason: str, metadata: Optional[dic
     return doc
 
 
-def _normalize_text(value: str) -> str:
-    return re.sub(r"\s+", " ", (value or "").strip().lower())
-
-
-def _tokenize(value: str) -> list[str]:
-    return _TOKEN_RE.findall(_normalize_text(value))
-
-
-def _prepare_query_for_e5(query: str) -> str:
-    cleaned = query.strip()
-    if cleaned.lower().startswith("query:"):
-        return cleaned
-    return f"query: {cleaned}"
-
-
-def _token_overlap_score(query: str, text: str) -> float:
-    query_tokens = set(_tokenize(query))
-    text_tokens = set(_tokenize(text))
-    if not query_tokens or not text_tokens:
-        return 0.0
-    return len(query_tokens & text_tokens) / len(query_tokens)
-
-
-def _metadata_blob(hit: dict) -> str:
-    return " ".join(
-        str(hit.get(key) or "")
-        for key in (
-            "name",
-            "name_en",
-            "name_gu",
-            "filename",
-            "title_en",
-            "title_gu",
-            "category_tags",
-            "description",
-            "doc_short_description",
-            "doc_llm_description",
-        )
-    )
-
-
-def _rank_desc(values: list[float]) -> list[int]:
-    order = sorted(range(len(values)), key=lambda idx: values[idx], reverse=True)
-    ranks = [0] * len(values)
-    for pos, idx in enumerate(order, start=1):
-        ranks[idx] = pos
-    return ranks
-
-
-def _expand_query(query: str, profile: str) -> str:
-    q = (query or "").strip()
-    mode = (profile or "none").strip().lower()
-    if not q or mode in {"none", ""}:
-        return q
-    if mode not in {"gu-v1", "gu_v1"}:
-        return q
-
-    rules = [
-        (r"ખરવા|મોવાસા|fmd", "foot and mouth disease FMD blisters lesions mouth ulcer"),
-        (r"આફરો|bloat", "ruminal bloat tympany frothy bloat"),
-        (r"તાવ|fever", "pyrexia febrile infection"),
-        (r"કબજ|constipation", "constipation bowel obstruction laxative"),
-        (r"ગળિયો|ગળાની", "throat infection pharyngitis upper respiratory"),
-        (r"કૃમિ|કરમિયા|deworm", "deworming helminth anthelmintic dose"),
-        (r"ગર્ભપાત|ગાભણ", "abortion pregnancy gestation prenatal feeding"),
-        (r"ચરમિયા|ચામડી|ખંજવાળ|hair fall", "dermatitis skin disease mange ectoparasite tick"),
-    ]
-
-    additions: list[str] = []
-    query_lower = q.lower()
-    for pattern, terms in rules:
-        if re.search(pattern, query_lower, flags=re.IGNORECASE):
-            additions.append(terms)
-    if not additions:
-        return q
-    return f"{q} {' '.join(additions)}".strip()
-
-
-def _bm25lite_scores(query: str, docs: list[str]) -> list[float]:
-    query_tokens = _tokenize(query)
-    if not query_tokens or not docs:
-        return [0.0] * len(docs)
-
-    doc_tokens = [_tokenize(doc) for doc in docs]
-    avg_len = max(1.0, sum(len(tokens) for tokens in doc_tokens) / max(1, len(doc_tokens)))
-    df: Counter[str] = Counter()
-    for tokens in doc_tokens:
-        for token in set(tokens):
-            df[token] += 1
-
-    k1 = 1.2
-    b = 0.75
-    scores: list[float] = []
-    for tokens in doc_tokens:
-        tf = Counter(tokens)
-        dl = len(tokens)
-        norm = k1 * (1 - b + b * dl / avg_len)
-        score = 0.0
-        for term in query_tokens:
-            if term not in tf:
-                continue
-            idf = math.log(1.0 + (len(doc_tokens) - df[term] + 0.5) / (df[term] + 0.5))
-            score += idf * (tf[term] * (k1 + 1.0)) / (tf[term] + norm)
-        scores.append(score)
-    return scores
-
-
-def _rerank_hits(query: str, hits: list[dict], rerank_mode: str) -> list[dict]:
-    mode = (rerank_mode or "none").strip().lower()
-    if mode in {"", "none"} or not hits:
-        return hits
-
-    raw_scores = [float(hit.get("_score", hit.get("score", 0.0)) or 0.0) for hit in hits]
-    min_score = min(raw_scores)
-    max_score = max(raw_scores)
-    denom = (max_score - min_score) if max_score > min_score else 1.0
-    semantic_scores = [(raw - min_score) / denom for raw in raw_scores]
-    text_scores = [_token_overlap_score(query, str(hit.get("text") or "")) for hit in hits]
-    meta_scores = [_token_overlap_score(query, _metadata_blob(hit)) for hit in hits]
-
-    rescored: list[dict] = []
-    if mode == "bm25lite":
-        docs = [f"{str(hit.get('text') or '')} {_metadata_blob(hit)}".strip() for hit in hits]
-        bm_scores = _bm25lite_scores(query, docs)
-        bm_min = min(bm_scores) if bm_scores else 0.0
-        bm_max = max(bm_scores) if bm_scores else 1.0
-        bm_denom = (bm_max - bm_min) if bm_max > bm_min else 1.0
-        bm_norm = [(score - bm_min) / bm_denom for score in bm_scores]
-        for hit, semantic, bm25, meta in zip(hits, semantic_scores, bm_norm, meta_scores):
-            enriched = dict(hit)
-            enriched["_rerank_score"] = (0.50 * semantic) + (0.40 * bm25) + (0.10 * meta) + (-0.10 if bool(hit.get("is_reference", False)) else 0.0)
-            rescored.append(enriched)
-    elif mode in {"rrf-lite", "rrf_lite", "rrf"}:
-        sem_rank = _rank_desc(semantic_scores)
-        text_rank = _rank_desc(text_scores)
-        meta_rank = _rank_desc(meta_scores)
-        k = 30
-        for idx, hit in enumerate(hits):
-            enriched = dict(hit)
-            enriched["_rerank_score"] = (1.0 / (k + sem_rank[idx])) + (1.0 / (k + text_rank[idx])) + (1.0 / (k + meta_rank[idx]))
-            rescored.append(enriched)
-    else:
-        for hit, semantic, text_score, meta in zip(hits, semantic_scores, text_scores, meta_scores):
-            enriched = dict(hit)
-            enriched["_rerank_score"] = (0.60 * semantic) + (0.30 * max(text_score, meta)) + (0.10 * meta)
-            rescored.append(enriched)
-
-    rescored.sort(key=lambda hit: float(hit.get("_rerank_score", 0.0)), reverse=True)
-    return rescored
-
-
 def delete_single_chunk_from_index(document_id: str, chunk_num: int, index_name: str = "documents-index") -> dict:
     """Delete a single chunk from the vector index by doc_id + chunk_num."""
-    from .vector_store import get_default_index_name, get_vector_store
+    from ..vector_store import get_default_index_name, get_vector_store
 
     try:
         store = get_vector_store()
@@ -703,7 +558,7 @@ def delete_single_chunk_from_index(document_id: str, chunk_num: int, index_name:
 
 def delete_chunks_from_index(document_id: str, index_name: str = "documents-index") -> dict:
     """Delete all chunks for a document from the vector index."""
-    from .vector_store import get_default_index_name, get_vector_store
+    from ..vector_store import get_default_index_name, get_vector_store
 
     try:
         store = get_vector_store()
@@ -1582,7 +1437,7 @@ def _service_key_ok(request: Request) -> bool:
 
 def _require_catalog_read(request: Request, user: AuthUser) -> None:
     """Service key, search/admin JWT, or AUTH_DISABLED without keys."""
-    from .auth.permissions import Permission
+    from ..auth.permissions import Permission
 
     if _service_key_ok(request):
         return
@@ -1610,7 +1465,7 @@ def _delete_document_points_from_prod(doc: dict) -> dict:
         or "documents-index"
     ).strip()
     try:
-        from .vector_store.qdrant_store import QdrantVectorStore, get_qdrant_client
+        from ..vector_store.qdrant_store import QdrantVectorStore, get_qdrant_client
 
         client = get_qdrant_client(url=prod_url, api_key=prod_key)
         store = QdrantVectorStore(client=client)
@@ -1639,7 +1494,7 @@ def _delete_scheme_points_from_prod(doc: dict) -> dict:
         os.environ.get("PROD_SCHEME_VECTOR_DB_COLLECTION_NAME") or "schemes-index"
     ).strip()
     try:
-        from .vector_store.qdrant_store import QdrantVectorStore, get_qdrant_client
+        from ..vector_store.qdrant_store import QdrantVectorStore, get_qdrant_client
 
         client = get_qdrant_client(url=prod_url, api_key=prod_key)
         store = QdrantVectorStore(client=client)
@@ -2083,7 +1938,7 @@ async def disable_document(
         # done on ingest/promote so a deleted document stops appearing to the
         # AI layer immediately, and a later re-ingest starts from a clean slate.
         try:
-            from .master_catalog_pg import remove_catalog_entry
+            from ..master_catalog_pg import remove_catalog_entry
 
             result["master_catalog_version"] = await asyncio.to_thread(remove_catalog_entry, workflow_id)
         except Exception as exc:
@@ -2286,7 +2141,7 @@ async def catalog_tool_prompt(request: Request, user: CurrentUser):
 @app.post("/catalog/v1/rebuild")
 async def catalog_rebuild(request: Request, user: RequireAdmin):
     """Admin: recompute catalog entries from documents + preserve bootstrap codes."""
-    from .auth.permissions import Permission
+    from ..auth.permissions import Permission
 
     # Admin JWT always OK; service key also accepted for automation
     if not _service_key_ok(request) and not user.has_permission(Permission.ADMIN):
@@ -3744,7 +3599,7 @@ async def resolve_provenance_chunk(
 
     Used by chat/retrieval clients when search hits lack workflow_id (legacy rows) or for enrichment.
     """
-    from .activities import _infer_section
+    from ..activities import _infer_section
 
     resolved_doc_id = doc_id
     resolved_chunk_num = chunk_num
@@ -3776,7 +3631,7 @@ async def get_document_qdrant_status(
     index_name: str = Query("documents-index"),
 ):
     """Return vector-index status/chunks for a document."""
-    from .vector_store import get_default_index_name, get_vector_store
+    from ..vector_store import get_default_index_name, get_vector_store
 
     doc = _require_document_for_user(workflow_id, user)
 
@@ -3839,7 +3694,7 @@ async def list_document_qdrant_chunks(
 
 @app.get("/indexes/{index_name}/settings")
 async def get_vector_index_settings(index_name: str, user: RequireSearch):
-    from .vector_store import get_vector_store
+    from ..vector_store import get_vector_store
 
     try:
         return get_vector_store().get_settings(index_name)
@@ -3849,7 +3704,7 @@ async def get_vector_index_settings(index_name: str, user: RequireSearch):
 
 @app.get("/indexes/{index_name}/stats")
 async def get_vector_index_stats(index_name: str, user: RequireSearch):
-    from .vector_store import get_vector_store
+    from ..vector_store import get_vector_store
 
     try:
         return get_vector_store().get_stats(index_name)
@@ -3864,7 +3719,7 @@ async def get_vector_indexes_summary(
     x_include_disabled: Optional[str] = Header(None, alias="X-Include-Disabled"),
 ):
     """Summarize index coverage from SQLite-backed index status plus live vector-store stats."""
-    from .vector_store import get_vector_store
+    from ..vector_store import get_vector_store
 
     include_demo = x_include_demo and x_include_demo.lower() == "true"
     include_disabled = x_include_disabled and x_include_disabled.lower() == "true"
@@ -3895,133 +3750,6 @@ async def get_vector_indexes_summary(
     return results
 
 
-@app.post("/search")
-async def run_search(payload: dict, user: RequireSearch):
-    from .vector_store import get_default_index_name, get_vector_store
-
-    settings = db.get_search_settings()
-    index_name = payload.get("index_name") or settings.get("indexName") or get_default_index_name()
-    query = (payload.get("query") or "").strip()
-    if not query:
-        raise HTTPException(400, "query is required")
-
-    logging.info(
-        "search request user=%s index=%s query=%r top_k=%s",
-        user.username or user.email or user.user_id,
-        index_name,
-        query,
-        payload.get("top_k"),
-    )
-
-    search_mode = (payload.get("search_mode") or settings.get("searchMethod") or "HYBRID").upper()
-    top_k = max(1, min(int(payload.get("top_k") or settings.get("limit") or 12), 50))
-    candidate_multiplier = max(1, int(payload.get("candidate_multiplier") or settings.get("candidateMultiplier") or 10))
-    requested_candidate_cap = payload.get("candidate_cap")
-    if requested_candidate_cap is None:
-        candidate_cap = min(max(top_k * candidate_multiplier, top_k), int(settings.get("candidateCap") or 120))
-    else:
-        candidate_cap = int(requested_candidate_cap)
-    candidate_cap = max(top_k, min(candidate_cap, 200))
-    max_chunks_per_doc = max(1, int(payload.get("max_chunks_per_doc") or settings.get("maxChunksPerDoc") or 2))
-    use_e5_prefix = bool(payload.get("use_e5_prefix", settings.get("useE5Prefix", True)))
-    exclude_reference = bool(payload.get("exclude_reference", settings.get("excludeReference", True)))
-    alpha = float(payload.get("hybrid_alpha") or settings.get("alpha") or 0.6)
-    ranking_method = payload.get("ranking_method") or settings.get("rankingMethod") or "rrf"
-    ef_search = int(payload.get("ef_search") or settings.get("efSearch") or 256)
-    query_expansion_profile = payload.get("query_expansion_profile") or settings.get("queryExpansionProfile") or "gu-v1"
-    rerank_mode = payload.get("rerank_mode") or settings.get("rerankMode") or "none"
-    hybrid_rrf_k = int(payload.get("hybrid_rrf_k") or settings.get("hybridRrfK") or 60)
-    # Validity is on by default: a search serving a farmer must not answer from
-    # a document that has expired or has not started. Both overrides are
-    # operator tools - `include_expired` to inspect what an expired document
-    # still holds, `valid_on` to ask what search would have returned on another
-    # day - and the response echoes which day was actually applied.
-    include_expired = bool(payload.get("include_expired", False))
-    valid_on = (payload.get("valid_on") or "").strip() or None
-    if valid_on:
-        try:
-            # Reassigned, not just checked: parse_day returns the canonical
-            # zero-padded form, and the vector store's date range rejects the
-            # `2026-9-3` spelling that strptime happily accepts.
-            valid_on = document_validity.parse_day(valid_on, "valid_on")
-        except document_validity.DocumentValidityError as exc:
-            raise HTTPException(400, str(exc)) from None
-    expanded_query = _expand_query(query, query_expansion_profile)
-    # Qdrant embeddings apply E5 prefixes internally; don't pre-prefix here.
-    search_query = expanded_query
-
-    store = get_vector_store()
-    backend = store.backend
-    # HYBRID on Qdrant currently maps to dense tensor search (lexical is separate mode).
-    store_mode = "TENSOR" if backend == "qdrant" and search_mode == "HYBRID" else search_mode
-
-    try:
-        result = store.search(
-            name=index_name,
-            query=search_query,
-            limit=candidate_cap,
-            search_mode=store_mode,
-            exclude_reference=exclude_reference,
-            use_e5_prefix=use_e5_prefix,
-            hybrid_alpha=alpha,
-            ef_search=ef_search,
-            apply_validity=not include_expired,
-            valid_on=valid_on,
-        )
-    except Exception as error:
-        raise HTTPException(400, f"Vector search failed ({backend}): {error}") from error
-
-    hits = result.get("hits", [])
-    hits = _rerank_hits(query, hits, rerank_mode)
-    final_hits = []
-    per_doc_counts: dict[str, int] = {}
-    for hit in hits:
-        doc_key = hit.get("doc_id") or hit.get("filename") or "__unknown__"
-        if per_doc_counts.get(doc_key, 0) >= max_chunks_per_doc:
-            continue
-        per_doc_counts[doc_key] = per_doc_counts.get(doc_key, 0) + 1
-        final_hits.append(hit)
-        if len(final_hits) >= top_k:
-            break
-
-    logging.info(
-        "search response user=%s index=%s query=%r candidate_count=%s final_count=%s",
-        user.username or user.email or user.user_id,
-        index_name,
-        query,
-        len(hits),
-        len(final_hits),
-    )
-
-    return {
-        "effective_config": {
-            "index_name": index_name,
-            "backend": backend,
-            "query": query,
-            "search_mode": search_mode,
-            "store_search_mode": store_mode,
-            "top_k": top_k,
-            "candidate_cap": candidate_cap,
-            "candidate_multiplier": candidate_multiplier,
-            "max_chunks_per_doc": max_chunks_per_doc,
-            "use_e5_prefix": use_e5_prefix,
-            "exclude_reference": exclude_reference,
-            "hybrid_alpha": alpha,
-            "ranking_method": ranking_method,
-            "hybrid_rrf_k": hybrid_rrf_k,
-            "ef_search": ef_search,
-            "query_expansion_profile": query_expansion_profile,
-            "query_expansion_applied": expanded_query != query,
-            "rerank_mode": rerank_mode,
-            "apply_validity": not include_expired,
-            "valid_on": result.get("valid_on"),
-            "filter_string": None,
-        },
-        "candidate_count": len(hits),
-        "final_count": len(final_hits),
-        "hits": final_hits,
-        "raw_hits": hits if payload.get("include_raw_hits") else None,
-    }
 
 
 # =============================================================================
@@ -4047,8 +3775,8 @@ async def get_vector_index_schema(
     index_name: str = Query("documents-index", description="Vector index / collection name"),
 ):
     """Report the live vector index's field schema vs. the canonical passage schema."""
-    from .activities import _passage_schema_field_names
-    from .vector_store import get_default_index_name, get_vector_store
+    from ..activities import _passage_schema_field_names
+    from ..vector_store import get_default_index_name, get_vector_store
 
     resolved = index_name or get_default_index_name()
     store = get_vector_store()
@@ -4082,7 +3810,7 @@ async def create_vector_index(
 ):
     """Create the vector index/collection — a cosine Qdrant collection sized from EMBEDDING_VECTOR_SIZE."""
     _ = user
-    from .vector_store import get_default_index_name, get_vector_store
+    from ..vector_store import get_default_index_name, get_vector_store
 
     resolved = index_name or get_default_index_name()
     store = get_vector_store()
@@ -4100,7 +3828,7 @@ async def get_ingest_info(user: RequireAdmin):
     Return what the running container's ingest code would send to the vector index.
     Use this to verify the API/worker image has the passage schema (text_for_embedding, etc.).
     """
-    from .activities import _passage_schema_field_names, _prepare_records
+    from ..activities import _passage_schema_field_names, _prepare_records
 
     passage_fields = sorted(_passage_schema_field_names())
     has_text_for_embedding = "text_for_embedding" in set(passage_fields)
