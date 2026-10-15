@@ -52,6 +52,11 @@ paths:
                   top_k: 10
                   hybrid_alpha: 0.6
                   rerank_mode: "none"
+              one_group:
+                summary: Only one group's documents (e.g. a state's DSS)
+                value:
+                  query: "cotton pest advisory"
+                  group: "mh"
       responses:
         '200':
           description: Search results
@@ -60,7 +65,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/SearchResponse'
         '400':
-          description: Missing/empty query, or the underlying vector-store search failed
+          description: Missing/empty query, malformed valid_on, non-string group, or the underlying vector-store search failed
           content:
             application/json:
               schema:
@@ -253,6 +258,20 @@ components:
             what search would have returned, or will return, on that date. A
             malformed value returns 400. Ignored when include_expired is true.
           default: "(today)"
+        group:
+          type: string
+          nullable: true
+          description: |
+            Limit results to chunks tagged with this group code (for example
+            `mh` for Maharashtra, `bv` for Bharat Vistaar). Case-insensitive
+            and trimmed: `MH` and ` mh ` both mean `mh`. One value only —
+            a caller belongs to one group; fallback to another group is the
+            caller's second request. Omitted, null or empty means no group
+            filter: chunks from every group are searched as one pool. An
+            unknown group is not an error:
+            the response is a success with zero hits. A non-string value
+            returns 400. Applies in every search mode.
+          example: "mh"
 
     SearchHit:
       type: object
@@ -382,6 +401,10 @@ components:
           type: boolean
           description: True if the query-expansion profile actually rewrote the query.
         rerank_mode: { type: string }
+        group:
+          type: string
+          nullable: true
+          description: The normalised group filter that was applied (e.g. `mh`), or null when the search spanned every group.
         filter_string:
           type: string
           nullable: true
