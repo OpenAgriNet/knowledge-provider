@@ -244,7 +244,7 @@ class TestBootRefusesMalformedProviderMap:
     @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_api_does_not_start(self, broken_map, monkeypatch):
-        import pipeline.api as api
+        import pipeline.api.api as api
 
         async def never_connect(*args, **kwargs):
             raise AssertionError("API connected to Temporal despite a bad provider map")

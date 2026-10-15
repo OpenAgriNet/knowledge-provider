@@ -1,6 +1,6 @@
 """Search API: ``POST /search`` and the ranking helpers it owns.
 
-First router split out of ``pipeline/api/__init__.py``. The vector store is
+First router split out of ``pipeline/api/api.py``. The vector store is
 imported inside the route (not at module top) on purpose: tests patch
 ``pipeline.vector_store.get_vector_store`` and that only takes effect when the
 name is looked up at call time.
