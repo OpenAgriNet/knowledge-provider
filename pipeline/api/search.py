@@ -178,6 +178,12 @@ def _requested_group(payload: dict) -> str | None:
 
 @router.post("/search")
 async def run_search(payload: dict, user: RequireSearch):
+    """Search the vector index.
+
+    `group` is a filter, not an access check: this endpoint applies no tenant
+    scoping to its results (unlike `GET /chunks/search`), so any
+    search-capable caller may ask for any group.
+    """
     from ..vector_store import get_default_index_name, get_vector_store
 
     settings = db.get_search_settings()
