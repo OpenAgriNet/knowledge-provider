@@ -46,7 +46,7 @@ VITE_API_PROXY_TARGET=http://localhost:8001   # or in-cluster API URL in compose
 
 ## Backend (API + worker)
 
-Root `.env` (see `.env.example`). Required by FastAPI (`pipeline/api.py`), Temporal worker (`pipeline/worker.py`), and activities.
+Root `.env` (see `.env.example`). Required by FastAPI (`pipeline/api/`), Temporal worker (`pipeline/worker.py`), and activities.
 
 ### Required
 

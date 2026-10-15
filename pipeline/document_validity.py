@@ -11,7 +11,7 @@ store can build a search filter from it without any of them re-deriving it.
 
 `pipeline/activities.py` stamps the period onto chunk payloads as
 `start_date` / `end_date`; `pipeline/vector_store/qdrant_store.py` filters on
-those fields at search time; `pipeline/api.py` validates approver input here.
+those fields at search time; `pipeline/api/__init__.py` validates approver input here.
 """
 
 from dataclasses import dataclass

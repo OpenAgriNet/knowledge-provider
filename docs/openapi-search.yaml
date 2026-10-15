@@ -5,7 +5,7 @@ info:
     Contract for the two search endpoints exposed by the docs-pipeline API.
     This is a hand-written companion spec (the running FastAPI app declares
     these routes with untyped `dict` payloads, so no schema is generated at
-    `/openapi.json` for them) — reverse-engineered from `pipeline/api.py`,
+    `/openapi.json` for them) — reverse-engineered from `pipeline/api/`,
     `pipeline/models.py`, and `pipeline/vector_store/qdrant_store.py`.
 
     Not the full API surface — only `/search` (vector/hybrid semantic search)
