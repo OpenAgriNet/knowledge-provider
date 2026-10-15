@@ -51,10 +51,10 @@ Interactive API docs once running: `http://localhost:8001/docs`.
 
 ### Everything lives in `pipeline/`, not split into microservices
 
-`pipeline/api.py` (~4.3k lines) is a single FastAPI app with all routes declared directly via `@app.get/post/patch/delete` — there is no router-per-resource split. When adding an endpoint, find the existing block by resource (documents, pages, chunks, artifacts, catalog, audit, admin) and add near its siblings rather than creating a new file.
+`pipeline/api/` is a package. `__init__.py` (~4k lines) holds the FastAPI app and, for now, most routes declared directly via `@app.get/post/patch/delete`. The split into one router per resource has started: `search.py` owns `POST /search` and its ranking helpers as an `APIRouter`, included from `__init__.py` right after the app is created (see the `TODO(api-split)` comment there for the remaining resources: documents, pages, chunks, artifacts, vector indexes, catalog, audit, settings, auth, admin). When adding an endpoint: if its resource already has a router file, add it there; otherwise add it near its siblings in `__init__.py`. Either way, update the route snapshot in `tests/test_api_routes.py` in the same change — it pins the full route table so a move cannot drop one. Tests that audit routes must walk them via `tests/route_inventory.py`, not `app.routes` directly: FastAPI ≥ 0.140 keeps included routers as a lazy wrapper there.
 
 Core modules (all under `pipeline/`):
-- `api.py` — FastAPI app, all HTTP routes
+- `api/` — FastAPI app (`__init__.py`, most routes) plus per-resource routers (`search.py` so far)
 - `workflows.py` — Temporal workflow definitions (`DocumentPipelineWorkflow` is the main one; also `ReingestionWorkflow`, `PromoteToProdWorkflow`, `TranslationOnlyWorkflow`, `OcrOnlyWorkflow`, `ChunkingOnlyWorkflow`)
 - `activities.py` — Temporal activities invoked by the workflows (OCR, translate, chunk, ingest, state updates)
 - `worker.py` — Temporal worker process; registers workflows/activities on task queue `ocr-pipeline`
