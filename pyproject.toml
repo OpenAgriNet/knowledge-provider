@@ -98,3 +98,9 @@ select = ["E4", "E7", "E9", "F", "I"]
 # minor cross-platform variance; raise it as real coverage improves, never
 # lower it to make a drop pass.
 fail_under = 47
+
+[tool.pyright]
+# Point the editor's type checker (Pylance/Pyright) at the uv-managed venv so
+# "Import X could not be resolved" warnings stop without per-machine settings.
+venvPath = "."
+venv = ".venv"
