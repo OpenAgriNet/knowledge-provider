@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import string
 from pathlib import Path
 from typing import Optional
 
@@ -101,16 +102,22 @@ def load_provider_id_overrides() -> dict[str, dict[str, str]]:
     return parse_provider_id_overrides(raw, str(path))
 
 
-def _checked_template(env_name: str, default: str, **placeholders: str) -> str:
+def _checked_template(
+    env_name: str, default: str, required: frozenset[str] = frozenset(), **placeholders: str
+) -> str:
     template = _env(env_name, default)
     try:
         rendered = template.format(**placeholders)
-    except (KeyError, IndexError, ValueError) as exc:
+        used = {field for _, field, _, _ in string.Formatter().parse(template) if field}
+    except (KeyError, IndexError, ValueError, AttributeError) as exc:
         raise NetworkProviderConfigError(
             f"{env_name}={template!r} may only use {sorted(placeholders)}: {exc}"
         ) from exc
     if not rendered.strip():
         raise NetworkProviderConfigError(f"{env_name} renders an empty value")
+    missing = required - used
+    if missing:
+        raise NetworkProviderConfigError(f"{env_name}={template!r} must use {sorted(missing)}")
     return template
 
 
@@ -118,7 +125,11 @@ def load_provider_naming() -> ProviderNaming:
     return ProviderNaming(
         shared_instance=portal_instance(),
         id_template=_checked_template(
-            PROVIDER_ID_TEMPLATE_ENV, PROVIDER_ID_TEMPLATE, kind="advisory", instance="bv"
+            PROVIDER_ID_TEMPLATE_ENV,
+            PROVIDER_ID_TEMPLATE,
+            frozenset({"kind", "instance"}),
+            kind="advisory",
+            instance="bv",
         ),
         group_name_template=_checked_template(
             GROUP_PROVIDER_NAME_TEMPLATE_ENV,
