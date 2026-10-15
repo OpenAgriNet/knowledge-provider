@@ -444,7 +444,7 @@ class TestDiscoveryPublishServiceLogging:
 def _use_group_providers(monkeypatch, tmp_path, content):
     path = tmp_path / "network_group_providers.json"
     path.write_text(content)
-    monkeypatch.setenv("NETWORK_GROUP_PROVIDERS_CONFIG_PATH", str(path))
+    monkeypatch.setenv("PROVIDER_CONFIG_OVERRIDE_PATH", str(path))
 
 
 @pytest.fixture(autouse=True)
@@ -538,7 +538,7 @@ class TestDiscoveryPublishServiceGroupProvider:
 
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
         monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
-        monkeypatch.delenv("NETWORK_GROUP_PROVIDERS_CONFIG_PATH", raising=False)
+        monkeypatch.delenv("PROVIDER_CONFIG_OVERRIDE_PATH", raising=False)
         service = DiscoveryPublishService()
 
         result = service.publish(transaction_id="txn-doc", document_kind="document", group="ka")

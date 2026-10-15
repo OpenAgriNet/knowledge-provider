@@ -14,8 +14,8 @@ from .network_constants import (
 )
 from .network_provider import PROVIDER_KINDS, ProviderNaming
 
-GROUP_PROVIDERS_CONFIG_PATH_ENV = "NETWORK_GROUP_PROVIDERS_CONFIG_PATH"
-DEFAULT_GROUP_PROVIDERS_CONFIG_PATH = Path(__file__).with_name("network_group_providers.json")
+PROVIDER_CONFIG_OVERRIDE_PATH_ENV = "PROVIDER_CONFIG_OVERRIDE_PATH"
+DEFAULT_PROVIDER_CONFIG_OVERRIDE_PATH = Path(__file__).with_name("network_group_providers.json")
 PROVIDER_ID_TEMPLATE_ENV = "NETWORK_PROVIDER_ID_TEMPLATE"
 GROUP_PROVIDER_NAME_TEMPLATE_ENV = "NETWORK_GROUP_PROVIDER_NAME_TEMPLATE"
 ADVISORY_PROVIDER_NAME_ENV = "NETWORK_ADVISORY_PROVIDER_NAME"
@@ -87,13 +87,13 @@ def parse_provider_id_overrides(raw: Optional[str], source: str) -> dict[str, di
     return overrides
 
 
-def group_providers_config_path() -> Path:
-    configured = os.environ.get(GROUP_PROVIDERS_CONFIG_PATH_ENV, "").strip()
-    return Path(configured) if configured else DEFAULT_GROUP_PROVIDERS_CONFIG_PATH
+def provider_config_override_path() -> Path:
+    configured = os.environ.get(PROVIDER_CONFIG_OVERRIDE_PATH_ENV, "").strip()
+    return Path(configured) if configured else DEFAULT_PROVIDER_CONFIG_OVERRIDE_PATH
 
 
 def load_provider_id_overrides() -> dict[str, dict[str, str]]:
-    path = group_providers_config_path()
+    path = provider_config_override_path()
     try:
         raw = path.read_text(encoding="utf-8")
     except OSError as exc:
