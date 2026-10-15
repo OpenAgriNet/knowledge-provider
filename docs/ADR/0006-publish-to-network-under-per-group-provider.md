@@ -7,7 +7,7 @@ status: accepted
 Context: ADR 0003 announced every document under one provider, with one catalog per Knowledge Kind. A state's experience (for example Maharashtra's, through DSS) needs to consume only its own state's knowledge from the network, and one shared provider gives it no way to do that (engineering-tracker#190).
 
 Decision:
-- Every catalog has a provider per Knowledge Kind and instance. Its id and descriptor code are `{kind}.{instance}.provider.oan.dev` (`advisory.mh.provider.oan.dev`, `scheme.bv.provider.oan.dev`). It is named `Advisories|Schemes from documents`, prefixed with the Group name for a Group (`Maharashtra Advisories from documents`).
+- Every catalog has a provider per Knowledge Kind and instance. By default its id and descriptor code are `{kind}.{instance}.provider.oan.dev` (`advisory.mh.provider.oan.dev`, `scheme.bv.provider.oan.dev`). It is named `Advisories|Schemes from documents`, prefixed with the Group name for a Group (`Maharashtra Advisories from documents`).
 - Documents with a Group use the group code as the instance. Catalog and resource ids are today's ids prefixed with the group code (`mh-cat-oan-knowledge-provider-advisories`, `mh-res-oan-knowledge-provider-advisories`, and the same for schemes), and the catalog takes the provider's name.
 - The group code is derived from the document's `instance`, not from the uploader's group, so a Super Admin uploading for a state publishes under that state.
 - Documents with no Group (Bharat Vistaar `bv`, `default`) use the portal instance `bv` in the provider id and keep ADR 0003's unprefixed catalog and resource ids.
@@ -18,6 +18,7 @@ Decision:
 - The publish endpoint stays the same for every Group.
 
 Consequences:
-- Ids are permanent under `MERGE` (ADR 0003). Documents already published under the old shared provider `knowledge-provider` are not moved, so state knowledge published before this change stays there; the next `bv` publish re-announces the unprefixed catalogs under `advisory.bv`/`scheme.bv`. Changing the id template or an override later strands entries the same way.
-- Depends on the network adapter layer accepting the per-Group provider, catalog and resource ids.
+- Catalog and resource ids are permanent under `MERGE` (ADR 0003). State knowledge published before this change stays in the unprefixed catalogs; nothing moves it to the Group's `mh-` catalogs.
+- The next `bv` publish re-announces the unprefixed catalogs under `advisory.bv`/`scheme.bv` instead of `knowledge-provider`, keeping their catalog and resource ids. Changing the id template or an override later does the same. Whether the network moves such a catalog to the new provider or keeps the old entry depends on the adapter, and is untested.
+- Depends on the network adapter layer accepting the new provider ids, for `bv` as well as Groups, and the Groups' prefixed catalog and resource ids.
 - Only the Publish to Network payload changes. Chunks and the search indexes gain no `group` field; they keep `instance` and `instance_name`, where Bharat Vistaar and `default` documents carry `bv`/`default` and state documents carry the state code, so #202 can filter on `instance`.
