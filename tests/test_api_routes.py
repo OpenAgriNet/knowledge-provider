@@ -5,8 +5,9 @@ remove or rename a route, update this list in the same change.
 """
 
 import pytest
+from starlette.routing import BaseRoute
 
-from tests.route_inventory import application_routes
+from tests.route_inventory import application_routes, iter_api_routes
 
 EXPECTED_ROUTES: list[tuple[str, str]] = [
     ("DELETE", "/documents/{workflow_id}"),
@@ -110,3 +111,15 @@ def test_route_snapshot_matches_app():
     from pipeline.api import app
 
     assert collect_routes(app) == EXPECTED_ROUTES
+
+
+@pytest.mark.unit
+def test_inventory_refuses_a_route_type_it_does_not_know():
+    class UnknownRoute(BaseRoute):
+        pass
+
+    class Router:
+        routes = [UnknownRoute()]
+
+    with pytest.raises(TypeError, match="UnknownRoute"):
+        list(iter_api_routes(Router()))
