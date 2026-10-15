@@ -1,5 +1,5 @@
 """
-Unit tests for pipeline/api.py - FastAPI endpoints.
+Unit tests for pipeline/api - FastAPI endpoints.
 
 Tests cover:
 - Health endpoints
