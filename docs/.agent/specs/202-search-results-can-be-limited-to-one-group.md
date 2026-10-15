@@ -259,14 +259,24 @@ Mode coverage: unit tests prove the filter reaches `scroll` (LEXICAL) and
 `run_search` maps it to TENSOR. The integration test runs all three
 end-to-end.
 
-Pre-release data check (operator, not code). Run against both the DEV and
-PROD Qdrant and confirm the `default` count is zero or explained:
+Pre-release data check (operator, not code). A chunk is invisible to every
+group-filtered search in two cases: its `instance` is the fallback `default`,
+or the point has no `instance` key at all (ingested before the field
+existed). Unlike validity, the group filter has no "missing means match"
+branch, on purpose. Run both counts against DEV and PROD and confirm each is
+zero or explained:
 
+    # tagged with the fallback value
     curl -s -X POST http://localhost:6333/collections/documents-index/points/count \
       -H 'Content-Type: application/json' \
       -d '{"filter":{"must":[{"key":"instance","match":{"value":"default"}}]},"exact":true}'
 
-Repeat with `"value":"mh"`, `"ka"`, `"bv"` to see the live spread.
+    # no instance key at all
+    curl -s -X POST http://localhost:6333/collections/documents-index/points/count \
+      -H 'Content-Type: application/json' \
+      -d '{"filter":{"must":[{"is_empty":{"key":"instance"}}]},"exact":true}'
+
+Repeat the first with `"value":"mh"`, `"ka"`, `"bv"` to see the live spread.
 
 Manual smoke against a running stack after Part A and after Part B:
 `docker compose up -d --build`, `curl localhost:8001/health`, then
