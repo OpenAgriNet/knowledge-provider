@@ -3,8 +3,8 @@ from pathlib import Path
 import pytest
 
 from pipeline.network_group import (
-    DEFAULT_GROUP_PROVIDERS_CONFIG_PATH,
-    GROUP_PROVIDERS_CONFIG_PATH_ENV,
+    DEFAULT_PROVIDER_CONFIG_OVERRIDE_PATH,
+    PROVIDER_CONFIG_OVERRIDE_PATH_ENV,
     NetworkProviderConfigError,
     group_for_instance,
     load_provider_id_overrides,
@@ -93,7 +93,7 @@ class TestParseProviderIdOverrides:
 def _providers_file(monkeypatch, tmp_path, content):
     path = tmp_path / "network_group_providers.json"
     path.write_text(content)
-    monkeypatch.setenv(GROUP_PROVIDERS_CONFIG_PATH_ENV, str(path))
+    monkeypatch.setenv(PROVIDER_CONFIG_OVERRIDE_PATH_ENV, str(path))
     return path
 
 
@@ -106,15 +106,15 @@ class TestLoadProviderIdOverrides:
 
     @pytest.mark.unit
     def test_unset_path_uses_the_bundled_empty_default(self, monkeypatch):
-        monkeypatch.delenv(GROUP_PROVIDERS_CONFIG_PATH_ENV, raising=False)
+        monkeypatch.delenv(PROVIDER_CONFIG_OVERRIDE_PATH_ENV, raising=False)
 
-        assert DEFAULT_GROUP_PROVIDERS_CONFIG_PATH.is_file()
+        assert DEFAULT_PROVIDER_CONFIG_OVERRIDE_PATH.is_file()
         assert load_provider_id_overrides() == {}
 
     @pytest.mark.unit
     def test_missing_file_raises(self, monkeypatch, tmp_path):
         missing = tmp_path / "absent.json"
-        monkeypatch.setenv(GROUP_PROVIDERS_CONFIG_PATH_ENV, str(missing))
+        monkeypatch.setenv(PROVIDER_CONFIG_OVERRIDE_PATH_ENV, str(missing))
 
         with pytest.raises(NetworkProviderConfigError, match="absent.json"):
             load_provider_id_overrides()
@@ -149,7 +149,7 @@ class TestLoadProviderNaming:
 
     @pytest.mark.unit
     def test_defaults(self, monkeypatch):
-        monkeypatch.delenv(GROUP_PROVIDERS_CONFIG_PATH_ENV, raising=False)
+        monkeypatch.delenv(PROVIDER_CONFIG_OVERRIDE_PATH_ENV, raising=False)
 
         naming = load_provider_naming()
 
