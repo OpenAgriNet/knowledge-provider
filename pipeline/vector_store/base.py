@@ -55,7 +55,9 @@ class VectorStore(Protocol):
         attributes_to_retrieve: Optional[list[str]] = None,
         apply_validity: bool = True,
         valid_on: Optional[str] = None,
+        instance: Optional[str] = None,
     ) -> dict[str, Any]:
         """`apply_validity` keeps only chunks whose validity period covers
-        `valid_on` (default: the store's today)."""
+        `valid_on` (default: the store's today). `instance` limits results to
+        one group's chunks; None means every group."""
         ...
