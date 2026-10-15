@@ -270,7 +270,9 @@ components:
             filter: chunks from every group are searched as one pool. An
             unknown group is not an error:
             the response is a success with zero hits. A non-string value
-            returns 400. Applies in every search mode.
+            returns 400. Applies in every search mode. A filter, not an
+            access check: this endpoint applies no tenant scoping, so any
+            search-capable caller may ask for any group.
           example: "mh"
 
     SearchHit:
