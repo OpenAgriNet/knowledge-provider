@@ -190,6 +190,7 @@ class TestLoadProviderNaming:
             ("NETWORK_PROVIDER_ID_TEMPLATE", "{state}.provider.oan.dev"),
             ("NETWORK_PROVIDER_ID_TEMPLATE", "{0}.provider.oan.dev"),
             ("NETWORK_PROVIDER_ID_TEMPLATE", "{kind.provider.oan.dev"),
+            ("NETWORK_PROVIDER_ID_TEMPLATE", "{kind.x}.{instance}.provider.oan.dev"),
             ("NETWORK_GROUP_PROVIDER_NAME_TEMPLATE", "{group} {provider_name}"),
         ],
     )
@@ -197,6 +198,17 @@ class TestLoadProviderNaming:
         monkeypatch.setenv(env_name, template)
 
         with pytest.raises(NetworkProviderConfigError, match=env_name):
+            load_provider_naming()
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "template",
+        ["{kind}.oan.dev", "{instance}.provider.oan.dev", "provider.oan.dev"],
+    )
+    def test_id_template_must_name_both_kind_and_instance(self, monkeypatch, template):
+        monkeypatch.setenv("NETWORK_PROVIDER_ID_TEMPLATE", template)
+
+        with pytest.raises(NetworkProviderConfigError, match="must use"):
             load_provider_naming()
 
 

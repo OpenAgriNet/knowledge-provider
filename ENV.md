@@ -256,7 +256,7 @@ Each catalog's provider is named per Knowledge Kind and instance: id and descrip
 | `DISCOVERY_SERVICE_ENDPOINT` | *(empty — required)* | Base URL of the external Discovery Service; the pipeline POSTs to `{DISCOVERY_SERVICE_ENDPOINT}/publish` |
 | `NETWORK_SENDER_ID` | *(empty — required)* | This instance's Beckn `senderId`, also sent as `networkId` |
 | `PROVIDER_CONFIG_OVERRIDE_PATH` | unset (bundled `pipeline/network_group_providers.json`, `{}` — no overrides) | Path to a JSON object of instance code → `{kind: provider id}`, set per deployment, e.g. `{"ka": {"advisory": "advisory.ka.com", "scheme": "scheme.ka.com"}}`. Codes and kinds are case-insensitive; kinds are `advisory` or `scheme`. A missing file, invalid JSON, an unknown kind or an empty id stop the API and worker from starting |
-| `NETWORK_PROVIDER_ID_TEMPLATE` | `{kind}.{instance}.provider.oan.dev` | Default provider id and descriptor code, unless overridden in the file above. `{kind}` is `advisory` or `scheme`; `{instance}` is the group code, or `PORTAL_INSTANCE` for documents with no Group |
+| `NETWORK_PROVIDER_ID_TEMPLATE` | `{kind}.{instance}.provider.oan.dev` | Default provider id and descriptor code, unless overridden in the file above. `{kind}` is `advisory` or `scheme`; `{instance}` is the group code, or `PORTAL_INSTANCE` for documents with no Group. Must use both, or the API and worker refuse to start |
 | `NETWORK_ADVISORY_PROVIDER_NAME` | `Advisories from documents` | Provider name for advisory catalogs |
 | `NETWORK_SCHEMES_PROVIDER_NAME` | `Schemes from documents` | Provider name for scheme catalogs |
 | `NETWORK_GROUP_PROVIDER_NAME_TEMPLATE` | `{group_name} {provider_name}` | Provider and catalog name for a Group, e.g. `Maharashtra Advisories from documents` |
