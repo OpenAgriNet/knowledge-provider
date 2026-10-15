@@ -6,6 +6,8 @@ store and the engine together without Docker. Only the embedding model is
 faked: search quality is not under test here, the group filter is.
 """
 
+import zlib
+
 import pytest
 from qdrant_client import QdrantClient
 
@@ -25,10 +27,13 @@ CHUNKS = [
 
 
 def bag_of_words_vector(text: str) -> list[float]:
-    """Deterministic stand-in for the embedding model: one slot per hashed token."""
+    """Deterministic stand-in for the embedding model: one slot per hashed token.
+
+    crc32, not ``hash()``: Python salts str hashes per process, which would make
+    the slots differ between runs."""
     vector = [0.01] * VECTOR_SIZE
     for token in text.lower().split():
-        vector[hash(token) % VECTOR_SIZE] += 1.0
+        vector[zlib.crc32(token.encode()) % VECTOR_SIZE] += 1.0
     return vector
 
 
