@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import string
 from pathlib import Path
 from typing import Optional
@@ -21,6 +22,7 @@ PROVIDER_ID_TEMPLATE_ENV = "NETWORK_PROVIDER_ID_TEMPLATE"
 GROUP_PROVIDER_NAME_TEMPLATE_ENV = "NETWORK_GROUP_PROVIDER_NAME_TEMPLATE"
 ADVISORY_PROVIDER_NAME_ENV = "NETWORK_ADVISORY_PROVIDER_NAME"
 SCHEMES_PROVIDER_NAME_ENV = "NETWORK_SCHEMES_PROVIDER_NAME"
+PROVIDER_ID_PATTERN = re.compile(r"[a-z0-9-]+(?:\.[a-z0-9-]+)*")
 
 
 class NetworkProviderConfigError(ValueError):
@@ -29,6 +31,14 @@ class NetworkProviderConfigError(ValueError):
 
 def _env(name: str, default: str) -> str:
     return os.environ.get(name, "").strip() or default
+
+
+def _check_provider_id(provider_id: str, source: str) -> None:
+    if not PROVIDER_ID_PATTERN.fullmatch(provider_id):
+        raise NetworkProviderConfigError(
+            f"{source} gives provider id {provider_id!r}; it must be lowercase letters, digits, "
+            "'-' and '.', with no leading, trailing or repeated '.'"
+        )
 
 
 def parse_provider_id_overrides(raw: Optional[str], source: str) -> dict[str, dict[str, str]]:
@@ -68,6 +78,7 @@ def parse_provider_id_overrides(raw: Optional[str], source: str) -> dict[str, di
                 raise NetworkProviderConfigError(
                     f"{source} entry {key!r} kind {kind!r} must have a non-empty provider id"
                 )
+            _check_provider_id(provider_id, f"{source} entry {key!r} kind {kind!r}")
             provider_ids[normalized_kind] = provider_id
         overrides[code] = provider_ids
     return overrides
@@ -106,16 +117,27 @@ def _checked_template(
     return template
 
 
+def _checked_id_template(shared_instance: str) -> str:
+    template = _checked_template(
+        PROVIDER_ID_TEMPLATE_ENV,
+        PROVIDER_ID_TEMPLATE,
+        frozenset({"kind", "instance"}),
+        kind="advisory",
+        instance=shared_instance,
+    )
+    for kind in PROVIDER_KINDS:
+        for instance in (shared_instance, "mh"):
+            _check_provider_id(
+                template.format(kind=kind, instance=instance), f"{PROVIDER_ID_TEMPLATE_ENV}={template!r}"
+            )
+    return template
+
+
 def load_provider_naming() -> ProviderNaming:
+    shared_instance = portal_instance()
     return ProviderNaming(
-        shared_instance=portal_instance(),
-        id_template=_checked_template(
-            PROVIDER_ID_TEMPLATE_ENV,
-            PROVIDER_ID_TEMPLATE,
-            frozenset({"kind", "instance"}),
-            kind="advisory",
-            instance="bv",
-        ),
+        shared_instance=shared_instance,
+        id_template=_checked_id_template(shared_instance),
         group_name_template=_checked_template(
             GROUP_PROVIDER_NAME_TEMPLATE_ENV,
             GROUP_PROVIDER_NAME_TEMPLATE,
