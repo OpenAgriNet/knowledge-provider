@@ -30,6 +30,7 @@ from .discovery_publish_service import DiscoveryPublishService
 from .document_repository import DocumentRepository
 from .instances import instance_display_name
 from .network_constants import RESULT_REJECTED
+from .network_provider import InvalidProviderIdError
 from .ocr import ocr_pdf as run_ocr_pdf
 from .ocr import ocr_pdf_in_segments as run_ocr_pdf_in_segments
 from .translation import load_translation_config, translate_pages
@@ -1467,9 +1468,12 @@ async def publish_catalog_to_network(workflow_id: str, transaction_id: str) -> d
     group = repository.get_document_group(workflow_id)
 
     service = DiscoveryPublishService()
-    result = await asyncio.to_thread(
-        service.publish, transaction_id, document_kind, workflow_id, group
-    )
+    try:
+        result = await asyncio.to_thread(
+            service.publish, transaction_id, document_kind, workflow_id, group
+        )
+    except InvalidProviderIdError as exc:
+        raise ApplicationError(str(exc), non_retryable=True) from exc
 
     if result["skipped"]:
         artifact_type = "network_publish_skipped"

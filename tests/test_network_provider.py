@@ -1,6 +1,6 @@
 import pytest
 
-from pipeline.network_provider import Group, ProviderNaming
+from pipeline.network_provider import Group, InvalidProviderIdError, ProviderNaming
 
 MAHARASHTRA = Group(code="mh", name="Maharashtra")
 
@@ -90,3 +90,18 @@ class TestProviderIdOverrides:
     @pytest.mark.unit
     def test_shared_instance_can_be_overridden(self):
         assert self.NAMING.provider("advisory", None)["id"] == "advisory.bharat.example"
+
+
+class TestInvalidProviderIdAtPublish:
+    @pytest.mark.unit
+    @pytest.mark.parametrize("code", ["ladakh_ut", "u p", "MH."])
+    def test_an_instance_that_renders_an_invalid_id_is_refused(self, code):
+        with pytest.raises(InvalidProviderIdError, match="must be lowercase"):
+            ProviderNaming(shared_instance="bv").provider("advisory", Group(code=code, name="Somewhere"))
+
+    @pytest.mark.unit
+    def test_an_invalid_override_is_refused(self):
+        naming = ProviderNaming(shared_instance="bv", provider_id_overrides={"ka": {"scheme": "Scheme.KA"}})
+
+        with pytest.raises(InvalidProviderIdError):
+            naming.provider("scheme", Group(code="ka", name="Karnataka"))

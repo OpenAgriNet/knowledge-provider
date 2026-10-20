@@ -785,6 +785,29 @@ class TestPublishCatalogToNetworkGroups:
         assert recorded["metadata"]["reason"] == "no network catalog is mapped to this document kind"
 
 
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_an_invalid_provider_id_fails_without_retry_or_artifact(self, monkeypatch):
+        import pipeline.activities as activities
+        import pipeline.db as db
+        from pipeline.network_provider import InvalidProviderIdError
+
+        class FakeService:
+            def publish(self, transaction_id, document_kind, workflow_id=None, group=None):
+                raise InvalidProviderIdError("Provider id 'advisory.ladakh_ut.provider.oan.dev' is invalid")
+
+        monkeypatch.setattr(activities, "DiscoveryPublishService", FakeService)
+        monkeypatch.setattr(db, "get_document", lambda workflow_id: {"document_kind": "advisory", "instance": "ladakh_ut"})
+        recorded = {}
+        monkeypatch.setattr(db, "add_document_artifact", lambda **kwargs: recorded.update(kwargs))
+
+        with pytest.raises(ApplicationError, match="ladakh_ut") as excinfo:
+            await activities.publish_catalog_to_network("wf-x", "txn-x")
+
+        assert excinfo.value.non_retryable is True
+        assert recorded == {}
+
+
 class TestWorkerActivityRegistration:
     """
     Every @activity.defn in activities.py must be registered on the worker
