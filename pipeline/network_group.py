@@ -136,6 +136,7 @@ def load_provider_naming() -> ProviderNaming:
         group_name_template=_checked_template(
             GROUP_PROVIDER_NAME_TEMPLATE_ENV,
             GROUP_PROVIDER_NAME_TEMPLATE,
+            frozenset({"group_name"}),
             group_name="Maharashtra",
             provider_name="Advisories from documents",
         ),

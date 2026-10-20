@@ -183,6 +183,20 @@ class TestLoadProviderNaming:
             load_provider_naming()
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("template", ["{provider_name}", "Knowledge from documents"])
+    def test_group_name_template_must_name_the_group(self, monkeypatch, template):
+        monkeypatch.setenv("NETWORK_GROUP_PROVIDER_NAME_TEMPLATE", template)
+
+        with pytest.raises(NetworkProviderConfigError, match="must use"):
+            load_provider_naming()
+
+    @pytest.mark.unit
+    def test_group_name_template_without_the_provider_name_is_accepted(self, monkeypatch):
+        monkeypatch.setenv("NETWORK_GROUP_PROVIDER_NAME_TEMPLATE", "{group_name} knowledge")
+
+        assert load_provider_naming().group_name_template == "{group_name} knowledge"
+
+    @pytest.mark.unit
     @pytest.mark.parametrize(
         "template",
         [
