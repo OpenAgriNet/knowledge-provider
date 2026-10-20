@@ -19,7 +19,7 @@ class Group:
 
 @dataclass(frozen=True)
 class ProviderNaming:
-    shared_instance: str = "bv"
+    shared_instance: str
     id_template: str = PROVIDER_ID_TEMPLATE
     group_name_template: str = GROUP_PROVIDER_NAME_TEMPLATE
     provider_names: Mapping[str, str] = field(
