@@ -29,7 +29,7 @@ class TestDefaultProviderNaming:
         ],
     )
     def test_provider_per_kind_and_instance(self, kind, group, expected):
-        assert ProviderNaming().provider(kind, group) == expected
+        assert ProviderNaming(shared_instance="bv").provider(kind, group) == expected
 
 
 class TestConfiguredProviderNaming:
@@ -53,6 +53,7 @@ class TestConfiguredProviderNaming:
 
 class TestProviderIdOverrides:
     NAMING = ProviderNaming(
+        shared_instance="bv",
         provider_id_overrides={
             "ka": {"advisory": "advisory.ka.com", "scheme": "scheme.ka.com"},
             "tn": {"scheme": "scheme.tn.com"},
