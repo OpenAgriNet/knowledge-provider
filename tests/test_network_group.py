@@ -49,6 +49,11 @@ class TestParseProviderIdOverrides:
             '{"ka": {"advisory": ""}}',
             '{"ka": {"advisory": 42}}',
             '{"KA": {"advisory": "a"}, "ka": {"advisory": "b"}}',
+            '{"ka": {"advisory": "Advisory.KA.com"}}',
+            '{"ka": {"advisory": "advisory ka.com"}}',
+            '{"ka": {"advisory": ".advisory.ka.com"}}',
+            '{"ka": {"advisory": "advisory.ka.com."}}',
+            '{"ka": {"advisory": "advisory..ka.com"}}',
         ],
     )
     def test_malformed_overrides_are_rejected(self, raw):
@@ -176,6 +181,31 @@ class TestLoadProviderNaming:
 
         with pytest.raises(NetworkProviderConfigError, match="must use"):
             load_provider_naming()
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "template",
+        [
+            "{kind} {instance}.provider",
+            "{kind}.{instance}.",
+            ".{kind}.{instance}",
+            "{kind}..{instance}",
+            "{kind}.{instance}.Provider.oan.dev",
+            "{kind}/{instance}",
+        ],
+    )
+    def test_id_template_must_render_a_valid_id(self, monkeypatch, template):
+        monkeypatch.setenv("NETWORK_PROVIDER_ID_TEMPLATE", template)
+
+        with pytest.raises(NetworkProviderConfigError, match="provider id"):
+            load_provider_naming()
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("template", ["{kind}-{instance}.provider.oan.dev", "{instance}.{kind}.example-1.net"])
+    def test_id_template_with_a_valid_shape_is_accepted(self, monkeypatch, template):
+        monkeypatch.setenv("NETWORK_PROVIDER_ID_TEMPLATE", template)
+
+        assert load_provider_naming().id_template == template
 
 
 class TestBootRefusesMalformedProviderMap:
