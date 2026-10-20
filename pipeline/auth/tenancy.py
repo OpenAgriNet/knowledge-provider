@@ -30,6 +30,13 @@ def portal_instance() -> str:
     return (os.environ.get("PORTAL_INSTANCE") or PORTAL_INSTANCE).strip().lower() or PORTAL_INSTANCE
 
 
+def group_for_instance(instance: str | None) -> str | None:
+    code = (instance or "").strip().lower()
+    if not code or code in {portal_instance(), default_instance()}:
+        return None
+    return code
+
+
 def normalize_instance(value: str | None) -> str:
     text = (value or "").strip().lower()
     return text or default_instance()

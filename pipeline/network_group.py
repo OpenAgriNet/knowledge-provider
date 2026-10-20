@@ -6,7 +6,7 @@ import string
 from pathlib import Path
 from typing import Optional
 
-from .auth.tenancy import default_instance, portal_instance
+from .auth.tenancy import portal_instance
 from .network_constants import (
     ADVISORY_PROVIDER_NAME,
     GROUP_PROVIDER_NAME_TEMPLATE,
@@ -29,17 +29,6 @@ class NetworkProviderConfigError(ValueError):
 
 def _env(name: str, default: str) -> str:
     return os.environ.get(name, "").strip() or default
-
-
-def _no_group_instances() -> set[str]:
-    return {portal_instance(), default_instance()}
-
-
-def group_for_instance(instance: Optional[str]) -> Optional[str]:
-    code = (instance or "").strip().lower()
-    if not code or code in _no_group_instances():
-        return None
-    return code
 
 
 def parse_provider_id_overrides(raw: Optional[str], source: str) -> dict[str, dict[str, str]]:

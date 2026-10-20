@@ -6,7 +6,6 @@ from pipeline.network_group import (
     DEFAULT_PROVIDER_CONFIG_OVERRIDE_PATH,
     PROVIDER_CONFIG_OVERRIDE_PATH_ENV,
     NetworkProviderConfigError,
-    group_for_instance,
     load_provider_id_overrides,
     load_provider_naming,
     parse_provider_id_overrides,
@@ -14,42 +13,9 @@ from pipeline.network_group import (
 
 
 @pytest.fixture(autouse=True)
-def _default_no_group_instances(monkeypatch):
+def _default_instances(monkeypatch):
     monkeypatch.delenv("PORTAL_INSTANCE", raising=False)
     monkeypatch.delenv("DEFAULT_INSTANCE", raising=False)
-
-
-class TestGroupForInstance:
-    @pytest.mark.unit
-    @pytest.mark.parametrize(
-        "instance,expected",
-        [
-            ("mh", "mh"),
-            ("  MH ", "mh"),
-            ("ka", "ka"),
-            ("bv", None),
-            ("BV", None),
-            ("default", None),
-            ("", None),
-            (None, None),
-        ],
-    )
-    def test_states_are_groups_and_platform_instances_are_not(self, instance, expected):
-        assert group_for_instance(instance) == expected
-
-    @pytest.mark.unit
-    def test_follows_a_configured_portal_instance(self, monkeypatch):
-        monkeypatch.setenv("PORTAL_INSTANCE", "portal")
-
-        assert group_for_instance("portal") is None
-        assert group_for_instance("mh") == "mh"
-
-    @pytest.mark.unit
-    def test_follows_a_configured_default_instance(self, monkeypatch):
-        monkeypatch.setenv("DEFAULT_INSTANCE", "local")
-
-        assert group_for_instance("local") is None
-        assert group_for_instance("mh") == "mh"
 
 
 class TestParseProviderIdOverrides:
