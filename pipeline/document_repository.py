@@ -9,7 +9,7 @@ so a caller never unpacks a raw document row.
 from typing import Optional
 
 from . import db
-from .network_group import group_for_instance
+from .auth.tenancy import group_for_instance
 
 
 class DocumentRepository:
