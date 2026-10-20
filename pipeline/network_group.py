@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import string
 from pathlib import Path
 from typing import Optional
@@ -14,7 +13,7 @@ from .network_constants import (
     PROVIDER_ID_TEMPLATE,
     SCHEMES_PROVIDER_NAME,
 )
-from .network_provider import PROVIDER_KINDS, ProviderNaming
+from .network_provider import PROVIDER_ID_RULE, PROVIDER_KINDS, ProviderNaming, is_valid_provider_id
 
 PROVIDER_CONFIG_OVERRIDE_PATH_ENV = "PROVIDER_CONFIG_OVERRIDE_PATH"
 DEFAULT_PROVIDER_CONFIG_OVERRIDE_PATH = Path(__file__).with_name("network_group_providers.json")
@@ -22,7 +21,6 @@ PROVIDER_ID_TEMPLATE_ENV = "NETWORK_PROVIDER_ID_TEMPLATE"
 GROUP_PROVIDER_NAME_TEMPLATE_ENV = "NETWORK_GROUP_PROVIDER_NAME_TEMPLATE"
 ADVISORY_PROVIDER_NAME_ENV = "NETWORK_ADVISORY_PROVIDER_NAME"
 SCHEMES_PROVIDER_NAME_ENV = "NETWORK_SCHEMES_PROVIDER_NAME"
-PROVIDER_ID_PATTERN = re.compile(r"[a-z0-9-]+(?:\.[a-z0-9-]+)*")
 
 
 class NetworkProviderConfigError(ValueError):
@@ -34,11 +32,8 @@ def _env(name: str, default: str) -> str:
 
 
 def _check_provider_id(provider_id: str, source: str) -> None:
-    if not PROVIDER_ID_PATTERN.fullmatch(provider_id):
-        raise NetworkProviderConfigError(
-            f"{source} gives provider id {provider_id!r}; it must be lowercase letters, digits, "
-            "'-' and '.', with no leading, trailing or repeated '.'"
-        )
+    if not is_valid_provider_id(provider_id):
+        raise NetworkProviderConfigError(f"{source} gives provider id {provider_id!r}; it must be {PROVIDER_ID_RULE}")
 
 
 def parse_provider_id_overrides(raw: Optional[str], source: str) -> dict[str, dict[str, str]]:
