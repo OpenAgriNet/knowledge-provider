@@ -259,7 +259,7 @@ Each catalog's provider is named per Knowledge Kind and instance: id and descrip
 | `NETWORK_PROVIDER_ID_TEMPLATE` | `{kind}.{instance}.provider.oan.dev` | Default provider id and descriptor code, unless overridden in the file above. `{kind}` is `advisory` or `scheme`; `{instance}` is the group code, or `PORTAL_INSTANCE` for documents with no Group. Must use both and render a valid provider id (lowercase letters, digits, `-` and `.`, no leading, trailing or repeated `.`), or the API and worker refuse to start. A document whose instance code renders an invalid id fails its publish without retry |
 | `NETWORK_ADVISORY_PROVIDER_NAME` | `Advisories from documents` | Provider name for advisory catalogs |
 | `NETWORK_SCHEMES_PROVIDER_NAME` | `Schemes from documents` | Provider name for scheme catalogs |
-| `NETWORK_GROUP_PROVIDER_NAME_TEMPLATE` | `{group_name} {provider_name}` | Provider and catalog name for a Group, e.g. `Maharashtra Advisories from documents` |
+| `NETWORK_GROUP_PROVIDER_NAME_TEMPLATE` | `{group_name} {provider_name}` | Provider and catalog name for a Group, e.g. `Maharashtra Advisories from documents`. Must use `{group_name}`, or the API and worker refuse to start |
 | `DISCOVERY_SERVICE_PUBLISH_INITIAL_INTERVAL_SECONDS` | `30` | Wait before the first retry of a failed publish |
 | `DISCOVERY_SERVICE_PUBLISH_BACKOFF_COEFFICIENT` | `2.0` | Multiplier applied to the wait after each retry |
 | `DISCOVERY_SERVICE_PUBLISH_MAX_INTERVAL_SECONDS` | `300` | Cap on the wait between retries |
