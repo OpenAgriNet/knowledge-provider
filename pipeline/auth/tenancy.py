@@ -26,6 +26,10 @@ def default_instance() -> str:
     return (os.environ.get("DEFAULT_INSTANCE") or "default").strip().lower() or "default"
 
 
+def portal_instance() -> str:
+    return (os.environ.get("PORTAL_INSTANCE") or PORTAL_INSTANCE).strip().lower() or PORTAL_INSTANCE
+
+
 def normalize_instance(value: str | None) -> str:
     text = (value or "").strip().lower()
     return text or default_instance()
@@ -76,8 +80,7 @@ def resolve_create_instance(user: AuthUser, requested: str | None = None) -> str
         if requested_norm:
             return normalize_instance(requested_norm)
         # Prefer portal tag for platform operators when nothing chosen.
-        portal = (os.environ.get("PORTAL_INSTANCE") or PORTAL_INSTANCE).strip().lower()
-        return normalize_instance(portal or default_instance())
+        return normalize_instance(portal_instance())
 
     allowed = allowed_instances(user) or set()
     if not allowed:
