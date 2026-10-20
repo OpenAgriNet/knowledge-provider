@@ -6,7 +6,7 @@ import string
 from pathlib import Path
 from typing import Optional
 
-from .instances import PORTAL_INSTANCE
+from .auth.tenancy import default_instance, portal_instance
 from .network_constants import (
     ADVISORY_PROVIDER_NAME,
     GROUP_PROVIDER_NAME_TEMPLATE,
@@ -31,12 +31,8 @@ def _env(name: str, default: str) -> str:
     return os.environ.get(name, "").strip() or default
 
 
-def portal_instance() -> str:
-    return _env("PORTAL_INSTANCE", PORTAL_INSTANCE).lower()
-
-
 def _no_group_instances() -> set[str]:
-    return {portal_instance(), _env("DEFAULT_INSTANCE", "default").lower()}
+    return {portal_instance(), default_instance()}
 
 
 def group_for_instance(instance: Optional[str]) -> Optional[str]:
