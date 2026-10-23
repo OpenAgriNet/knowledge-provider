@@ -61,7 +61,7 @@ paths:
                 summary: Only the chunks one network provider publishes
                 value:
                   query: "cotton pest advisory"
-                  provider_id: "advisory.mh.provider.oan.dev"
+                  provider_id: "mh.provider.oan.dev"
       responses:
         '200':
           description: Search results
@@ -288,14 +288,14 @@ components:
           description: |
             Limit results to chunks published under these network provider
             ids, the same `provider.id` Publish to Network sends (for example
-            `advisory.mh.provider.oan.dev`). One id or a list; a chunk
+            `mh.provider.oan.dev`). One id or a list; a chunk
             matching any of them is kept. Values are trimmed and lowercased,
             empties dropped. Omitted, null, empty or a list of empties means
             no provider filter. Only advisory and scheme chunks carry a
             provider id, so any provider filter leaves other kinds out.
             Combines with `group` and validity. Any other type returns 400.
             A filter, not an access check.
-          example: "advisory.mh.provider.oan.dev"
+          example: "mh.provider.oan.dev"
 
     SearchHit:
       type: object

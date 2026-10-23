@@ -7,9 +7,9 @@ NAMING_ENV = (
     "PORTAL_INSTANCE",
     "DEFAULT_INSTANCE",
     "NETWORK_PROVIDER_ID_TEMPLATE",
-    "NETWORK_GROUP_PROVIDER_NAME_TEMPLATE",
-    "NETWORK_ADVISORY_PROVIDER_NAME",
-    "NETWORK_SCHEMES_PROVIDER_NAME",
+    "NETWORK_GROUP_CATALOG_NAME_TEMPLATE",
+    "NETWORK_ADVISORY_CATALOG_NAME",
+    "NETWORK_SCHEMES_CATALOG_NAME",
     "PROVIDER_CONFIG_OVERRIDE_PATH",
 )
 
@@ -20,6 +20,7 @@ CHUNK = {"chunk_number": 1, "original_text": "Cotton pest advice", "token_count"
 def _default_naming(monkeypatch):
     for name in NAMING_ENV:
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("NETWORK_SENDER_ID", "provider.oan.dev")
 
 
 def _use_overrides(monkeypatch, tmp_path, content):
@@ -33,11 +34,11 @@ class TestProviderIdFromDoc:
     @pytest.mark.parametrize(
         "kind,instance,expected",
         [
-            ("advisory", "mh", "advisory.mh.provider.oan.dev"),
-            ("Scheme", "MH", "scheme.mh.provider.oan.dev"),
-            ("advisory", "bv", "advisory.bv.provider.oan.dev"),
-            ("scheme", "default", "scheme.bv.provider.oan.dev"),
-            ("advisory", None, "advisory.bv.provider.oan.dev"),
+            ("advisory", "mh", "mh.provider.oan.dev"),
+            ("Scheme", "MH", "mh.provider.oan.dev"),
+            ("advisory", "bv", "bv.provider.oan.dev"),
+            ("scheme", "default", "bv.provider.oan.dev"),
+            ("advisory", None, "bv.provider.oan.dev"),
         ],
     )
     def test_published_kinds_get_the_provider_id(self, kind, instance, expected):
@@ -56,10 +57,19 @@ class TestProviderIdFromDoc:
     def test_follows_the_overrides_file(self, monkeypatch, tmp_path):
         from pipeline.activities import _provider_id_from_doc
 
-        _use_overrides(monkeypatch, tmp_path, '{"ka": {"advisory": "advisory.ka.com"}}')
+        _use_overrides(monkeypatch, tmp_path, '{"ka": "ka.example.com"}')
 
-        assert _provider_id_from_doc({"document_kind": "advisory", "instance": "ka"}) == "advisory.ka.com"
-        assert _provider_id_from_doc({"document_kind": "scheme", "instance": "ka"}) == "scheme.ka.provider.oan.dev"
+        assert _provider_id_from_doc({"document_kind": "advisory", "instance": "ka"}) == "ka.example.com"
+        assert _provider_id_from_doc({"document_kind": "scheme", "instance": "ka"}) == "ka.example.com"
+        assert _provider_id_from_doc({"document_kind": "scheme", "instance": "mh"}) == "mh.provider.oan.dev"
+
+    @pytest.mark.unit
+    def test_no_network_id_means_no_provider_id(self, monkeypatch):
+        from pipeline.activities import _provider_id_from_doc
+
+        monkeypatch.delenv("NETWORK_SENDER_ID", raising=False)
+
+        assert _provider_id_from_doc({"document_kind": "advisory", "instance": "mh"}) is None
 
     @pytest.mark.unit
     def test_an_invalid_provider_id_fails_without_retry(self):
@@ -79,9 +89,8 @@ class TestProviderIdFromDoc:
         from pipeline.auth.tenancy import group_for_instance
         from pipeline.discovery_publish_service import DiscoveryPublishService
 
-        _use_overrides(monkeypatch, tmp_path, '{"ka": {"scheme": "scheme.ka.com"}}')
+        _use_overrides(monkeypatch, tmp_path, '{"ka": "ka.example.com"}')
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
-        monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
         response = MagicMock(status_code=200, text="{}")
         response.json.return_value = {}
         client = MagicMock()
@@ -100,9 +109,9 @@ class TestProviderIdOnRecords:
     def test_every_record_carries_the_provider_id(self):
         from pipeline.activities import _prepare_records
 
-        records = _prepare_records("doc-1", "doc.pdf", [CHUNK, {**CHUNK, "chunk_number": 2}], provider_id="advisory.mh.provider.oan.dev")
+        records = _prepare_records("doc-1", "doc.pdf", [CHUNK, {**CHUNK, "chunk_number": 2}], provider_id="mh.provider.oan.dev")
 
-        assert [r["provider_id"] for r in records] == ["advisory.mh.provider.oan.dev"] * 2
+        assert [r["provider_id"] for r in records] == ["mh.provider.oan.dev"] * 2
 
     @pytest.mark.unit
     def test_no_provider_id_is_left_off_the_point(self):
@@ -149,7 +158,7 @@ class TestIngestPathsStampTheProviderId:
         with pytest.raises(_RecordsBuilt):
             await ingest_document_from_db("wf-1", "doc-1", "doc.pdf")
 
-        assert captured["provider_id"] == "scheme.mh.provider.oan.dev"
+        assert captured["provider_id"] == "mh.provider.oan.dev"
 
     @pytest.mark.unit
     @pytest.mark.asyncio
@@ -163,4 +172,4 @@ class TestIngestPathsStampTheProviderId:
         with pytest.raises(_RecordsBuilt):
             await activities.promote_document_to_prod_qdrant("wf-1", "doc-1", "doc.pdf")
 
-        assert captured["provider_id"] == "scheme.mh.provider.oan.dev"
+        assert captured["provider_id"] == "mh.provider.oan.dev"

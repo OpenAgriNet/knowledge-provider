@@ -10,10 +10,10 @@ from .auth.tenancy import portal_instance
 from .catalog_builder import normalize_document_kind
 from .instances import instance_display_name
 from .network_constants import (
-    ADVISORY_PROVIDER_NAME,
-    GROUP_PROVIDER_NAME_TEMPLATE,
+    ADVISORY_CATALOG_NAME,
+    GROUP_CATALOG_NAME_TEMPLATE,
     PROVIDER_ID_TEMPLATE,
-    SCHEMES_PROVIDER_NAME,
+    SCHEMES_CATALOG_NAME,
 )
 from .network_provider import (
     PROVIDER_ID_RULE,
@@ -26,9 +26,11 @@ from .network_provider import (
 PROVIDER_CONFIG_OVERRIDE_PATH_ENV = "PROVIDER_CONFIG_OVERRIDE_PATH"
 DEFAULT_PROVIDER_CONFIG_OVERRIDE_PATH = Path(__file__).with_name("network_group_providers.json")
 PROVIDER_ID_TEMPLATE_ENV = "NETWORK_PROVIDER_ID_TEMPLATE"
-GROUP_PROVIDER_NAME_TEMPLATE_ENV = "NETWORK_GROUP_PROVIDER_NAME_TEMPLATE"
-ADVISORY_PROVIDER_NAME_ENV = "NETWORK_ADVISORY_PROVIDER_NAME"
-SCHEMES_PROVIDER_NAME_ENV = "NETWORK_SCHEMES_PROVIDER_NAME"
+GROUP_CATALOG_NAME_TEMPLATE_ENV = "NETWORK_GROUP_CATALOG_NAME_TEMPLATE"
+ADVISORY_CATALOG_NAME_ENV = "NETWORK_ADVISORY_CATALOG_NAME"
+SCHEMES_CATALOG_NAME_ENV = "NETWORK_SCHEMES_CATALOG_NAME"
+NETWORK_ID_ENV = "NETWORK_SENDER_ID"
+SAMPLE_NETWORK_ID = "provider.oan.dev"
 
 
 class NetworkProviderConfigError(ValueError):
@@ -44,7 +46,7 @@ def _check_provider_id(provider_id: str, source: str) -> None:
         raise NetworkProviderConfigError(f"{source} gives provider id {provider_id!r}; it must be {PROVIDER_ID_RULE}")
 
 
-def parse_provider_id_overrides(raw: Optional[str], source: str) -> dict[str, dict[str, str]]:
+def parse_provider_id_overrides(raw: Optional[str], source: str) -> dict[str, str]:
     if raw is None or not raw.strip():
         return {}
 
@@ -54,36 +56,22 @@ def parse_provider_id_overrides(raw: Optional[str], source: str) -> dict[str, di
         raise NetworkProviderConfigError(f"{source} is not valid JSON: {exc}") from exc
 
     if not isinstance(parsed, dict):
-        raise NetworkProviderConfigError(
-            f"{source} must be a JSON object of instance code to {{kind: provider id}}"
-        )
+        raise NetworkProviderConfigError(f"{source} must be a JSON object of instance code to provider id")
 
-    overrides: dict[str, dict[str, str]] = {}
-    for key, kinds in parsed.items():
+    overrides: dict[str, str] = {}
+    for key, value in parsed.items():
         code = key.strip().lower() if isinstance(key, str) else ""
         if not code:
             raise NetworkProviderConfigError(f"{source} entry {key!r} must be a non-empty instance code")
         if code in overrides:
             raise NetworkProviderConfigError(f"{source} names instance {code!r} more than once")
-        if not isinstance(kinds, dict) or not kinds:
+        if not isinstance(value, str) or not value.strip():
             raise NetworkProviderConfigError(
-                f"{source} entry {key!r} must map knowledge kinds to provider ids"
+                f"{source} entry {key!r} must map to a provider id string, e.g. {{\"{code}\": \"{code}.example.com\"}}"
             )
-        provider_ids: dict[str, str] = {}
-        for kind, value in kinds.items():
-            normalized_kind = kind.strip().lower() if isinstance(kind, str) else ""
-            provider_id = value.strip() if isinstance(value, str) else ""
-            if normalized_kind not in PROVIDER_KINDS:
-                raise NetworkProviderConfigError(
-                    f"{source} entry {key!r} kind {kind!r} must be one of {list(PROVIDER_KINDS)}"
-                )
-            if not provider_id:
-                raise NetworkProviderConfigError(
-                    f"{source} entry {key!r} kind {kind!r} must have a non-empty provider id"
-                )
-            _check_provider_id(provider_id, f"{source} entry {key!r} kind {kind!r}")
-            provider_ids[normalized_kind] = provider_id
-        overrides[code] = provider_ids
+        provider_id = value.strip()
+        _check_provider_id(provider_id, f"{source} entry {key!r}")
+        overrides[code] = provider_id
     return overrides
 
 
@@ -92,7 +80,7 @@ def provider_config_override_path() -> Path:
     return Path(configured) if configured else DEFAULT_PROVIDER_CONFIG_OVERRIDE_PATH
 
 
-def load_provider_id_overrides() -> dict[str, dict[str, str]]:
+def load_provider_id_overrides() -> dict[str, str]:
     path = provider_config_override_path()
     try:
         raw = path.read_text(encoding="utf-8")
@@ -120,37 +108,41 @@ def _checked_template(
     return template
 
 
-def _checked_id_template(shared_instance: str) -> str:
+def _checked_id_template(shared_instance: str, network_id: Optional[str]) -> str:
+    sample_network_id = network_id or SAMPLE_NETWORK_ID
     template = _checked_template(
         PROVIDER_ID_TEMPLATE_ENV,
         PROVIDER_ID_TEMPLATE,
-        frozenset({"kind", "instance"}),
-        kind="advisory",
+        frozenset({"instance", "network_id"}),
         instance=shared_instance,
+        network_id=sample_network_id,
     )
-    for kind in PROVIDER_KINDS:
-        for instance in (shared_instance, "mh"):
-            _check_provider_id(
-                template.format(kind=kind, instance=instance), f"{PROVIDER_ID_TEMPLATE_ENV}={template!r}"
-            )
+    for instance in (shared_instance, "mh"):
+        _check_provider_id(
+            template.format(instance=instance, network_id=sample_network_id),
+            f"{PROVIDER_ID_TEMPLATE_ENV}={template!r} with {NETWORK_ID_ENV}={sample_network_id!r}",
+        )
     return template
 
 
-def load_provider_naming() -> ProviderNaming:
+def load_provider_naming(network_id: Optional[str] = None) -> ProviderNaming:
     shared_instance = portal_instance()
+    network_id = (network_id or os.environ.get(NETWORK_ID_ENV) or "").strip() or None
     return ProviderNaming(
         shared_instance=shared_instance,
-        id_template=_checked_id_template(shared_instance),
-        group_name_template=_checked_template(
-            GROUP_PROVIDER_NAME_TEMPLATE_ENV,
-            GROUP_PROVIDER_NAME_TEMPLATE,
+        shared_name=instance_display_name(shared_instance),
+        network_id=network_id,
+        id_template=_checked_id_template(shared_instance, network_id),
+        group_catalog_name_template=_checked_template(
+            GROUP_CATALOG_NAME_TEMPLATE_ENV,
+            GROUP_CATALOG_NAME_TEMPLATE,
             frozenset({"group_name"}),
             group_name="Maharashtra",
-            provider_name="Advisories from documents",
+            catalog_name="Advisories from documents",
         ),
-        provider_names={
-            "advisory": _env(ADVISORY_PROVIDER_NAME_ENV, ADVISORY_PROVIDER_NAME),
-            "scheme": _env(SCHEMES_PROVIDER_NAME_ENV, SCHEMES_PROVIDER_NAME),
+        catalog_names={
+            "advisory": _env(ADVISORY_CATALOG_NAME_ENV, ADVISORY_CATALOG_NAME),
+            "scheme": _env(SCHEMES_CATALOG_NAME_ENV, SCHEMES_CATALOG_NAME),
         },
         provider_id_overrides=load_provider_id_overrides(),
     )
@@ -167,7 +159,6 @@ def named_group(code: Optional[str]) -> Optional[Group]:
 
 
 def provider_for(naming: ProviderNaming, document_kind: Optional[str], group: Optional[Group]) -> Optional[dict]:
-    kind = normalize_document_kind(document_kind)
-    if kind not in PROVIDER_KINDS:
+    if normalize_document_kind(document_kind) not in PROVIDER_KINDS or naming.network_id is None:
         return None
-    return naming.provider(kind, group)
+    return naming.provider(group)
