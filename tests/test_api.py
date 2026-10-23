@@ -521,6 +521,61 @@ class TestSearchGroup:
         assert capturing_store.captured["apply_validity"] is False
 
 
+class TestSearchProviderId:
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_passes_one_provider_id_to_the_store(self, test_client, capturing_store):
+        response = test_client.post("/search", json={"query": "kisan", "provider_id": "advisory.mh.provider.oan.dev"})
+
+        assert response.status_code == 200
+        assert capturing_store.captured["provider_ids"] == ["advisory.mh.provider.oan.dev"]
+        assert response.json()["effective_config"]["provider_id"] == ["advisory.mh.provider.oan.dev"]
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_passes_a_list_trimmed_lowercased_and_deduplicated(self, test_client, capturing_store):
+        test_client.post(
+            "/search",
+            json={"query": "kisan", "provider_id": [" Advisory.MH.provider.oan.dev ", "scheme.mh.provider.oan.dev", "advisory.mh.provider.oan.dev", ""]},
+        )
+
+        assert capturing_store.captured["provider_ids"] == ["advisory.mh.provider.oan.dev", "scheme.mh.provider.oan.dev"]
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    @pytest.mark.parametrize("body", [
+        {"query": "kisan"},
+        {"query": "kisan", "provider_id": None},
+        {"query": "kisan", "provider_id": "  "},
+        {"query": "kisan", "provider_id": []},
+        {"query": "kisan", "provider_id": ["", " "]},
+    ])
+    def test_absent_or_empty_means_no_filter(self, test_client, capturing_store, body):
+        response = test_client.post("/search", json=body)
+
+        assert response.status_code == 200
+        assert capturing_store.captured["provider_ids"] is None
+        assert response.json()["effective_config"]["provider_id"] is None
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    @pytest.mark.parametrize("bad", [7, {"id": "x"}, ["ok", 3], True])
+    def test_rejects_anything_but_a_string_or_a_list_of_strings(self, test_client, capturing_store, bad):
+        response = test_client.post("/search", json={"query": "kisan", "provider_id": bad})
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "provider_id must be a string or a list of strings"
+        assert capturing_store.captured == {}
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_composes_with_group(self, test_client, capturing_store):
+        test_client.post("/search", json={"query": "kisan", "group": "mh", "provider_id": "advisory.mh.provider.oan.dev"})
+
+        assert capturing_store.captured["instance"] == "mh"
+        assert capturing_store.captured["provider_ids"] == ["advisory.mh.provider.oan.dev"]
+
+
 class TestPageEndpoints:
     """Tests for page operations."""
 
