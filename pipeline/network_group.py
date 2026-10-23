@@ -7,13 +7,21 @@ from pathlib import Path
 from typing import Optional
 
 from .auth.tenancy import portal_instance
+from .catalog_builder import normalize_document_kind
+from .instances import instance_display_name
 from .network_constants import (
     ADVISORY_PROVIDER_NAME,
     GROUP_PROVIDER_NAME_TEMPLATE,
     PROVIDER_ID_TEMPLATE,
     SCHEMES_PROVIDER_NAME,
 )
-from .network_provider import PROVIDER_ID_RULE, PROVIDER_KINDS, ProviderNaming, is_valid_provider_id
+from .network_provider import (
+    PROVIDER_ID_RULE,
+    PROVIDER_KINDS,
+    Group,
+    ProviderNaming,
+    is_valid_provider_id,
+)
 
 PROVIDER_CONFIG_OVERRIDE_PATH_ENV = "PROVIDER_CONFIG_OVERRIDE_PATH"
 DEFAULT_PROVIDER_CONFIG_OVERRIDE_PATH = Path(__file__).with_name("network_group_providers.json")
@@ -150,3 +158,16 @@ def load_provider_naming() -> ProviderNaming:
 
 def validate_network_provider_config() -> None:
     load_provider_naming()
+
+
+def named_group(code: Optional[str]) -> Optional[Group]:
+    if code is None:
+        return None
+    return Group(code=code, name=instance_display_name(code))
+
+
+def provider_for(naming: ProviderNaming, document_kind: Optional[str], group: Optional[Group]) -> Optional[dict]:
+    kind = normalize_document_kind(document_kind)
+    if kind not in PROVIDER_KINDS:
+        return None
+    return naming.provider(kind, group)
