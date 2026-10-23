@@ -57,6 +57,11 @@ paths:
                 value:
                   query: "cotton pest advisory"
                   group: "mh"
+              one_provider:
+                summary: Only the chunks one network provider publishes
+                value:
+                  query: "cotton pest advisory"
+                  provider_id: "advisory.mh.provider.oan.dev"
       responses:
         '200':
           description: Search results
@@ -65,7 +70,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/SearchResponse'
         '400':
-          description: Missing/empty query, malformed valid_on, non-string group, or the underlying vector-store search failed
+          description: Missing/empty query, malformed valid_on, non-string group, a provider_id that is not a string or a list of strings, or the underlying vector-store search failed
           content:
             application/json:
               schema:
@@ -274,6 +279,23 @@ components:
             access check: this endpoint applies no tenant scoping, so any
             search-capable caller may ask for any group.
           example: "mh"
+        provider_id:
+          oneOf:
+            - type: string
+            - type: array
+              items: { type: string }
+          nullable: true
+          description: |
+            Limit results to chunks published under these network provider
+            ids, the same `provider.id` Publish to Network sends (for example
+            `advisory.mh.provider.oan.dev`). One id or a list; a chunk
+            matching any of them is kept. Values are trimmed and lowercased,
+            empties dropped. Omitted, null, empty or a list of empties means
+            no provider filter. Only advisory and scheme chunks carry a
+            provider id, so any provider filter leaves other kinds out.
+            Combines with `group` and validity. Any other type returns 400.
+            A filter, not an access check.
+          example: "advisory.mh.provider.oan.dev"
 
     SearchHit:
       type: object
@@ -298,6 +320,9 @@ components:
           type: string
         instance_name:
           type: string
+        provider_id:
+          type: string
+          description: The network provider id this chunk's document publishes under. Absent for kinds other than advisory and scheme.
         type:
           type: string
         source:
@@ -407,6 +432,11 @@ components:
           type: string
           nullable: true
           description: The normalised group filter that was applied (e.g. `mh`), or null when the search spanned every group.
+        provider_id:
+          type: array
+          items: { type: string }
+          nullable: true
+          description: The normalised provider ids the search was limited to, or null when no provider filter applied.
         filter_string:
           type: string
           nullable: true

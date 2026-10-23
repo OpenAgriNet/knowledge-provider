@@ -36,6 +36,10 @@ _Avoid_: "state provider".
 The network provider used by documents with no Group (Bharat Vistaar, `default`), one per Knowledge Kind, keeping the original catalog ids.
 _Avoid_: "national provider", "central provider".
 
+**Provider Id**:
+The id a Group Provider or Shared Provider is announced under on the network, for one Knowledge Kind. Every chunk of an advisory or scheme document carries its document's Provider Id, so a consumer who finds a provider on the network can search exactly that provider's knowledge.
+_Avoid_: "providerId", "group id".
+
 **Knowledge Kind**:
 What a document *is* to the network — `advisory`, `scheme`, `video`, or an operator-entered slug — held in `documents.document_kind`. Asserted by a reviewer during the pipeline, never inferred from the file, and absent until then (every document starts as the default `document`). Only `advisory` and `scheme` map to a Network Catalog Envelope; the rest publish nothing.
 _Avoid_: "document type" — collides with `source_type`/`canonical_input_type`, which describe the input *format* (pdf, spreadsheet). Also avoid saying an advisory is "uploaded": what is uploaded is a file, which only becomes an advisory when someone classifies it.
