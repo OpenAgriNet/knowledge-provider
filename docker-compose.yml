@@ -30,13 +30,16 @@ services:
   # Temporal infrastructure
   # ---------------------------------------------------------------------------
   temporal-db:
-    image: postgres:15-alpine
+    image: dhi.io/postgres:15
     platform: linux/amd64
     environment:
       POSTGRES_USER: temporal
       POSTGRES_PASSWORD: temporal
     volumes:
-      - temporal-db-data:/var/lib/postgresql/data
+      # DHI postgres keeps PGDATA at /var/lib/postgresql/15/data (owned by
+      # postgres, so a fresh volume is writable). Existing volumes from the
+      # old image hold the data dir at their root, so they mount here unchanged.
+      - temporal-db-data:/var/lib/postgresql/15/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U temporal"]
       interval: 5s
@@ -44,30 +47,103 @@ services:
       retries: 10
     restart: unless-stopped
 
-  temporal:
-    image: temporalio/auto-setup:latest
+  # DHI has no auto-setup image, so what auto-setup did is split in three:
+  # temporal-schema (DB + schema), temporal (the server) and temporal-namespace
+  # (the `default` namespace). All three are idempotent.
+  temporal-schema:
+    image: dhi.io/temporalio-admin-tools:1
     platform: linux/amd64
     depends_on:
       temporal-db:
         condition: service_healthy
+    entrypoint: ["bash", "-c"]
+    command:
+      - |
+        set -u
+        T="temporal-sql-tool --plugin postgres12 --ep temporal-db -p 5432 -u temporal --pw temporal"
+        S=/etc/temporal/schema/postgresql/v12
+        for pair in temporal:temporal visibility:temporal_visibility; do
+          dir=$${pair%%:*}; db=$${pair##*:}
+          $$T --db $$db create || true
+          $$T --db $$db setup-schema -v 0.0 || true
+          $$T --db $$db update-schema -d $$S/$$dir/versioned
+        done
+    restart: "no"
+
+  temporal:
+    image: dhi.io/temporalio-server:1
+    platform: linux/amd64
+    depends_on:
+      temporal-db:
+        condition: service_healthy
+      temporal-schema:
+        condition: service_completed_successfully
     environment:
       - DB=postgres12
       - DB_PORT=5432
       - POSTGRES_USER=temporal
       - POSTGRES_PWD=temporal
       - POSTGRES_SEEDS=temporal-db
+      - DBNAME=temporal
+      - VISIBILITY_DBNAME=temporal_visibility
+      # Must match the 4 shards the previous auto-setup image created; fixed
+      # for the life of a cluster.
+      - NUM_HISTORY_SHARDS=4
+      # The image's entrypoint derives these with awk, which the hardened image
+      # lacks. Single node: listen everywhere, advertise loopback to itself.
+      - BIND_ON_IP=0.0.0.0
+      - TEMPORAL_BROADCAST_ADDRESS=127.0.0.1
+    volumes:
+      # The image has no dynamic config file but its server insists on one.
+      - ./temporal/dynamicconfig/docker.yaml:/etc/temporal/config/dynamicconfig/docker.yaml:ro
     ports:
       - "127.0.0.1:7233:7233"
     healthcheck:
-      test: ["CMD", "tctl", "--address", "temporal:7233", "cluster", "health"]
+      # No tctl in the server image; a TCP connect to the frontend is enough.
+      test: ["CMD", "bash", "-c", "</dev/tcp/127.0.0.1/7233"]
       interval: 20s
       timeout: 10s
       retries: 10
       start_period: 60s
     restart: unless-stopped
 
+  temporal-namespace:
+    # Uses the app image's Temporal SDK: the CLI in dhi.io/temporalio-admin-tools
+    # cannot connect to this server (gRPC check times out), the SDK can.
+    image: ghcr.io/openagrinet/knowledge-provider:${IMAGE_TAG:-latest}
+    platform: linux/amd64
+    depends_on:
+      temporal:
+        condition: service_healthy
+    command:
+      - python
+      - -c
+      - |
+        import asyncio
+        from google.protobuf.duration_pb2 import Duration
+        from temporalio.client import Client
+        from temporalio.api.workflowservice.v1 import (
+            DescribeNamespaceRequest, RegisterNamespaceRequest)
+        from temporalio.service import RPCError, RPCStatusCode
+
+        async def main():
+            svc = (await Client.connect("temporal:7233")).workflow_service
+            try:
+                await svc.describe_namespace(DescribeNamespaceRequest(namespace="default"))
+                print("namespace default exists")
+            except RPCError as e:
+                if e.status != RPCStatusCode.NOT_FOUND:
+                    raise
+                await svc.register_namespace(RegisterNamespaceRequest(
+                    namespace="default",
+                    workflow_execution_retention_period=Duration(seconds=72 * 3600)))
+                print("namespace default created")
+
+        asyncio.run(main())
+    restart: "no"
+
   temporal-ui:
-    image: temporalio/ui:latest
+    image: dhi.io/temporalio-ui:2
     platform: linux/amd64
     depends_on:
       - temporal
@@ -83,7 +159,7 @@ services:
   # MinIO object storage
   # ---------------------------------------------------------------------------
   minio:
-    image: minio/minio:latest
+    image: dhi.io/minio:latest
     platform: linux/amd64
     command: server /data --console-address ":9001"
     environment:
@@ -95,30 +171,15 @@ services:
     volumes:
       - minio-data:/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      # DHI minio has no curl; bash is /bin/sh there, so probe over /dev/tcp.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /minio/health/live HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && read -r l <&3 && [[ $$l == *' 200 '* ]]"]
       interval: 20s
       timeout: 10s
       retries: 5
     restart: unless-stopped
 
-  # Creates the default bucket on first boot then exits.
-  minio-init:
-    image: minio/mc:latest
-    platform: linux/amd64
-    depends_on:
-      minio:
-        condition: service_healthy
-    entrypoint: >
-      /bin/sh -c "
-      mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD};
-      mc mb -p local/$${MINIO_BUCKET:-documents} || true;
-      exit 0;
-      "
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
-      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
-      MINIO_BUCKET: ${MINIO_BUCKET:-documents}
-    restart: "no"
+  # No bucket-init job: the API creates MINIO_BUCKET at startup (pipeline/api.py
+  # lifespan), and no DHI image exists for the `mc` client the job needed.
 
   # ---------------------------------------------------------------------------
   # Qdrant — DEV vector index (see docs/SYSTEM_DESIGN.md's DEV vs PROD dual
@@ -130,18 +191,18 @@ services:
   # real, separately-managed deployment, on purpose.
   # ---------------------------------------------------------------------------
   qdrant:
-    image: qdrant/qdrant:latest
+    image: dhi.io/qdrant:1
     platform: linux/amd64
+    environment:
+      # The DHI image has no fixed working dir, so pin the storage path to the
+      # one the volume has always been mounted at.
+      QDRANT__STORAGE__STORAGE_PATH: /qdrant/storage
     volumes:
       - qdrant-data:/qdrant/storage
     ports:
       - "127.0.0.1:6333:6333"
-    healthcheck:
-      # No curl/wget in this image — bash's /dev/tcp is a builtin, works without one.
-      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333' 2>/dev/null"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
+    # No healthcheck: the DHI image has no shell, curl or wget to probe with,
+    # so dependents wait on service_started instead.
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -153,14 +214,14 @@ services:
   # nothing here forces you onto the bundled one, it's only the default.
   # ---------------------------------------------------------------------------
   keycloak-db:
-    image: postgres:15-alpine
+    image: dhi.io/postgres:15
     platform: linux/amd64
     environment:
       POSTGRES_USER: ${KC_DB_USERNAME:-keycloak}
       POSTGRES_PASSWORD: ${KC_DB_PASSWORD:-keycloak}
       POSTGRES_DB: ${KC_DB_NAME:-keycloak}
     volumes:
-      - keycloak-db-data:/var/lib/postgresql/data
+      - keycloak-db-data:/var/lib/postgresql/15/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${KC_DB_USERNAME:-keycloak}"]
       interval: 5s
@@ -169,7 +230,8 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # Keycloak (auth) — built from keycloak/Dockerfile which pre-installs the
+  # Keycloak (auth) — built from keycloak/Dockerfile (Docker Hardened Image
+# base, dhi.io/keycloak; needs `docker login dhi.io`) which pre-installs the
   # email-OTP 2FA plugin (mesutpiskin/keycloak-2fa-email-authenticator).
   #
   # SMTP details come exclusively from .env (KC_SMTP_* vars) — nothing is
@@ -231,6 +293,33 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
+  # Keycloak bootstrap — one-shot that runs once Keycloak is up: creates the
+  # roles + /global and /states/{CODE} groups + groups-claim mapper, and adds the
+  # users in BOOTSTRAP_SUPER_ADMIN_EMAILS / BOOTSTRAP_STATE_USERS (.env).
+  # Idempotent; scripts/ is mounted rather than baked into the app image.
+  # ---------------------------------------------------------------------------
+  keycloak-bootstrap:
+    image: ghcr.io/openagrinet/knowledge-provider:${IMAGE_TAG:-latest}
+    platform: linux/amd64
+    depends_on:
+      keycloak:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      KEYCLOAK_BASE_URL: http://keycloak:8080${KC_HTTP_RELATIVE_PATH:-/auth}
+      KEYCLOAK_ADMIN_BASE_URL: http://keycloak:8080${KC_HTTP_RELATIVE_PATH:-/auth}
+      KEYCLOAK_REALM: ${KEYCLOAK_BOOTSTRAP_REALM:-docs-pipeline}
+      KEYCLOAK_ADMIN_REALM: ${KEYCLOAK_BOOTSTRAP_REALM:-docs-pipeline}
+      KEYCLOAK_ADMIN: ${KC_ADMIN:-admin}
+      KEYCLOAK_ADMIN_USERNAME: ${KC_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD}
+    volumes:
+      - ./scripts:/app/scripts:ro
+    command: python /app/scripts/bootstrap_local_keycloak.py
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
   # Pipeline API
   # The image is built once; dev vs prod is controlled by .env values.
   # env_file loads all config; environment: only overrides Docker-network
@@ -259,10 +348,12 @@ services:
     depends_on:
       temporal:
         condition: service_healthy
+      temporal-namespace:
+        condition: service_completed_successfully
       minio:
         condition: service_healthy
       qdrant:
-        condition: service_healthy
+        condition: service_started
       keycloak:
         condition: service_started
     command: uvicorn pipeline.api:app --host 0.0.0.0 --port 8001
@@ -298,10 +389,12 @@ services:
     depends_on:
       temporal:
         condition: service_healthy
+      temporal-namespace:
+        condition: service_completed_successfully
       minio:
         condition: service_healthy
       qdrant:
-        condition: service_healthy
+        condition: service_started
       api:
         condition: service_started
     command: python -m pipeline.worker
@@ -338,7 +431,7 @@ services:
         VITE_KEYCLOAK_IDP_HINT: ${VITE_KEYCLOAK_IDP_HINT:-}
         VITE_AUTH_ENABLED: ${VITE_AUTH_ENABLED:-false}
     ports:
-      - "127.0.0.1:${UI_HOST_PORT:-3011}:80"
+      - "127.0.0.1:${UI_HOST_PORT:-3011}:8080"
     depends_on:
       - api
     restart: unless-stopped

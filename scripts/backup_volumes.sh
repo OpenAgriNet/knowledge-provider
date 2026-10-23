@@ -38,10 +38,10 @@ backup_volume() {
   fi
 
   echo "Backing up ${logical_name} volume: ${vol_name}"
-  docker run --rm \
+  docker run --rm --user 0 \
     -v "${vol_name}":/from \
     -v "${ROOT_DIR}/${BACKUP_DIR}":/backup \
-    alpine sh -c "cd /from && tar czf /backup/${vol_name}-${TIMESTAMP}.tar.gz ."
+    dhi.io/busybox:1 sh -c "cd /from && tar czf /backup/${vol_name}-${TIMESTAMP}.tar.gz ."
 }
 
 echo "Backing up docs-pipeline volumes into ${BACKUP_DIR} (timestamp: ${TIMESTAMP})"
