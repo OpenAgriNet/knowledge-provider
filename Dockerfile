@@ -13,8 +13,7 @@ WORKDIR /app
 #     curl \
 #     && rm -rf /var/lib/apt/lists/*
 
-# uv comes from PyPI (build stage only; not shipped in the runtime image).
-RUN pip install --no-cache-dir uv==0.12.5
+COPY --from=ghcr.io/astral-sh/uv:0.12.5 /uv /uvx /usr/local/bin/
 
 # Use the base image's own Python 3.10 rather than letting uv download a
 # managed interpreter — there's no point fetching a second one.
