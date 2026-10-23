@@ -117,4 +117,4 @@ React 18 + Vite + Tailwind v4 + Radix UI operator console (not a plain upload fo
 
 ### Scripts (`scripts/`)
 
-Operational tools, not one-off hacks — e.g. `list_failed_workflows.py`, `terminate_stuck_workflows.py`, `keycloak_bootstrap_docs_pipeline.py`, `drop_legacy_marqo_columns.py`. Check here before writing a new maintenance script — an equivalent likely exists.
+Operational tools, not one-off hacks — e.g. `list_failed_workflows.py`, `terminate_stuck_workflows.py`, `keycloak_bootstrap_docs_pipeline.py`, `drop_legacy_marqo_columns.py`, `backfill_provider_id.py` (sets `provider_id` on existing DEV/PROD chunks; dry run unless `--apply`). Check here before writing a new maintenance script — an equivalent likely exists.
