@@ -17,10 +17,8 @@ from typing import Optional
 import httpx
 
 from .catalog_builder import build_catalog, is_publishable_kind, normalize_document_kind
-from .instances import instance_display_name
 from .network_constants import BECKN_VERSION, RESULT_ACCEPTED
-from .network_group import load_provider_naming
-from .network_provider import Group
+from .network_group import load_provider_naming, named_group, provider_for
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +42,7 @@ class DiscoveryPublishService:
             raise RuntimeError("NETWORK_SENDER_ID must be set to publish to the network.")
 
         self.timeout = timeout
-        self.provider_naming = load_provider_naming()
+        self.provider_naming = load_provider_naming(self.sender_id)
 
     def publish(
         self,
@@ -72,12 +70,10 @@ class DiscoveryPublishService:
             )
             return self._skipped()
 
-        catalog_group = None
-        if group is not None:
-            catalog_group = Group(code=group, name=instance_display_name(group))
-
-        provider = self.provider_naming.provider(normalize_document_kind(document_kind), catalog_group)
-        catalog = build_catalog(document_kind, provider, catalog_group)
+        catalog_group = named_group(group)
+        provider = provider_for(self.provider_naming, document_kind, catalog_group)
+        catalog_name = self.provider_naming.catalog_name(normalize_document_kind(document_kind), catalog_group)
+        catalog = build_catalog(document_kind, provider, catalog_name, catalog_group)
 
         envelope = {
             "context": {

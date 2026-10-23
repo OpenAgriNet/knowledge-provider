@@ -16,7 +16,6 @@ from typing import Optional
 
 from .network_constants import (
     ADVISORY_CATALOG_ID,
-    ADVISORY_CATALOG_NAME,
     ADVISORY_RESOURCE_ID,
     ADVISORY_RESOURCE_NAME,
     ADVISORY_SUBJECT_CATEGORIES,
@@ -27,7 +26,6 @@ from .network_constants import (
     SCHEME_SUBJECT_CATEGORIES,
     SCHEME_TOPICS,
     SCHEMES_CATALOG_ID,
-    SCHEMES_CATALOG_NAME,
     SCHEMES_RESOURCE_ID,
     SCHEMES_RESOURCE_NAME,
     SERVED_LANGUAGES,
@@ -59,14 +57,12 @@ _SCHEME_RESOURCE_ATTRIBUTES = {
 _KNOWLEDGE_KIND_CATALOGS = {
     "advisory": {
         "catalog_id": ADVISORY_CATALOG_ID,
-        "catalog_name": ADVISORY_CATALOG_NAME,
         "resource_id": ADVISORY_RESOURCE_ID,
         "resource_name": ADVISORY_RESOURCE_NAME,
         "resource_attributes": _ADVISORY_RESOURCE_ATTRIBUTES,
     },
     "scheme": {
         "catalog_id": SCHEMES_CATALOG_ID,
-        "catalog_name": SCHEMES_CATALOG_NAME,
         "resource_id": SCHEMES_RESOURCE_ID,
         "resource_name": SCHEMES_RESOURCE_NAME,
         "resource_attributes": _SCHEME_RESOURCE_ATTRIBUTES,
@@ -88,6 +84,7 @@ def is_publishable_kind(document_kind: Optional[str]) -> bool:
 def build_catalog(
     document_kind: Optional[str],
     provider: dict,
+    catalog_name: str,
     group: Optional[Group] = None,
 ) -> Optional[dict]:
     """Return the catalog to announce for `document_kind`, or None.
@@ -101,14 +98,12 @@ def build_catalog(
         return None
 
     catalog_id = spec["catalog_id"]
-    catalog_name = spec["catalog_name"]
     resource_id = spec["resource_id"]
     provider = copy.deepcopy(provider)
     if group is not None:
         prefix = f"{group.code}-"
         catalog_id = prefix + catalog_id
         resource_id = prefix + resource_id
-        catalog_name = provider["descriptor"]["name"]
 
     catalog = {
         "id": catalog_id,

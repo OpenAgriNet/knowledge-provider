@@ -3,10 +3,10 @@ from dataclasses import dataclass, field
 from typing import Mapping, Optional
 
 from .network_constants import (
-    ADVISORY_PROVIDER_NAME,
-    GROUP_PROVIDER_NAME_TEMPLATE,
+    ADVISORY_CATALOG_NAME,
+    GROUP_CATALOG_NAME_TEMPLATE,
     PROVIDER_ID_TEMPLATE,
-    SCHEMES_PROVIDER_NAME,
+    SCHEMES_CATALOG_NAME,
 )
 
 PROVIDER_KINDS = ("advisory", "scheme")
@@ -31,26 +31,32 @@ class Group:
 @dataclass(frozen=True)
 class ProviderNaming:
     shared_instance: str
+    shared_name: str
+    network_id: Optional[str]
     id_template: str = PROVIDER_ID_TEMPLATE
-    group_name_template: str = GROUP_PROVIDER_NAME_TEMPLATE
-    provider_names: Mapping[str, str] = field(
+    group_catalog_name_template: str = GROUP_CATALOG_NAME_TEMPLATE
+    catalog_names: Mapping[str, str] = field(
         default_factory=lambda: {
-            "advisory": ADVISORY_PROVIDER_NAME,
-            "scheme": SCHEMES_PROVIDER_NAME,
+            "advisory": ADVISORY_CATALOG_NAME,
+            "scheme": SCHEMES_CATALOG_NAME,
         }
     )
-    provider_id_overrides: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+    provider_id_overrides: Mapping[str, str] = field(default_factory=dict)
 
-    def provider(self, kind: str, group: Optional[Group]) -> dict:
+    def provider(self, group: Optional[Group]) -> dict:
         instance = group.code if group is not None else self.shared_instance
-        provider_id = self.provider_id_overrides.get(instance, {}).get(kind) or self.id_template.format(
-            kind=kind, instance=instance
+        provider_id = self.provider_id_overrides.get(instance) or self.id_template.format(
+            instance=instance, network_id=self.network_id
         )
         if not is_valid_provider_id(provider_id):
             raise InvalidProviderIdError(
-                f"Provider id {provider_id!r} for {kind} on instance {instance!r} must be {PROVIDER_ID_RULE}"
+                f"Provider id {provider_id!r} for instance {instance!r} must be {PROVIDER_ID_RULE}"
             )
-        name = self.provider_names[kind]
-        if group is not None:
-            name = self.group_name_template.format(group_name=group.name, provider_name=name)
+        name = group.name if group is not None else self.shared_name
         return {"id": provider_id, "descriptor": {"code": provider_id, "name": name}}
+
+    def catalog_name(self, kind: str, group: Optional[Group]) -> str:
+        name = self.catalog_names[kind]
+        if group is None:
+            return name
+        return self.group_catalog_name_template.format(group_name=group.name, catalog_name=name)

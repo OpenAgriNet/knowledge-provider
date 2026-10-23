@@ -70,7 +70,7 @@ Core modules (all under `pipeline/`):
 - `document_repository.py` — `DocumentRepository`, a domain layer over `db.py` for document reads; `db.py` stays one-function-per-query with no domain knowledge
 - `network_constants.py` — fixed values sent on the network (catalog/resource ids, topics, languages, Beckn version). The file v2 edits when the AI layer starts deriving them
 - `catalog_builder.py` — pure builder mapping a document's knowledge kind (`advisory`/`scheme`) to the single `OnDemand` Beckn catalog announced for that kind; takes the resolved provider and prefixes catalog/resource ids for a Group; returns `None` for any other kind. No env, no I/O
-- `network_provider.py` — pure provider resolution for Publish to Network: the provider id (overrides, then `{kind}.{instance}` template) and name for a Knowledge Kind and Group. `network_group.py` builds its `ProviderNaming` from env and the overrides file; `catalog_builder.py` takes the resolved provider
+- `network_provider.py` — pure provider resolution for Publish to Network: one provider per instance — id (overrides, then `{instance}.{network_id}` template) and name — plus each Knowledge Kind's catalog name. `network_group.py` builds its `ProviderNaming` from env and the overrides file; `catalog_builder.py` takes the resolved provider
 - `document_validity.py` — pure module owning Document Validity: the period a document's chunks answer searches in, the upload-day start with no end by default, and the clock injection point. Shared by `api/api.py` (stamping the default at upload), `scheme_catalog.py` (validating a reviewer's edit), `activities.py` (stamping chunk payloads) and `vector_store/qdrant_store.py` (filtering at search time). `db.py` stores the dates it is handed and defaults nothing
 - `discovery_publish_service.py` — `DiscoveryPublishService`: owns the Publish to Network env vars and the HTTP call. Deliberately Temporal-free
 - `models.py` — Pydantic models, including `DocumentStage` enum and `PIPELINE_STAGES` (the stepper-UI stage list)
@@ -117,4 +117,4 @@ React 18 + Vite + Tailwind v4 + Radix UI operator console (not a plain upload fo
 
 ### Scripts (`scripts/`)
 
-Operational tools, not one-off hacks — e.g. `list_failed_workflows.py`, `terminate_stuck_workflows.py`, `keycloak_bootstrap_docs_pipeline.py`, `drop_legacy_marqo_columns.py`. Check here before writing a new maintenance script — an equivalent likely exists.
+Operational tools, not one-off hacks — e.g. `list_failed_workflows.py`, `terminate_stuck_workflows.py`, `keycloak_bootstrap_docs_pipeline.py`, `drop_legacy_marqo_columns.py`, `backfill_provider_id.py` (sets `provider_id` on existing DEV/PROD chunks; dry run unless `--apply`). Check here before writing a new maintenance script — an equivalent likely exists.
