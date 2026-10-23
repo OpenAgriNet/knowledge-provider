@@ -9,6 +9,7 @@ from pipeline.network_provider import ProviderNaming
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "backfill_provider_id.py"
 COLLECTION = "documents-index"
+NAMING = ProviderNaming(shared_instance="bv", shared_name="Bharat Vistaar", network_id="provider.oan.dev")
 
 
 @pytest.fixture(scope="module")
@@ -56,10 +57,10 @@ def provider_ids(client):
 
 @pytest.mark.unit
 def test_plan_follows_the_publish_provider(backfill_module):
-    planned = {p.workflow_id: p for p in backfill_module.plan(DOCUMENTS, ProviderNaming(shared_instance="bv"))}
+    planned = {p.workflow_id: p for p in backfill_module.plan(DOCUMENTS, NAMING)}
 
-    assert planned["wf-mh-advisory"].provider_id == "advisory.mh.provider.oan.dev"
-    assert planned["wf-bv-scheme"].provider_id == "scheme.bv.provider.oan.dev"
+    assert planned["wf-mh-advisory"].provider_id == "mh.provider.oan.dev"
+    assert planned["wf-bv-scheme"].provider_id == "bv.provider.oan.dev"
     assert planned["wf-mh-document"].provider_id is None
     assert planned["wf-bad"].error and planned["wf-bad"].provider_id is None
 
@@ -67,7 +68,7 @@ def test_plan_follows_the_publish_provider(backfill_module):
 @pytest.mark.unit
 def test_dry_run_counts_without_writing(backfill_module, target):
     before = provider_ids(target.client)
-    planned = backfill_module.plan(DOCUMENTS, ProviderNaming(shared_instance="bv"))
+    planned = backfill_module.plan(DOCUMENTS, NAMING)
 
     stats = backfill_module.backfill(target, planned, apply=False)
 
@@ -77,14 +78,14 @@ def test_dry_run_counts_without_writing(backfill_module, target):
 
 @pytest.mark.unit
 def test_apply_sets_and_clears_by_workflow(backfill_module, target):
-    planned = backfill_module.plan(DOCUMENTS, ProviderNaming(shared_instance="bv"))
+    planned = backfill_module.plan(DOCUMENTS, NAMING)
 
     backfill_module.backfill(target, planned, apply=True)
 
     assert provider_ids(target.client) == {
-        1: "advisory.mh.provider.oan.dev",
-        2: "advisory.mh.provider.oan.dev",
-        3: "scheme.bv.provider.oan.dev",
+        1: "mh.provider.oan.dev",
+        2: "mh.provider.oan.dev",
+        3: "bv.provider.oan.dev",
         4: None,
         5: None,
     }
@@ -97,3 +98,12 @@ def test_a_missing_collection_is_reported_and_skipped(backfill_module):
     stats = backfill_module.backfill(target, [], apply=True)
 
     assert stats["missing_collection"] is True
+
+
+@pytest.mark.unit
+def test_refuses_to_run_without_a_network_id(backfill_module, monkeypatch, capsys):
+    monkeypatch.delenv("NETWORK_SENDER_ID", raising=False)
+    monkeypatch.setattr(backfill_module, "targets_from_env", lambda: pytest.fail("must not touch Qdrant"))
+
+    assert backfill_module.main(["--apply"]) == 1
+    assert "NETWORK_SENDER_ID" in capsys.readouterr().out

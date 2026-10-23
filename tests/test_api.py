@@ -525,21 +525,21 @@ class TestSearchProviderId:
     @pytest.mark.api
     @pytest.mark.unit
     def test_passes_one_provider_id_to_the_store(self, test_client, capturing_store):
-        response = test_client.post("/search", json={"query": "kisan", "provider_id": "advisory.mh.provider.oan.dev"})
+        response = test_client.post("/search", json={"query": "kisan", "provider_id": "mh.provider.oan.dev"})
 
         assert response.status_code == 200
-        assert capturing_store.captured["provider_ids"] == ["advisory.mh.provider.oan.dev"]
-        assert response.json()["effective_config"]["provider_id"] == ["advisory.mh.provider.oan.dev"]
+        assert capturing_store.captured["provider_ids"] == ["mh.provider.oan.dev"]
+        assert response.json()["effective_config"]["provider_id"] == ["mh.provider.oan.dev"]
 
     @pytest.mark.api
     @pytest.mark.unit
     def test_passes_a_list_trimmed_lowercased_and_deduplicated(self, test_client, capturing_store):
         test_client.post(
             "/search",
-            json={"query": "kisan", "provider_id": [" Advisory.MH.provider.oan.dev ", "scheme.mh.provider.oan.dev", "advisory.mh.provider.oan.dev", ""]},
+            json={"query": "kisan", "provider_id": [" MH.Provider.oan.dev ", "ka.provider.oan.dev", "mh.provider.oan.dev", ""]},
         )
 
-        assert capturing_store.captured["provider_ids"] == ["advisory.mh.provider.oan.dev", "scheme.mh.provider.oan.dev"]
+        assert capturing_store.captured["provider_ids"] == ["mh.provider.oan.dev", "ka.provider.oan.dev"]
 
     @pytest.mark.api
     @pytest.mark.unit
@@ -570,10 +570,10 @@ class TestSearchProviderId:
     @pytest.mark.api
     @pytest.mark.unit
     def test_composes_with_group(self, test_client, capturing_store):
-        test_client.post("/search", json={"query": "kisan", "group": "mh", "provider_id": "advisory.mh.provider.oan.dev"})
+        test_client.post("/search", json={"query": "kisan", "group": "mh", "provider_id": "mh.provider.oan.dev"})
 
         assert capturing_store.captured["instance"] == "mh"
-        assert capturing_store.captured["provider_ids"] == ["advisory.mh.provider.oan.dev"]
+        assert capturing_store.captured["provider_ids"] == ["mh.provider.oan.dev"]
 
 
 class TestPageEndpoints:

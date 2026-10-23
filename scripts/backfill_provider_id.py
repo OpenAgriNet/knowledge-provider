@@ -133,7 +133,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--apply", action="store_true", help="Write the payload changes.")
     args = parser.parse_args(argv)
 
-    planned = plan(all_documents(), load_provider_naming())
+    naming = load_provider_naming()
+    if naming.network_id is None:
+        print("NETWORK_SENDER_ID is not set; provider ids can't be worked out, nothing was changed.")
+        return 1
+    planned = plan(all_documents(), naming)
     for document in planned:
         if document.error:
             print(f"invalid provider id, skipped: {document.workflow_id}: {document.error}")
