@@ -24,12 +24,14 @@ from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
 from . import document_validity, scheme_catalog
+from .auth.tenancy import group_for_instance
 from .catalog_builder import normalize_document_kind
 from .chunking import chunk_pages, load_chunking_config
 from .discovery_publish_service import DiscoveryPublishService
 from .document_repository import DocumentRepository
 from .instances import instance_display_name
 from .network_constants import RESULT_REJECTED
+from .network_group import load_provider_naming, named_group, provider_for
 from .network_provider import InvalidProviderIdError
 from .ocr import ocr_pdf as run_ocr_pdf
 from .ocr import ocr_pdf_in_segments as run_ocr_pdf_in_segments
@@ -644,6 +646,7 @@ def _prepare_records(
     scheme_aliases: list[str] | None = None,
     valid_from: str | None = None,
     valid_to: str | None = None,
+    provider_id: str | None = None,
 ) -> list[dict]:
     metadata = _get_doc_metadata(filename)
     resolved_instance = _normalize_instance(instance)
@@ -698,6 +701,7 @@ def _prepare_records(
             "workflow_id": workflow_id or "",
             "instance": resolved_instance,
             "instance_name": instance_name,
+            "provider_id": provider_id,
             "type": "scheme" if is_scheme else "document",
             "source": "docs-pipeline",
             "filename": external_slug,
@@ -765,6 +769,16 @@ def _scheme_fields_from_doc(doc: dict | None) -> dict:
     }
 
 
+def _provider_id_from_doc(doc: dict | None) -> str | None:
+    doc = doc or {}
+    group = named_group(group_for_instance(doc.get("instance")))
+    try:
+        provider = provider_for(load_provider_naming(), doc.get("document_kind"), group)
+    except InvalidProviderIdError as exc:
+        raise ApplicationError(str(exc), non_retryable=True) from exc
+    return provider["id"] if provider else None
+
+
 def _validity_fields_from_doc(doc: dict | None) -> dict:
     """Extract the validity kwargs for `_prepare_records` from a documents row.
 
@@ -818,6 +832,7 @@ def _passage_schema_definition(use_tensor_prefix_field: bool = True) -> dict:
         {"name": "workflow_id", "type": "text", "features": ["filter"]},
         {"name": "instance", "type": "text", "features": ["filter"]},
         {"name": "instance_name", "type": "text", "features": ["filter"]},
+        {"name": "provider_id", "type": "text", "features": ["filter"]},
         {"name": "type", "type": "text", "features": ["filter"]},
         {"name": "source", "type": "text", "features": ["filter"]},
         {"name": "filename", "type": "text", "features": ["filter"]},
@@ -1232,6 +1247,7 @@ async def prepare_for_ingestion(
         description=description,
         instance=(doc or {}).get("instance"),
         **_validity_fields_from_doc(doc),
+        provider_id=_provider_id_from_doc(doc),
     )
     activity.logger.info(f"Prepared {len(records)} records")
     return records
@@ -1342,6 +1358,7 @@ async def promote_document_to_prod_qdrant(
         instance=doc.get("instance"),
         **scheme_kwargs,
         **_validity_fields_from_doc(doc),
+        provider_id=_provider_id_from_doc(doc),
     )
     activity.logger.info(
         "Promoting %s records to PROD Qdrant collection %s (kind=%s)",
@@ -1411,6 +1428,7 @@ async def ingest_document_from_db(
         instance=doc.get("instance"),
         **_scheme_fields_from_doc(doc),
         **_validity_fields_from_doc(doc),
+        provider_id=_provider_id_from_doc(doc),
     )
     payload_path = _write_json_temp(records)
     try:
