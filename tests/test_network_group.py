@@ -8,7 +8,9 @@ from pipeline.network_group import (
     NetworkProviderConfigError,
     load_provider_id_overrides,
     load_provider_naming,
+    named_group,
     parse_provider_id_overrides,
+    provider_for,
 )
 
 
@@ -254,3 +256,33 @@ class TestBootRefusesMalformedProviderMap:
         with pytest.raises(NetworkProviderConfigError):
             async with api.lifespan(api.app):
                 pass
+
+
+class TestProviderFor:
+    @pytest.fixture(autouse=True)
+    def _naming(self):
+        from pipeline.network_provider import ProviderNaming
+
+        self.naming = ProviderNaming(shared_instance="bv", provider_id_overrides={"ka": {"scheme": "scheme.ka.com"}})
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "kind,code,expected",
+        [
+            ("advisory", None, "advisory.bv.provider.oan.dev"),
+            (" Scheme ", "mh", "scheme.mh.provider.oan.dev"),
+            ("scheme", "ka", "scheme.ka.com"),
+        ],
+    )
+    def test_resolves_the_provider_for_a_published_kind(self, kind, code, expected):
+        assert provider_for(self.naming, kind, named_group(code))["id"] == expected
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("kind", ["document", "video", "", None])
+    def test_other_kinds_have_no_provider(self, kind):
+        assert provider_for(self.naming, kind, named_group("mh")) is None
+
+    @pytest.mark.unit
+    def test_named_group_carries_the_display_name(self):
+        assert named_group("mh").name == "Maharashtra"
+        assert named_group(None) is None
