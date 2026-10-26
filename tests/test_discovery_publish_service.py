@@ -69,19 +69,16 @@ class TestDiscoveryPublishServiceConfig:
             DiscoveryPublishService()
 
     @pytest.mark.unit
-    def test_explicit_args_override_env(self, monkeypatch):
+    def test_explicit_endpoint_overrides_env(self, monkeypatch):
         from pipeline.discovery_publish_service import DiscoveryPublishService
 
-        monkeypatch.delenv("DISCOVERY_SERVICE_ENDPOINT", raising=False)
-        monkeypatch.delenv("NETWORK_SENDER_ID", raising=False)
+        monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://env.example.com")
+        monkeypatch.setenv("NETWORK_SENDER_ID", " provider.oan.dev ")
 
-        service = DiscoveryPublishService(
-            endpoint="https://explicit.example.com",
-            sender_id="explicit-sender",
-        )
+        service = DiscoveryPublishService(endpoint="https://explicit.example.com")
 
         assert service.endpoint == "https://explicit.example.com"
-        assert service.sender_id == "explicit-sender"
+        assert service.sender_id == "provider.oan.dev"
 
 
 class TestDiscoveryPublishServicePublish:

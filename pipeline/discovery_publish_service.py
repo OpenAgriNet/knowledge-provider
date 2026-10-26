@@ -23,26 +23,29 @@ from .network_group import load_provider_naming, named_group, provider_for
 logger = logging.getLogger(__name__)
 
 
+class PublishConfigError(RuntimeError):
+    pass
+
+
 class DiscoveryPublishService:
     """POSTs a Beckn-shaped catalog/publish envelope to the Discovery Service."""
 
     def __init__(
         self,
         endpoint: Optional[str] = None,
-        sender_id: Optional[str] = None,
         timeout: float = 30.0,
     ):
         self.endpoint = endpoint or os.environ.get("DISCOVERY_SERVICE_ENDPOINT")
+        self.provider_naming = load_provider_naming()
         # Doubles as context.networkId.
-        self.sender_id = sender_id or os.environ.get("NETWORK_SENDER_ID")
+        self.sender_id = self.provider_naming.network_id
 
         if not self.endpoint:
-            raise RuntimeError("DISCOVERY_SERVICE_ENDPOINT must be set to publish to the network.")
+            raise PublishConfigError("DISCOVERY_SERVICE_ENDPOINT must be set to publish to the network.")
         if not self.sender_id:
-            raise RuntimeError("NETWORK_SENDER_ID must be set to publish to the network.")
+            raise PublishConfigError("NETWORK_SENDER_ID must be set to publish to the network.")
 
         self.timeout = timeout
-        self.provider_naming = load_provider_naming(self.sender_id)
 
     def publish(
         self,

@@ -40,8 +40,14 @@ def _env(name: str) -> str:
     return (os.environ.get(name) or "").strip()
 
 
+def dev_collections() -> list[str]:
+    indexed = (row["index_name"] for row in db.list_index_summaries(include_demo=True, include_disabled=True))
+    return list(dict.fromkeys(name for name in (get_default_index_name(), *indexed) if name))
+
+
 def targets_from_env() -> list[Target]:
-    targets = [Target("dev", get_qdrant_client(), get_default_index_name())]
+    dev_client = get_qdrant_client()
+    targets = [Target("dev", dev_client, collection) for collection in dev_collections()]
     prod_url = _env("PROD_VECTOR_DB_URL")
     if not prod_url:
         return targets
@@ -138,15 +144,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("NETWORK_SENDER_ID is not set; provider ids can't be worked out, nothing was changed.")
         return 1
     planned = plan(all_documents(), naming)
-    for document in planned:
-        if document.error:
-            print(f"invalid provider id, skipped: {document.workflow_id}: {document.error}")
+    skipped = [document for document in planned if document.error]
+    for document in skipped:
+        print(f"invalid provider id, skipped: {document.workflow_id}: {document.error}")
 
     mode = "apply" if args.apply else "dry run"
     for target in targets_from_env():
         stats = backfill(target, planned, args.apply)
         print(f"[{mode}] {target.label} {target.collection}: {stats}")
-    return 0
+    return 1 if skipped else 0
 
 
 if __name__ == "__main__":

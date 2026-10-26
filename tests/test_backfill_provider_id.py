@@ -107,3 +107,25 @@ def test_refuses_to_run_without_a_network_id(backfill_module, monkeypatch, capsy
 
     assert backfill_module.main(["--apply"]) == 1
     assert "NETWORK_SENDER_ID" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_dev_covers_the_default_and_every_indexed_collection(backfill_module, monkeypatch):
+    monkeypatch.setenv("VECTOR_DB_COLLECTION_NAME", "documents-index")
+    monkeypatch.setattr(
+        backfill_module.db,
+        "list_index_summaries",
+        lambda **_: [{"index_name": "documents-index"}, {"index_name": "kharif-index"}, {"index_name": ""}],
+    )
+
+    assert backfill_module.dev_collections() == ["documents-index", "kharif-index"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("documents,exit_code", [(DOCUMENTS, 1), (DOCUMENTS[:3], 0)])
+def test_exits_non_zero_when_a_document_is_skipped(backfill_module, monkeypatch, target, documents, exit_code):
+    monkeypatch.setenv("NETWORK_SENDER_ID", "provider.oan.dev")
+    monkeypatch.setattr(backfill_module, "all_documents", lambda: documents)
+    monkeypatch.setattr(backfill_module, "targets_from_env", lambda: [target])
+
+    assert backfill_module.main([]) == exit_code

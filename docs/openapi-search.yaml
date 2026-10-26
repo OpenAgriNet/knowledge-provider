@@ -429,10 +429,9 @@ components:
           nullable: true
           description: The normalised group filter that was applied (e.g. `mh`), or null when the search spanned every group.
         provider_id:
-          type: array
-          items: { type: string }
+          type: string
           nullable: true
-          description: The normalised provider ids the search was limited to, or null when no provider filter applied.
+          description: The normalised provider id the search was limited to (e.g. `mh.provider.oan.dev`), or null when no provider filter applied.
         filter_string:
           type: string
           nullable: true

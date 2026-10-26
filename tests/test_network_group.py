@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from pipeline.instances import INSTANCE_NAMES
 from pipeline.network_group import (
     DEFAULT_PROVIDER_CONFIG_OVERRIDE_PATH,
     PROVIDER_CONFIG_OVERRIDE_PATH_ENV,
@@ -205,6 +206,13 @@ class TestLoadProviderNaming:
     )
     def test_id_template_must_render_a_valid_id(self, monkeypatch, template):
         monkeypatch.setenv("NETWORK_PROVIDER_ID_TEMPLATE", template)
+
+        with pytest.raises(NetworkProviderConfigError, match="provider id"):
+            load_provider_naming()
+
+    @pytest.mark.unit
+    def test_every_known_instance_is_checked_at_boot(self, monkeypatch):
+        monkeypatch.setitem(INSTANCE_NAMES, "ladakh_ut", "Ladakh")
 
         with pytest.raises(NetworkProviderConfigError, match="provider id"):
             load_provider_naming()
