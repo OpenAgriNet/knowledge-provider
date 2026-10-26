@@ -47,15 +47,7 @@ def test_one_provider_limits_hits_to_its_chunks(local_store, test_client, mode):
 
     assert body["hits"], "the mh chunks must be found"
     assert {hit["doc_id"] for hit in body["hits"]} == {"mh-advisory", "mh-scheme"}
-    assert body["effective_config"]["provider_id"] == ["mh.provider.oan.dev"]
-
-
-@pytest.mark.integration
-@pytest.mark.api
-def test_a_list_of_providers_matches_any_of_them(local_store, test_client):
-    body = search(test_client, provider_id=["ka.provider.oan.dev", "bv.provider.oan.dev"])
-
-    assert {hit["doc_id"] for hit in body["hits"]} == {"ka-advisory", "bv-advisory"}
+    assert body["effective_config"]["provider_id"] == "mh.provider.oan.dev"
 
 
 @pytest.mark.integration

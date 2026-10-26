@@ -56,7 +56,7 @@ class VectorStore(Protocol):
         apply_validity: bool = True,
         valid_on: Optional[str] = None,
         instance: Optional[str] = None,
-        provider_ids: Optional[list[str]] = None,
+        provider_id: Optional[str] = None,
     ) -> dict[str, Any]:
         """`apply_validity` keeps only chunks whose validity period covers
         `valid_on` (default: the store's today). `instance` limits results to

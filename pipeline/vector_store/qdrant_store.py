@@ -226,7 +226,7 @@ def _build_filter(
     exclude_reference: bool = False,
     valid_on: Optional[str] = None,
     instance: Optional[str] = None,
-    provider_ids: Optional[list[str]] = None,
+    provider_id: Optional[str] = None,
 ) -> Optional[qmodels.Filter]:
     """Assemble a Qdrant filter. `valid_on` (`YYYY-MM-DD`) restricts the result
     to chunks valid on that day; None leaves validity out entirely, which is
@@ -236,8 +236,8 @@ def _build_filter(
     must: list[qmodels.Condition] = []
     if instance is not None:
         must.append(_exact("instance", instance))
-    if provider_ids:
-        must.append(qmodels.FieldCondition(key="provider_id", match=qmodels.MatchAny(any=list(provider_ids))))
+    if provider_id is not None:
+        must.append(_exact("provider_id", provider_id))
     if doc_id is not None:
         must.append(_exact("doc_id", doc_id))
     if chunk_num is not None:
@@ -523,7 +523,7 @@ class QdrantVectorStore:
         apply_validity: bool = True,
         valid_on: Optional[str] = None,
         instance: Optional[str] = None,
-        provider_ids: Optional[list[str]] = None,
+        provider_id: Optional[str] = None,
     ) -> dict[str, Any]:
         """Search `name`, by default returning only chunks valid today.
 
@@ -541,7 +541,7 @@ class QdrantVectorStore:
             exclude_reference=exclude_reference,
             valid_on=as_of,
             instance=instance,
-            provider_ids=provider_ids,
+            provider_id=provider_id,
         )
 
         if mode == "LEXICAL":

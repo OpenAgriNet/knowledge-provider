@@ -70,7 +70,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/SearchResponse'
         '400':
-          description: Missing/empty query, malformed valid_on, non-string group, a provider_id that is not a string or a list of strings, or the underlying vector-store search failed
+          description: Missing/empty query, malformed valid_on, non-string group, non-string provider_id, or the underlying vector-store search failed
           content:
             application/json:
               schema:
@@ -280,19 +280,15 @@ components:
             search-capable caller may ask for any group.
           example: "mh"
         provider_id:
-          oneOf:
-            - type: string
-            - type: array
-              items: { type: string }
+          type: string
           nullable: true
           description: |
-            Limit results to chunks published under these network provider
-            ids, the same `provider.id` Publish to Network sends (for example
-            `mh.provider.oan.dev`). One id or a list; a chunk
-            matching any of them is kept. Values are trimmed and lowercased,
-            empties dropped. Omitted, null, empty or a list of empties means
-            no provider filter. Only advisory and scheme chunks carry a
-            provider id, so any provider filter leaves other kinds out.
+            Limit results to chunks published under this network provider
+            id, the same `provider.id` Publish to Network sends (for example
+            `mh.provider.oan.dev`). Trimmed and lowercased. Omitted, null or
+            empty means no provider filter; an unknown id returns zero hits;
+            a non-string value returns 400. Only advisory and scheme chunks
+            carry a provider id, so a provider filter leaves other kinds out.
             Combines with `group` and validity. Any other type returns 400.
             A filter, not an access check.
           example: "mh.provider.oan.dev"
