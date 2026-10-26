@@ -8,7 +8,7 @@ from typing import Optional
 
 from .auth.tenancy import portal_instance
 from .catalog_builder import normalize_document_kind
-from .instances import instance_display_name
+from .instances import INSTANCE_NAMES, instance_display_name
 from .network_constants import (
     ADVISORY_CATALOG_NAME,
     GROUP_CATALOG_NAME_TEMPLATE,
@@ -117,7 +117,7 @@ def _checked_id_template(shared_instance: str, network_id: Optional[str]) -> str
         instance=shared_instance,
         network_id=sample_network_id,
     )
-    for instance in (shared_instance, "mh"):
+    for instance in dict.fromkeys((shared_instance, *INSTANCE_NAMES)):
         _check_provider_id(
             template.format(instance=instance, network_id=sample_network_id),
             f"{PROVIDER_ID_TEMPLATE_ENV}={template!r} with {NETWORK_ID_ENV}={sample_network_id!r}",

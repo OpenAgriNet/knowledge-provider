@@ -591,6 +591,25 @@ class TestPublishCatalogToNetworkActivity:
 
     @pytest.mark.unit
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("unset", ["DISCOVERY_SERVICE_ENDPOINT", "NETWORK_SENDER_ID"])
+    async def test_missing_publish_config_fails_without_retry(self, monkeypatch, unset):
+        from temporalio.exceptions import ApplicationError
+
+        import pipeline.activities as activities
+        import pipeline.db as db
+
+        monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
+        monkeypatch.setenv("NETWORK_SENDER_ID", "provider.oan.dev")
+        monkeypatch.delenv(unset)
+        monkeypatch.setattr(db, "get_document", lambda workflow_id: {"document_kind": "advisory"})
+
+        with pytest.raises(ApplicationError, match=unset) as excinfo:
+            await activities.publish_catalog_to_network("wf-1", "txn-1")
+
+        assert excinfo.value.non_retryable is True
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
     async def test_unmapped_kind_records_a_skipped_artifact(self, monkeypatch):
         import pipeline.activities as activities
         import pipeline.db as db

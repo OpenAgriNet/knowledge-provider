@@ -27,7 +27,7 @@ from . import document_validity, scheme_catalog
 from .auth.tenancy import group_for_instance
 from .catalog_builder import normalize_document_kind
 from .chunking import chunk_pages, load_chunking_config
-from .discovery_publish_service import DiscoveryPublishService
+from .discovery_publish_service import DiscoveryPublishService, PublishConfigError
 from .document_repository import DocumentRepository
 from .instances import instance_display_name
 from .network_constants import RESULT_REJECTED
@@ -1485,7 +1485,10 @@ async def publish_catalog_to_network(workflow_id: str, transaction_id: str) -> d
     document_kind = normalize_document_kind(repository.get_document_kind(workflow_id))
     group = repository.get_document_group(workflow_id)
 
-    service = DiscoveryPublishService()
+    try:
+        service = DiscoveryPublishService()
+    except PublishConfigError as exc:
+        raise ApplicationError(str(exc), non_retryable=True) from exc
     try:
         result = await asyncio.to_thread(
             service.publish, transaction_id, document_kind, workflow_id, group
