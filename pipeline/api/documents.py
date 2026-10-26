@@ -62,8 +62,8 @@ async def start_document_workflow(
     workflow_id = _api.get_workflow_id(str(filepath))
     document_id = canonical_document_id
 
-    # Reuse only when SQLite still tracks this workflow.
-    # If SQLite was purged, avoid returning stale Temporal state and create a fresh run ID.
+    # Reuse only when Postgres still tracks this workflow.
+    # If Postgres was purged, avoid returning stale Temporal state and create a fresh run ID.
     existing_doc = db.get_document(workflow_id)
     if existing_doc:
         # Same fingerprint/path must not leak or restart another tenant's doc.
@@ -112,13 +112,13 @@ async def start_document_workflow(
         task_queue=_api.TASK_QUEUE,
     )
 
-    # Save to SQLite for visibility during processing
+    # Save to Postgres for visibility during processing
     actor = _api._actor_from_user(user)
     # The period this document is searchable in starts here, at the one moment
     # that knows the upload day. A reviewer confirms or moves it later, on the
     # form that sets the document type.
     validity = document_validity.default_period()
-    db.upsert_document(
+    document_uuid = db.upsert_document(
         workflow_id=workflow_id,
         document_id=document_id,
         canonical_document_id=canonical_document_id,
@@ -135,9 +135,10 @@ async def start_document_workflow(
         uploaded_by_roles=actor.get("roles_csv") or None,
         valid_from=validity.start_date,
         valid_to=validity.end_date,
+        with_workflow=False,
     )
-    job_id = db.create_document_job(
-        workflow_id=workflow_id,
+    db.create_document_job(
+        workflow_id=document_uuid,
         job_type="ocr_only" if stop_after_ocr else "pipeline",
         temporal_workflow_id=workflow_id,
         status="running",
@@ -151,8 +152,8 @@ async def start_document_workflow(
             "stop_after_ocr": stop_after_ocr,
             "uploaded_by": actor,
         },
+        actor=actor,
     )
-    db.update_document_fields(workflow_id, latest_job_id=job_id)
     _api._log_audit(
         workflow_id=workflow_id,
         action_type="document_upload",
@@ -249,7 +250,7 @@ async def list_documents(
     """
     List all document workflows.
 
-    Uses SQLite for fast listing (no Temporal queries for performance).
+    Uses Postgres for fast listing (no Temporal queries for performance).
     Demo documents are excluded by default - use X-Include-Demo: true header to show them.
     Disabled (soft-deleted) documents are excluded by default - use X-Include-Disabled: true to show them.
     Results are limited to instances the caller can access.
@@ -262,7 +263,7 @@ async def list_documents(
     include_demo = x_include_demo and x_include_demo.lower() == "true"
     include_disabled = x_include_disabled and x_include_disabled.lower() == "true"
 
-    # Use SQLite only for fast listing - no Temporal queries
+    # Use Postgres only for fast listing - no Temporal queries
     docs = db.list_documents(
         stage=stage_filter,
         limit=limit,
@@ -281,7 +282,7 @@ async def get_documents_summary(
     x_include_demo: Optional[str] = Header(None, alias="X-Include-Demo"),
     x_include_disabled: Optional[str] = Header(None, alias="X-Include-Disabled")
 ):
-    """Return aggregate SQLite counts for dashboard totals and migration planning."""
+    """Return aggregate Postgres counts for dashboard totals and migration planning."""
     include_demo = x_include_demo and x_include_demo.lower() == "true"
     include_disabled = x_include_disabled and x_include_disabled.lower() == "true"
     instance_scope = _api._instance_scope_for_user(user)

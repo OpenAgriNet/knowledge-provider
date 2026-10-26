@@ -213,7 +213,8 @@ def test_summary_counts_honor_instance_filter(db_connection):
 def test_list_runs_filters_by_instance(db_connection):
     """Runs must honor the same tenant scope as documents (role-based states)."""
     db = db_connection
-    db.upsert_document(
+    doc_a = db.upsert_document(
+        with_workflow=False,
         workflow_id="wf-run-a",
         document_id="d-run-a",
         filename="a.pdf",
@@ -221,7 +222,8 @@ def test_list_runs_filters_by_instance(db_connection):
         stage="completed",
         instance="tenant-a",
     )
-    db.upsert_document(
+    doc_b = db.upsert_document(
+        with_workflow=False,
         workflow_id="wf-run-b",
         document_id="d-run-b",
         filename="b.pdf",
@@ -229,8 +231,8 @@ def test_list_runs_filters_by_instance(db_connection):
         stage="completed",
         instance="tenant-b",
     )
-    job_a = db.create_document_job("wf-run-a", "ocr", status="completed")
-    job_b = db.create_document_job("wf-run-b", "ocr", status="running")
+    job_a = db.create_document_job(doc_a, "ocr_only", status="completed")
+    job_b = db.create_document_job(doc_b, "ocr_only", status="running")
 
     tenant_a_only = db.list_runs(instances=["tenant-a"])
     assert {r["id"] for r in tenant_a_only} == {job_a}
@@ -271,8 +273,8 @@ def test_state_user_cannot_see_bv_portal_documents(db_connection):
         stage="ocr_review",
         instance="mh",
     )
-    db.create_document_job("wf-bv", "ocr", status="running")
-    db.create_document_job("wf-mh", "ocr", status="running")
+    db.create_document_job("wf-bv", "ocr_only", status="running")
+    db.create_document_job("wf-mh", "ocr_only", status="running")
 
     # MH contributor from Keycloak group path
     mh_user = claims_to_user(

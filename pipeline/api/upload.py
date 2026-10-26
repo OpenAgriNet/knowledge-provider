@@ -82,8 +82,8 @@ async def upload_and_process(
     document_id = file_hash
     canonical_document_id = file_hash
 
-    # Reuse only when SQLite still tracks this workflow.
-    # If SQLite was purged, avoid returning stale Temporal state and create a fresh run ID.
+    # Reuse only when Postgres still tracks this workflow.
+    # If Postgres was purged, avoid returning stale Temporal state and create a fresh run ID.
     existing_doc = db.get_document(workflow_id)
     if existing_doc:
         existing_doc = assert_document_instance_access(user, existing_doc)
@@ -131,11 +131,11 @@ async def upload_and_process(
         task_queue=_api.TASK_QUEUE,
     )
 
-    # Save to SQLite for visibility during processing
+    # Save to Postgres for visibility during processing
     actor = _api._actor_from_user(user)
     # See the manifest upload path above: the period starts at the upload.
     validity = document_validity.default_period()
-    db.upsert_document(
+    document_uuid = db.upsert_document(
         workflow_id=workflow_id,
         document_id=document_id,
         canonical_document_id=canonical_document_id,
@@ -153,9 +153,10 @@ async def upload_and_process(
         uploaded_by_roles=actor.get("roles_csv") or None,
         valid_from=validity.start_date,
         valid_to=validity.end_date,
+        with_workflow=False,
     )
     job_id = db.create_document_job(
-        workflow_id=workflow_id,
+        workflow_id=document_uuid,
         job_type="ocr_only" if stop_after_ocr else "pipeline",
         temporal_workflow_id=workflow_id,
         status="running",
@@ -169,8 +170,9 @@ async def upload_and_process(
             "stop_after_ocr": stop_after_ocr,
             "uploaded_by": actor,
         },
+        actor=actor,
     )
-    original_artifact_id = db.add_document_artifact(
+    db.add_document_artifact(
         workflow_id=workflow_id,
         job_id=job_id,
         artifact_type="original_upload",
@@ -199,8 +201,6 @@ async def upload_and_process(
     canonical_input_type = "spreadsheet" if suffix in {".csv", ".xlsx"} else "pdf"
     db.update_document_fields(
         workflow_id,
-        latest_job_id=job_id,
-        original_artifact_id=original_artifact_id,
         source_type=source_type,
         canonical_input_type=canonical_input_type,
         stop_after_ocr=1 if stop_after_ocr else 0,

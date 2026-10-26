@@ -153,8 +153,7 @@ async def lifespan(app: FastAPI):
             auth_cfg.keycloak_jwks_url,
         )
 
-    # Initialize SQLite database
-    print("Initializing SQLite database...")
+    print("Initializing database...")
     db.init_db()
 
     # Temporal
@@ -248,6 +247,41 @@ RATE_LIMIT_UPLOAD = os.environ.get("RATE_LIMIT_UPLOAD", "10/minute")
 # Login OTP endpoints are unauthenticated and mail real people, so they get their
 # own much tighter budget than the general default.
 RATE_LIMIT_OTP = os.environ.get("RATE_LIMIT_OTP", "10/minute")
+
+_DOCUMENT_PATH_RE = re.compile(r"^/documents/([^/]+)(/.*)?$")
+_static_document_segments: Optional[set[str]] = None
+
+
+def _static_document_path_segments() -> set[str]:
+    """Literal second segments of ``/documents/...`` routes (``upload``, ``batch``...)."""
+    global _static_document_segments
+    if _static_document_segments is None:
+        segments = set()
+        for route in app.routes:
+            match = _DOCUMENT_PATH_RE.match(getattr(route, "path", ""))
+            if match and "{" not in match.group(1):
+                segments.add(match.group(1))
+        _static_document_segments = segments
+    return _static_document_segments
+
+
+@app.middleware("http")
+async def canonicalize_document_identifier(request: Request, call_next):
+    """Let ``/documents/{id}/...`` take the document UUID or any legacy identifier.
+
+    Handlers address a document by its Temporal workflow id (they signal and
+    query Temporal with it), so the path is rewritten to that id before routing.
+    An identifier that matches no document is left alone and 404s in the handler.
+    """
+    match = _DOCUMENT_PATH_RE.match(request.scope["path"])
+    if match and match.group(1) not in _static_document_path_segments():
+        document = await asyncio.to_thread(db.find_document_by_doc_identifier, match.group(1))
+        if document and document["workflow_id"] and document["workflow_id"] != match.group(1):
+            new_path = f"/documents/{document['workflow_id']}{match.group(2) or ''}"
+            request.scope["path"] = new_path
+            request.scope["raw_path"] = quote(new_path, safe="/:").encode("ascii")
+    return await call_next(request)
+
 
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
@@ -347,7 +381,7 @@ def _instance_scope_for_user(user: AuthUser) -> Optional[list[str]]:
 
 
 def _document_cohorts_payload(summary: dict, by_instance: Optional[list[dict]] = None) -> dict:
-    """Shape SQLite aggregate counts for DocumentCohortsResponse (all ints)."""
+    """Shape Postgres aggregate counts for DocumentCohortsResponse (all ints)."""
     def _i(key: str, default: int = 0) -> int:
         val = summary.get(key, default)
         return int(val or 0)
@@ -432,6 +466,7 @@ def _actor_from_user(user) -> dict:
 
 def _document_summary_from_row(doc: dict, current_job: Optional[dict] = None) -> DocumentSummary:
     return DocumentSummary(
+        id=doc.get("id"),
         document_id=doc["document_id"],
         canonical_document_id=doc.get("canonical_document_id"),
         workflow_id=doc["workflow_id"],
@@ -841,7 +876,7 @@ async def list_runs(
 
 
 @app.get("/runs/{job_id}")
-async def get_run(job_id: int, user: RequireSearch):
+async def get_run(job_id: str, user: RequireSearch):
     """Get a specific document job/run (404 if missing or outside tenant scope)."""
     run = db.get_document_job(job_id)
     if not run:
@@ -891,6 +926,7 @@ def _build_document_detail(doc: dict) -> DocumentDetail:
     current_job = db.get_latest_document_job(workflow_id)
     artifacts = db.list_document_artifacts(workflow_id)
     return DocumentDetail(
+        id=doc.get("id"),
         document_id=doc["document_id"],
         canonical_document_id=doc.get("canonical_document_id"),
         workflow_id=workflow_id,
@@ -1154,7 +1190,7 @@ async def get_workflow_error_details(workflow_id: str, user: RequireSearch):
     
     This endpoint queries Temporal directly to get the most detailed
     error information available, which may be more complete than what's
-    stored in SQLite.
+    stored in Postgres.
     """
     import traceback
 
@@ -1232,7 +1268,7 @@ async def get_workflow_error_details(workflow_id: str, user: RequireSearch):
 
 @app.get("/documents/{workflow_id}/runtime")
 async def get_document_runtime(workflow_id: str, user: RequireSearch):
-    """Return live runtime status by combining SQLite state and Temporal workflow state."""
+    """Return live runtime status by combining Postgres state and Temporal workflow state."""
     doc = _require_document_for_user(workflow_id, user)
     return await _get_runtime_payload(workflow_id, doc=doc)
 
@@ -1244,7 +1280,7 @@ async def list_document_artifacts(workflow_id: str, user: RequireSearch):
 
 
 @app.get("/documents/{workflow_id}/artifacts/{artifact_id}")
-async def get_document_artifact(workflow_id: str, user: RequireSearch, artifact_id: int):
+async def get_document_artifact(workflow_id: str, user: RequireSearch, artifact_id: str):
     _require_document_for_user(workflow_id, user)
     artifact = db.get_document_artifact(workflow_id, artifact_id)
     if not artifact:
@@ -1253,7 +1289,7 @@ async def get_document_artifact(workflow_id: str, user: RequireSearch, artifact_
 
 
 @app.get("/documents/{workflow_id}/artifacts/{artifact_id}/content")
-async def get_document_artifact_content(workflow_id: str, user: RequireSearch, artifact_id: int):
+async def get_document_artifact_content(workflow_id: str, user: RequireSearch, artifact_id: str):
     _require_document_for_user(workflow_id, user)
     artifact = db.get_document_artifact(workflow_id, artifact_id)
     if not artifact:
@@ -1323,7 +1359,7 @@ async def get_document_graph(workflow_id: str, user: RequireSearch):
 def _delete_artifacts_from_minio(workflow_id: str) -> dict:
     """Remove every MinIO object backing a document's artifacts.
 
-    Artifacts are the only part of a document that lives outside SQLite and the
+    Artifacts are the only part of a document that lives outside Postgres and the
     vector store — the original upload, the normalized PDF, and the OCR /
     translation / chunk JSON snapshots. Nothing else reads them once the
     document is gone, so a hard delete has to sweep them explicitly.
@@ -1371,15 +1407,15 @@ async def disable_document(
     - Remove all chunks from the DEV vector index
     - Delete PROD Qdrant points too, if this document was ever promoted
       (schemes-index for scheme documents, documents-index otherwise)
-    - For scheme documents, also rebuild the legacy SQLite scheme catalog
+    - For scheme documents, also rebuild the scheme catalog
     - Stop the workflow if it is still running
 
-    Soft delete (default) then marks the document disabled in SQLite and keeps
+    Soft delete (default) then marks the document disabled in Postgres and keeps
     every row and artifact, so ``POST /documents/{id}/restore`` can bring it
     back. Use X-Include-Disabled: true in list_documents to see it.
 
     ``purge=true`` additionally deletes the MinIO artifacts (original upload,
-    normalized PDF, OCR/translation/chunk JSON) and every SQLite row (pages,
+    normalized PDF, OCR/translation/chunk JSON) and every Postgres row (pages,
     chunks, artifacts, jobs, index status, the document itself). This is
     irreversible — restore has nothing left to restore. Audit rows are kept
     unless ``keep_audit=false``, since they record the deletion itself.
@@ -1387,7 +1423,7 @@ async def disable_document(
     Args:
         workflow_id: The document workflow ID
         remove_from_search: If True (default), removes chunks from the index
-        purge: If True, hard delete — also drops MinIO artifacts and SQLite rows
+        purge: If True, hard delete — also drops MinIO artifacts and Postgres rows
         keep_audit: If False (and purge=True), also deletes the audit trail
 
     Requires ``admin`` (super admin — any document), or ``delete_own``
@@ -1440,7 +1476,7 @@ async def disable_document(
     except Exception:
         pass  # Workflow already completed/cancelled
 
-    # Mark as disabled in SQLite (a purge deletes the row outright below, but
+    # Mark as disabled in Postgres (a purge deletes the row outright below, but
     # this keeps the document hidden if a later step fails partway through)
     db.set_document_disabled(workflow_id, True)
 
@@ -1467,7 +1503,7 @@ async def disable_document(
         else:
             result["prod_qdrant_deleted"] = _delete_document_points_from_prod(doc)
 
-    # Hard delete: drop the artifacts and the SQLite rows themselves. Ordered
+    # Hard delete: drop the artifacts and the Postgres rows themselves. Ordered
     # storage-then-database so a failure mid-way leaves rows pointing at
     # already-deleted objects (visible, fixable) rather than orphaned objects
     # no row references any more (invisible, unreclaimable).
@@ -1586,7 +1622,6 @@ async def patch_scheme_metadata(
 async def catalog_version(request: Request, user: CurrentUser):
     """Cheap poll for cache warmers: { version, updated_at }."""
     _require_catalog_read(request, user)
-    scheme_catalog.ensure_catalog_schema()
     scheme_catalog.bootstrap_catalog_if_empty()
     meta = db.get_catalog_meta()
     return {
@@ -1672,7 +1707,6 @@ async def catalog_rebuild(request: Request, user: RequireAdmin):
     # Admin JWT always OK; service key also accepted for automation
     if not _service_key_ok(request) and not user.has_permission(Permission.ADMIN):
         raise HTTPException(403, "Rebuild requires admin")
-    scheme_catalog.ensure_catalog_schema()
     # Ensure bootstrap seeds exist before rebuild merge
     scheme_catalog.bootstrap_catalog_if_empty()
     version = scheme_catalog.rebuild_catalog_from_documents(reason="admin_rebuild")
@@ -1704,7 +1738,7 @@ async def restore_document(workflow_id: str, user: RequireAdmin):
     """
     Restore a soft-deleted (disabled) document.
 
-    Note: This only restores the document in SQLite. Chunks that were removed
+    Note: This only restores the document in Postgres. Chunks that were removed
     from the vector index will NOT be automatically re-indexed. To re-index,
     you would need to re-run the ingestion process.
     """
@@ -1734,12 +1768,12 @@ async def reingest_document(
 
     Use this to re-ingest documents that completed but weren't properly
     indexed (e.g., due to index schema changes). This starts a lightweight
-    workflow that uses chunks already stored in SQLite.
+    workflow that uses chunks already stored in Postgres.
 
-    The document must have chunks stored in SQLite (typically from a
+    The document must have chunks stored in Postgres (typically from a
     completed or previously ingested document).
     """
-    # Get document from SQLite
+    # Get document from Postgres
     doc = _require_document_for_user(workflow_id, user)
 
     # Reingest skips the entire review pipeline (including ready_for_ingestion,
@@ -1760,7 +1794,7 @@ async def reingest_document(
             "review stage entirely and would otherwise ingest with no scheme metadata.",
         )
 
-    # Get chunks from SQLite
+    # Get chunks from Postgres
     chunks = db.get_chunks(workflow_id, include_excluded=False)
     if not chunks:
         raise HTTPException(400, "No chunks found for document. The document may need to be reprocessed from scratch.")
@@ -1779,7 +1813,7 @@ async def reingest_document(
         args=[
             document_id,
             filename,
-            workflow_id,  # original workflow_id for SQLite updates
+            workflow_id,  # original workflow_id for Postgres updates
             page_count,
             len(chunks),
             index_name
@@ -1794,6 +1828,7 @@ async def reingest_document(
         status="running",
         current_stage="ingesting",
         config={"index_name": index_name, "chunk_count": len(chunks)},
+        actor=_actor_from_user(user),
     )
 
     # Log audit
@@ -1841,15 +1876,16 @@ async def retry_ocr(workflow_id: str, user: RequirePipeline):
         id=temporal_workflow_id,
         task_queue=TASK_QUEUE,
     )
-    job_id = db.create_document_job(
+    db.create_document_job(
         workflow_id=workflow_id,
         job_type="ocr_retry",
         temporal_workflow_id=temporal_workflow_id,
         status="running",
         current_stage="ocr_processing",
         config={"source": "api_retry_ocr"},
+        actor=_actor_from_user(user),
     )
-    db.update_document_fields(workflow_id, latest_job_id=job_id, error_message=None)
+    db.update_document_fields(workflow_id, error_message=None)
     _log_audit(
         workflow_id=workflow_id,
         action_type="retry_ocr",
@@ -1873,15 +1909,16 @@ async def retry_translation(workflow_id: str, user: RequirePipeline):
         id=temporal_workflow_id,
         task_queue=TASK_QUEUE,
     )
-    job_id = db.create_document_job(
+    db.create_document_job(
         workflow_id=workflow_id,
         job_type="translation_retry",
         temporal_workflow_id=temporal_workflow_id,
         status="running",
         current_stage="translation_processing",
         config={"source": "api_retry_translation"},
+        actor=_actor_from_user(user),
     )
-    db.update_document_fields(workflow_id, latest_job_id=job_id, error_message=None)
+    db.update_document_fields(workflow_id, error_message=None)
     _log_audit(
         workflow_id=workflow_id,
         action_type="retry_translation",
@@ -1919,7 +1956,7 @@ async def retry_chunking(
         id=temporal_workflow_id,
         task_queue=TASK_QUEUE,
     )
-    job_id = db.create_document_job(
+    db.create_document_job(
         workflow_id=workflow_id,
         job_type="chunking_retry",
         temporal_workflow_id=temporal_workflow_id,
@@ -1931,8 +1968,9 @@ async def retry_chunking(
             "chunk_overlap": chunk_overlap,
             "min_tokens": min_tokens,
         },
+        actor=_actor_from_user(user),
     )
-    db.update_document_fields(workflow_id, latest_job_id=job_id, error_message=None)
+    db.update_document_fields(workflow_id, error_message=None)
     _log_audit(
         workflow_id=workflow_id,
         action_type="retry_chunking",
@@ -2075,7 +2113,7 @@ async def _reconcile_single_document(doc: dict) -> dict:
 
 @app.post("/documents/{workflow_id}/reconcile")
 async def reconcile_single_document(workflow_id: str, user: RequirePipeline):
-    """Reconcile SQLite stage with Temporal state for one document."""
+    """Reconcile Postgres stage with Temporal state for one document."""
     doc = _require_document_for_user(workflow_id, user)
     return await _reconcile_single_document(doc)
 
@@ -2113,7 +2151,7 @@ async def _validate_approval_stage(workflow_id: str, expected_stage: str):
     except HTTPException:
         raise
     except Exception:
-        # Try SQLite fallback to check if workflow exists but is completed/failed
+        # Try Postgres fallback to check if workflow exists but is completed/failed
         doc = db.get_document(workflow_id)
         if doc:
             current = doc.get("stage")
@@ -2453,6 +2491,7 @@ async def approve_prod(
             temporal_workflow_id=promote_workflow_id,
             status="running",
             current_stage="ingesting_prod",
+            actor=_actor_from_user(user),
         )
         db.update_document_stage(
             workflow_id=workflow_id,
@@ -2516,7 +2555,7 @@ def _log_audit(
         metadata: Additional context as dict
         user: Optional AuthUser whose email/roles are stored on the audit row
     """
-    # Get document_id from SQLite
+    # Get document_id from Postgres
     doc = db.get_document(workflow_id)
     document_id = doc["document_id"] if doc else workflow_id
 
@@ -2628,7 +2667,7 @@ async def get_document_audit_log(
 
 @app.get("/documents/{workflow_id}/pages")
 async def list_pages(workflow_id: str, user: RequireSearch):
-    """Get all pages for a document. SQLite-first for speed."""
+    """Get all pages for a document. Postgres-first for speed."""
     # Enforce tenant scope up front (404 hides other tenants' documents).
     _require_document_for_user(workflow_id, user)
     return db.get_pages(workflow_id)
@@ -2636,7 +2675,7 @@ async def list_pages(workflow_id: str, user: RequireSearch):
 
 @app.get("/documents/{workflow_id}/pages/{page_num}")
 async def get_page(workflow_id: str, user: RequireSearch, page_num: int = PathParam(..., ge=1, le=10000, description="Page number (1-indexed)")):
-    """Get a specific page. SQLite-first for speed."""
+    """Get a specific page. Postgres-first for speed."""
     _require_document_for_user(workflow_id, user)
     page = db.get_page(workflow_id, page_num)
     if page:
@@ -2833,14 +2872,14 @@ async def search_chunks_across_documents(
 
 @app.get("/documents/{workflow_id}/chunks")
 async def list_chunks(workflow_id: str, user: RequireSearch, include_excluded: bool = False):
-    """Get all chunks for a document. SQLite-first for speed."""
+    """Get all chunks for a document. Postgres-first for speed."""
     _require_document_for_user(workflow_id, user)
     return db.get_chunks(workflow_id, include_excluded=include_excluded)
 
 
 @app.get("/documents/{workflow_id}/chunks/{chunk_num}")
 async def get_chunk(workflow_id: str, user: RequireSearch, chunk_num: int = PathParam(..., ge=1, le=10000, description="Chunk number (1-indexed)")):
-    """Get a specific chunk. SQLite-first for speed."""
+    """Get a specific chunk. Postgres-first for speed."""
     _require_document_for_user(workflow_id, user)
     chunk = db.get_chunk(workflow_id, chunk_num)
     if chunk:
@@ -3059,9 +3098,9 @@ def _inline_content_disposition(filename: str) -> str:
 async def get_document_pdf(workflow_id: str, user: RequireSearch):
     """
     Get the original PDF file for a document.
-    Returns the PDF as a streaming response. SQLite-first for speed.
+    Returns the PDF as a streaming response. Postgres-first for speed.
     """
-    # SQLite-first - instant lookup, tenant-scoped (404 hides other tenants).
+    # Postgres-first - instant lookup, tenant-scoped (404 hides other tenants).
     doc = _require_document_for_user(workflow_id, user)
 
     filepath = doc.get("filepath", "")
@@ -3117,7 +3156,7 @@ async def get_document_pdf(workflow_id: str, user: RequireSearch):
 async def resolve_provenance_chunk(
     request: Request,
     user: RequireSearch,
-    doc_id: Optional[str] = Query(None, description="workflow slug, SQLite document_id, or legacy vector-index doc_id"),
+    doc_id: Optional[str] = Query(None, description="workflow slug, Postgres document_id, or legacy vector-index doc_id"),
     chunk_num: Optional[int] = Query(None, alias="chunk_num"),
 ):
     """
@@ -3184,14 +3223,14 @@ async def get_document_qdrant_status(
         )
         normalized_hit.setdefault("chunk_number", chunk_num)
         hits.append(normalized_hit)
-    sqlite_chunks = db.get_chunks(workflow_id, include_excluded=True)
+    db_chunks = db.get_chunks(workflow_id, include_excluded=True)
     status = {
         "workflow_id": workflow_id,
         "index_name": resolved_index,
         "backend": backend,
         "index_doc_id": index_doc_id,
         "doc_id": index_doc_id,
-        "sqlite_chunk_count": len([c for c in sqlite_chunks if not c.get("is_excluded")]),
+        "sqlite_chunk_count": len([c for c in db_chunks if not c.get("is_excluded")]),
         "indexed_chunk_count": len(hits),
         "status": "indexed" if hits else "missing",
         "hits": hits,
@@ -3244,7 +3283,7 @@ async def get_vector_indexes_summary(
     x_include_demo: Optional[str] = Header(None, alias="X-Include-Demo"),
     x_include_disabled: Optional[str] = Header(None, alias="X-Include-Disabled"),
 ):
-    """Summarize index coverage from SQLite-backed index status plus live vector-store stats."""
+    """Summarize index coverage from Postgres-backed index status plus live vector-store stats."""
     from ..vector_store import get_vector_store
 
     include_demo = x_include_demo and x_include_demo.lower() == "true"
@@ -3287,7 +3326,8 @@ async def health():
     """Health check."""
     return {
         "status": "ok",
-        "temporal_connected": temporal_client is not None
+        "temporal_connected": temporal_client is not None,
+        "database": await asyncio.to_thread(db.check_health),
     }
 
 
@@ -3429,10 +3469,10 @@ async def get_ingest_info(user: RequireAdmin):
 @app.post("/documents/reconcile")
 async def reconcile_document_states(user: RequirePipeline):
     """
-    Reconcile SQLite document states with Temporal workflow states.
+    Reconcile Postgres document states with Temporal workflow states.
 
     This endpoint checks all documents in processing/review stages and updates
-    SQLite if the Temporal workflow has terminated or failed. This fixes
+    Postgres if the Temporal workflow has terminated or failed. This fixes
     inconsistencies caused by external workflow termination or worker crashes.
 
     Returns a summary of documents checked and updated.
@@ -3526,7 +3566,10 @@ async def update_search_settings_endpoint(settings: SearchSettingsUpdate, user: 
     if not updates:
         raise HTTPException(400, "No settings provided to update")
 
-    return db.update_search_settings(updates)
+    try:
+        return db.update_search_settings(updates)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.get("/settings/search/audit", response_model=SettingsAuditResponse)
