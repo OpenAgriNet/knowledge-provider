@@ -176,15 +176,11 @@ def _requested_group(payload: dict) -> str | None:
     return (raw or "").strip().lower() or None
 
 
-def _requested_provider_ids(payload: dict) -> list[str] | None:
+def _requested_provider_id(payload: dict) -> str | None:
     raw = payload.get("provider_id")
-    if raw is None:
-        return None
-    values = [raw] if isinstance(raw, str) else raw
-    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
-        raise HTTPException(400, "provider_id must be a string or a list of strings")
-    provider_ids = list(dict.fromkeys(value.strip().lower() for value in values if value.strip()))
-    return provider_ids or None
+    if raw is not None and not isinstance(raw, str):
+        raise HTTPException(400, "provider_id must be a string")
+    return (raw or "").strip().lower() or None
 
 
 @router.post("/search")
@@ -245,7 +241,7 @@ async def run_search(payload: dict, user: RequireSearch):
         except document_validity.DocumentValidityError as exc:
             raise HTTPException(400, str(exc)) from None
     group = _requested_group(payload)
-    provider_ids = _requested_provider_ids(payload)
+    provider_id = _requested_provider_id(payload)
     expanded_query = _expand_query(query, query_expansion_profile)
     # Qdrant embeddings apply E5 prefixes internally; don't pre-prefix here.
     search_query = expanded_query
@@ -268,7 +264,7 @@ async def run_search(payload: dict, user: RequireSearch):
             apply_validity=not include_expired,
             valid_on=valid_on,
             instance=group,
-            provider_ids=provider_ids,
+            provider_id=provider_id,
         )
     except Exception as error:
         raise HTTPException(400, f"Vector search failed ({backend}): {error}") from error
@@ -318,7 +314,7 @@ async def run_search(payload: dict, user: RequireSearch):
             "apply_validity": not include_expired,
             "valid_on": result.get("valid_on"),
             "group": group,
-            "provider_id": provider_ids,
+            "provider_id": provider_id,
             "filter_string": None,
         },
         "candidate_count": len(hits),
