@@ -328,6 +328,7 @@ const ACTIVE_STAGES = new Set([
   'chunking',
   'ingesting',
   'ingesting_prod',
+  'publishing_to_network',
 ])
 
 // These actions just signal a Temporal workflow and return immediately — the
@@ -363,6 +364,7 @@ function stageWantsChunks(stage, chunkCount = 0) {
     'ingesting',
     'approval_for_prod',
     'ingesting_prod',
+    'publishing_to_network',
     'completed',
   ].includes(stage || '')
 }
@@ -638,7 +640,7 @@ export default function DocumentOpsView() {
       setActiveTab('translation')
     } else if (stage === 'chunk_review' || stage === 'chunking' || stage === 'ready_for_ingestion') {
       setActiveTab('chunks')
-    } else if (stage === 'ingesting' || stage === 'approval_for_prod' || stage === 'ingesting_prod' || stage === 'completed') {
+    } else if (stage === 'ingesting' || stage === 'approval_for_prod' || stage === 'ingesting_prod' || stage === 'publishing_to_network' || stage === 'completed') {
       setActiveTab('index')
     }
   }, [doc?.stage, workflowId, searchParams])
@@ -909,8 +911,8 @@ export default function DocumentOpsView() {
   const removalEnvironments = (() => {
     const stage = doc?.stage
     if (!stage) return []
-    const inDev = ['ingesting', 'approval_for_prod', 'ingesting_prod', 'completed'].includes(stage)
-    const inProd = ['ingesting_prod', 'completed'].includes(stage)
+    const inDev = ['ingesting', 'approval_for_prod', 'ingesting_prod', 'publishing_to_network', 'completed'].includes(stage)
+    const inProd = ['ingesting_prod', 'publishing_to_network', 'completed'].includes(stage)
     const envs = []
     if (inDev) envs.push('Dev')
     if (inProd) envs.push('Production')

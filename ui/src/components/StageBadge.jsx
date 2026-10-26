@@ -24,7 +24,7 @@ export function StageBadge({ stage, className, compact = false }) {
       <span className={cn(
         'w-1.5 h-1.5 rounded-full',
         stage === 'failed' ? 'bg-destructive' :
-        stage === 'completed' || stage === 'ready_for_ingestion' || stage === 'ingesting' || stage === 'approval_for_prod' || stage === 'ingesting_prod' ? 'bg-stage-ingestion' :
+        stage === 'completed' || stage === 'ready_for_ingestion' || stage === 'ingesting' || stage === 'approval_for_prod' || stage === 'ingesting_prod' || stage === 'publishing_to_network' ? 'bg-stage-ingestion' :
         stage?.includes('translation') ? 'bg-stage-translation' :
         stage?.includes('chunk') ? 'bg-stage-chunking' :
         stage?.includes('ocr') ? 'bg-stage-ocr' :
