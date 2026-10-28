@@ -49,6 +49,7 @@ export function DocumentDetailHeader({
             currentStage={doc.stage}
             hasPages={doc.page_count > 0}
             hasChunks={doc.chunk_count > 0}
+            networkPublish={doc.network_publish}
           />
           <div className="flex shrink-0 items-center gap-1.5">
             {visibleActions.slice(0, 4).map((action) => (

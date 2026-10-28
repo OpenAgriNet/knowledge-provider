@@ -1002,12 +1002,21 @@ export default function DocumentOpsView() {
           </div>
         ) : null}
 
+        {doc.network_publish?.status === 'skipped' ? (
+          <PanelNotice
+            tone="warning"
+            title="Publish to Network skipped"
+            message={doc.network_publish.reason || 'This document was not published to the network.'}
+          />
+        ) : null}
+
         <div className="flex min-w-0 flex-col gap-2 xl:flex-row xl:items-center xl:gap-3">
           <PipelineStepper
             className="min-w-0 flex-1"
             currentStage={doc.stage}
             hasPages={pages.length > 0 || Boolean(doc.page_count)}
             hasChunks={chunks.length > 0 || Boolean(doc.chunk_count)}
+            networkPublish={doc.network_publish}
           />
           <div className="flex shrink-0 flex-wrap items-center gap-1.5 xl:justify-end">
             {visibleActions.slice(0, 4).map(action => {

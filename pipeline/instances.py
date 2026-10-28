@@ -20,6 +20,11 @@ import os
 PORTAL_INSTANCE = "bv"
 
 
+def publish_to_network_enabled() -> bool:
+    return (os.environ.get("ENABLE_PUBLISH_TO_NETWORK", "false").strip().lower()
+            in {"true", "1", "yes"})
+
+
 def prod_stage_disabled() -> bool:
     """True when DISABLE_PROD_SETTING turns off the PROD half of the pipeline.
 

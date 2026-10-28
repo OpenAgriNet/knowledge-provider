@@ -80,6 +80,7 @@ from ..instances import prod_stage_disabled
 from ..models import (
     PIPELINE_STAGES,
     PROD_ONLY_STAGES,
+    PUBLISH_SKIPPED_UNMAPPED_KIND,
     AuditLogResponse,
     BulkWorkflowActionRequest,
     BulkWorkflowActionResponse,
@@ -90,6 +91,7 @@ from ..models import (
     DocumentGraph,
     DocumentStage,
     DocumentSummary,
+    NetworkPublishOutcome,
     OperationQueueEntry,
     OperationQueueResponse,
     PageUpdate,
@@ -101,6 +103,7 @@ from ..models import (
     SearchSettingsUpdate,
     SettingsAuditResponse,
 )
+from ..network_constants import RESULT_REJECTED
 from ..network_group import validate_network_provider_config
 from ..workflows import (
     ChunkingOnlyWorkflow,
@@ -1352,9 +1355,37 @@ def _parse_scheme_aliases(doc: dict) -> list[str]:
     return scheme_catalog.parse_aliases(doc.get("scheme_aliases_json"))
 
 
+NETWORK_PUBLISH_ARTIFACT_TYPES = {"network_publish_payload", "network_publish_skipped"}
+
+
+def _network_publish_outcome(artifacts: list[dict]) -> NetworkPublishOutcome | None:
+    latest = next((a for a in artifacts if a.get("artifact_type") in NETWORK_PUBLISH_ARTIFACT_TYPES), None)
+    if latest is None:
+        return None
+    try:
+        exchange = json.loads(latest.get("metadata_json") or "{}")
+    except ValueError:
+        exchange = {}
+    if latest["artifact_type"] == "network_publish_skipped":
+        return NetworkPublishOutcome(
+            status="skipped",
+            reason_code=exchange.get("reason_code") or PUBLISH_SKIPPED_UNMAPPED_KIND,
+            reason=exchange.get("reason") or "No network catalog is mapped to this document kind.",
+            created_at=latest.get("created_at"),
+        )
+    if exchange.get("result_status") == RESULT_REJECTED:
+        return NetworkPublishOutcome(
+            status="rejected",
+            reason=f"The network rejected the catalog: {exchange.get('errors') or []}",
+            created_at=latest.get("created_at"),
+        )
+    return NetworkPublishOutcome(status="published", created_at=latest.get("created_at"))
+
+
 def _build_document_detail(doc: dict) -> DocumentDetail:
     workflow_id = doc["workflow_id"]
     current_job = db.get_latest_document_job(workflow_id)
+    artifacts = db.list_document_artifacts(workflow_id)
     return DocumentDetail(
         document_id=doc["document_id"],
         canonical_document_id=doc.get("canonical_document_id"),
@@ -1388,8 +1419,9 @@ def _build_document_detail(doc: dict) -> DocumentDetail:
         normalized_artifact_id=doc.get("normalized_artifact_id"),
         latest_job_id=doc.get("latest_job_id"),
         current_job=current_job,
-        artifacts=db.list_document_artifacts(workflow_id),
+        artifacts=artifacts,
         index_status=db.list_document_index_status(workflow_id),
+        network_publish=_network_publish_outcome(artifacts),
         uploaded_by_user_id=doc.get("uploaded_by_user_id"),
         uploaded_by_username=doc.get("uploaded_by_username"),
         uploaded_by_email=doc.get("uploaded_by_email"),
