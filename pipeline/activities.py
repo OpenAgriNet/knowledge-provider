@@ -1361,6 +1361,7 @@ async def promote_document_to_prod_qdrant(
         store.upsert, prod_collection, records, batch_size=max(batch_size, 8)
     )
     activity.logger.info("PROD promotion complete: %s", result.get("index_stats"))
+    await _drop_superseded_points("prod", workflow_id, doc, document_id, prod_collection, store=store)
     db.log_audit(
         workflow_id=workflow_id,
         document_id=document_id,
@@ -1389,6 +1390,45 @@ async def promote_document_to_prod_qdrant(
         "document_kind": kind,
         "catalog_version": catalog_version,
     }
+
+
+async def _drop_superseded_points(
+    env: str,
+    workflow_id: str,
+    doc: dict,
+    current_doc_id: str,
+    collection: str,
+    store=None,
+) -> None:
+    """Delete points of earlier file versions (see ``metadata.superseded_doc_ids``).
+
+    Runs after the new content is indexed, so search never has a gap. A failed
+    delete keeps the key for the next run and does not fail the ingest.
+    """
+    from . import db
+
+    stale = [
+        doc_id
+        for doc_id in (doc.get("superseded_doc_ids") or {}).get(env, [])
+        if doc_id and doc_id != current_doc_id
+    ]
+    if not stale:
+        return
+    if store is None:
+        from .vector_store import get_vector_store
+
+        store = get_vector_store()
+    deleted = []
+    for doc_id in stale:
+        result = await asyncio.to_thread(store.delete_by_doc_id, collection, doc_id)
+        if result.get("error"):
+            activity.logger.warning(
+                "Could not delete superseded %s points for %s: %s", env, doc_id, result["error"]
+            )
+        else:
+            deleted.append(doc_id)
+    if deleted:
+        db.clear_superseded_doc_ids(workflow_id, env, deleted)
 
 
 @activity.defn
@@ -1447,6 +1487,7 @@ async def ingest_document_from_db(
         status="indexed",
         details=result.get("index_stats"),
     )
+    await _drop_superseded_points("dev", workflow_id, doc, document_id, index_name)
     return result
 
 
