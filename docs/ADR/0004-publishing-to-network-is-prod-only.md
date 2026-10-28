@@ -6,6 +6,7 @@ Decision:
 - `publishing_to_network` moves to after `promote_document_to_prod_qdrant` succeeds and joins `PROD_ONLY_STAGES`; skipped entirely when `DISABLE_PROD_SETTING=true`.
 - Applies uniformly across `DocumentPipelineWorkflow`, `ReingestionWorkflow`, and the standalone `PromoteToProdWorkflow` (which previously never published to network at all).
 - A publish failure after a successful prod promotion is still fatal (document → `FAILED`), matching prior all-or-nothing behavior, even though PROD content is by then already live.
+- `ENABLE_PUBLISH_TO_NETWORK` (default `false`) gates the call: when off, the stage records a `network_publish_skipped` artifact with reason `disabled` and the document completes. The activity reads it, not the workflow, so replay is unaffected. The document API reports the outcome as `network_publish` and the UI shows a skipped step as a warning.
 - In-flight Temporal executions are protected via `workflow.patched("publish-after-prod-v1")`, following the `auto-tag-v1`/`local-state-update-v1` convention. No backfill of documents already published under the old order.
 
 Alternatives considered:

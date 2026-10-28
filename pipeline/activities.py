@@ -29,7 +29,8 @@ from .catalog_builder import normalize_document_kind
 from .chunking import chunk_pages, load_chunking_config
 from .discovery_publish_service import DiscoveryPublishService, PublishConfigError
 from .document_repository import DocumentRepository
-from .instances import instance_display_name
+from .instances import instance_display_name, publish_to_network_enabled
+from .models import PUBLISH_SKIPPED_DISABLED, PUBLISH_SKIPPED_UNMAPPED_KIND
 from .network_constants import RESULT_REJECTED
 from .network_group import load_provider_naming, named_group, provider_for
 from .network_provider import InvalidProviderIdError
@@ -1483,26 +1484,32 @@ async def publish_catalog_to_network(workflow_id: str, transaction_id: str) -> d
 
     repository = DocumentRepository()
     document_kind = normalize_document_kind(repository.get_document_kind(workflow_id))
-    group = repository.get_document_group(workflow_id)
 
-    try:
-        service = DiscoveryPublishService()
-    except PublishConfigError as exc:
-        raise ApplicationError(str(exc), non_retryable=True) from exc
-    try:
-        result = await asyncio.to_thread(
-            service.publish, transaction_id, document_kind, workflow_id, group
-        )
-    except InvalidProviderIdError as exc:
-        raise ApplicationError(str(exc), non_retryable=True) from exc
+    if publish_to_network_enabled():
+        group = repository.get_document_group(workflow_id)
+        try:
+            service = DiscoveryPublishService()
+        except PublishConfigError as exc:
+            raise ApplicationError(str(exc), non_retryable=True) from exc
+        try:
+            result = await asyncio.to_thread(
+                service.publish, transaction_id, document_kind, workflow_id, group
+            )
+        except InvalidProviderIdError as exc:
+            raise ApplicationError(str(exc), non_retryable=True) from exc
+        skip = (PUBLISH_SKIPPED_UNMAPPED_KIND, f"No network catalog is mapped to document kind '{document_kind}'.") if result["skipped"] else None
+    else:
+        result = {"skipped": True, "result_status": None}
+        skip = (PUBLISH_SKIPPED_DISABLED, "Publish to Network is disabled (ENABLE_PUBLISH_TO_NETWORK is not true).")
 
-    if result["skipped"]:
+    if skip:
         artifact_type = "network_publish_skipped"
         filename = "network_publish_skipped.json"
         exchange = {
             "skipped": True,
             "document_kind": document_kind,
-            "reason": "no network catalog is mapped to this document kind",
+            "reason_code": skip[0],
+            "reason": skip[1],
         }
     else:
         artifact_type = "network_publish_payload"
@@ -1550,10 +1557,11 @@ async def publish_catalog_to_network(workflow_id: str, transaction_id: str) -> d
         )
 
     return {
-        "status": "skipped" if result["skipped"] else "published",
+        "status": "skipped" if skip else "published",
+        "reason_code": skip[0] if skip else None,
         "document_kind": document_kind,
         "transaction_id": transaction_id,
-        "message_id": None if result["skipped"] else result["envelope"]["context"]["messageId"],
+        "message_id": None if skip else result["envelope"]["context"]["messageId"],
         "result_status": result["result_status"],
     }
 

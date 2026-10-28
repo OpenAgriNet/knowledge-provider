@@ -1,5 +1,5 @@
 import React from 'react'
-import { Check, Loader2, X } from 'lucide-react'
+import { AlertTriangle, Check, Loader2, X } from 'lucide-react'
 import {
   RUNNING_BACKEND_STAGES,
   USER_PIPELINE_STAGES,
@@ -47,7 +47,10 @@ function stageStatus(index, effectiveIndex, isFailed) {
   return 'pending'
 }
 
-export default function PipelineStepper({ currentStage, hasPages = false, hasChunks = false, className }) {
+const publishSkipped = (stageId, status, networkPublish) =>
+  stageId === 'publishing_to_network' && status === 'completed' && networkPublish?.status === 'skipped'
+
+export default function PipelineStepper({ currentStage, hasPages = false, hasChunks = false, networkPublish = null, className }) {
   const { prodEnabled } = usePipelineConfig()
   const stages = React.useMemo(
     () => (prodEnabled ? USER_PIPELINE_STAGES : USER_PIPELINE_STAGES.filter(s => !PROD_ONLY_STEPS.has(s.id))),
@@ -72,9 +75,12 @@ export default function PipelineStepper({ currentStage, hasPages = false, hasChu
 
         <ol className="relative flex min-w-0 items-start justify-between gap-0.5 overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {stages.map((stage, index) => {
-            const status = stageStatus(index, effectiveIndex, isFailed)
+            const baseStatus = stageStatus(index, effectiveIndex, isFailed)
+            const status = publishSkipped(stage.id, baseStatus, networkPublish) ? 'skipped' : baseStatus
             const meta = stageMeta[stage.id] || {}
-            const title = meta.description || stage.label
+            const title = status === 'skipped'
+              ? `Skipped: ${networkPublish.reason || 'not published to the network'}`
+              : meta.description || stage.label
             const label = stage.label
             const spinning = status === 'active' && showSpinner
 
@@ -90,10 +96,13 @@ export default function PipelineStepper({ currentStage, hasPages = false, hasChu
                     status === 'completed' && 'border-success/50 bg-success text-white',
                     status === 'active' && 'border-primary bg-primary text-primary-foreground ring-2 ring-primary/25',
                     status === 'failed' && 'border-destructive bg-destructive text-white ring-2 ring-destructive/25',
+                    status === 'skipped' && 'border-warning bg-warning text-warning-foreground ring-2 ring-warning/25',
                     status === 'pending' && 'border-border bg-card text-muted-foreground',
                   )}
                 >
-                  {status === 'completed' ? (
+                  {status === 'skipped' ? (
+                    <AlertTriangle className="h-3.5 w-3.5" strokeWidth={2.5} />
+                  ) : status === 'completed' ? (
                     <Check className="h-3.5 w-3.5" strokeWidth={2.5} />
                   ) : status === 'failed' ? (
                     <X className="h-3.5 w-3.5" strokeWidth={2.5} />
@@ -109,6 +118,7 @@ export default function PipelineStepper({ currentStage, hasPages = false, hasChu
                     status === 'active' && 'font-semibold text-foreground',
                     status === 'completed' && 'font-medium text-success',
                     status === 'failed' && 'font-semibold text-destructive',
+                    status === 'skipped' && 'font-semibold text-warning',
                     status === 'pending' && 'text-muted-foreground',
                   )}
                 >
