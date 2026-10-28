@@ -95,22 +95,6 @@ function PanelNotice({ tone = 'error', title, message }) {
   )
 }
 
-// Client-side preview only — matches pipeline/scheme_catalog.py's
-// derive_scheme_code() closely enough for instant feedback, but the server
-// is the authoritative, collision-checked source of truth for the real code.
-const SCHEME_CODE_STOPWORDS = new Set(['a', 'an', 'the', 'of', 'on', 'for', 'and', 'or', 'to', 'in', 'at', 'by', 'with', '&'])
-
-function previewSchemeCode(title) {
-  const words = (title || '').match(/[A-Za-z0-9]+/g) || []
-  const letters = words
-    .filter(w => !SCHEME_CODE_STOPWORDS.has(w.toLowerCase()))
-    .map(w => w[0].toLowerCase())
-    .join('')
-  if (letters.length >= 2) return letters
-  const slug = (title || '').toLowerCase().replace(/[^a-z0-9]+/g, '')
-  return slug.slice(0, 8) || 'scheme'
-}
-
 /**
  * Validity the document is searchable in. The start is prefilled from what the
  * server stamped at upload; the end is deliberately blank-able - an empty end
@@ -126,26 +110,14 @@ function validateValidity(validFrom, validTo) {
 const DOCUMENT_KIND_OPTIONS = [
   { value: 'scheme', label: 'Scheme' },
   { value: 'advisory', label: 'Advisory' },
-  { value: 'video', label: 'Video' },
-  { value: '__custom__', label: 'Custom…' },
 ]
 
 export function DocumentClassificationPanel({ doc, workflowId, canClassify, onSaved }) {
-  const hasKind = doc.document_kind && doc.document_kind !== 'document'
-  // 'document' is the unclassified default, not a choice the panel offers, so
-  // it seeds the select as empty — otherwise the select renders blank while the
-  // save button reads "Saved", which tells a reviewer the opposite of the truth.
-  const [kind, setKind] = useState(
-    hasKind && !DOCUMENT_KIND_OPTIONS.some(o => o.value === doc.document_kind)
-      ? '__custom__'
-      : (hasKind ? doc.document_kind : '')
-  )
-  const [customKind, setCustomKind] = useState(hasKind && !DOCUMENT_KIND_OPTIONS.some(o => o.value === doc.document_kind) ? doc.document_kind : '')
-  const [schemeName, setSchemeName] = useState(doc.scheme_name || '')
-  const savedDisplayName = doc.display_name || filenameStem(doc.filename)
-  const [displayName, setDisplayName] = useState(savedDisplayName)
-  const displayNameChanged = displayName.trim() !== savedDisplayName
-  const displayNameLocked = !canClassify || Boolean(doc.ingested_at)
+  const [kind, setKind] = useState(doc.kind || '')
+  // The display name is documents.name; main's lock rule still applies to it.
+  const savedName = doc.name || filenameStem(doc.filename)
+  const [name, setName] = useState(savedName)
+  const nameLocked = !canClassify || Boolean(doc.ingested_at)
   const [validFrom, setValidFrom] = useState(doc.valid_from || todayISODate())
   // Blank when the document has no end date, which is the normal case - an
   // empty field here reads as "never expires", not as "not filled in yet".
@@ -153,16 +125,14 @@ export function DocumentClassificationPanel({ doc, workflowId, canClassify, onSa
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
-  const effectiveKind = kind === '__custom__' ? customKind.trim().toLowerCase() : kind
-  const isScheme = effectiveKind === 'scheme'
   const validityError = DOCUMENT_VALIDITY_ENABLED
     ? validateValidity(validFrom, validTo)
     : ''
-  const nameError = displayNameError(displayName)
+  const nameError = displayNameError(name)
+  const nameChanged = name.trim() !== savedName
   const canSave =
-    Boolean(effectiveKind) &&
+    Boolean(kind) &&
     !nameError &&
-    (!isScheme || schemeName.trim().length > 0) &&
     !validityError
 
   async function save() {
@@ -174,9 +144,8 @@ export function DocumentClassificationPanel({ doc, workflowId, canClassify, onSa
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          document_kind: effectiveKind,
-          ...(displayNameChanged ? { display_name: displayName.trim() } : {}),
-          ...(isScheme ? { scheme_name: schemeName.trim() } : {}),
+          kind,
+          ...(nameChanged ? { name: name.trim() } : {}),
           // Omitted entirely when the feature is off, so classifying a
           // document leaves whatever period the upload stamped untouched.
           ...(DOCUMENT_VALIDITY_ENABLED
@@ -193,9 +162,8 @@ export function DocumentClassificationPanel({ doc, workflowId, canClassify, onSa
   }
 
   const alreadySaved =
-    doc.document_kind === effectiveKind
-    && !displayNameChanged
-    && (!isScheme || doc.scheme_name === schemeName.trim())
+    doc.kind === kind
+    && !nameChanged
     && (!DOCUMENT_VALIDITY_ENABLED
       || (doc.valid_from === validFrom && (doc.valid_to || '') === validTo))
 
@@ -214,10 +182,10 @@ export function DocumentClassificationPanel({ doc, workflowId, canClassify, onSa
           <Input
             id="classification-display-name"
             className="h-8 w-[260px] text-xs"
-            value={displayName}
-            disabled={displayNameLocked}
+            value={name}
+            disabled={nameLocked}
             aria-invalid={Boolean(nameError)}
-            onChange={e => setDisplayName(e.target.value)}
+            onChange={e => setName(e.target.value)}
           />
         </div>
         <div className="flex flex-col gap-1">
@@ -258,38 +226,12 @@ export function DocumentClassificationPanel({ doc, workflowId, canClassify, onSa
             </div>
           </>
         )}
-        {kind === '__custom__' && (
-          <div className="flex flex-col gap-1">
-            <span className="text-[10px] text-muted-foreground">Custom type</span>
-            <Input
-              className="h-8 w-[140px] text-xs"
-              value={customKind}
-              disabled={!canClassify}
-              onChange={e => setCustomKind(e.target.value)}
-              placeholder="e.g. faq"
-            />
-          </div>
-        )}
-        {isScheme && (
-          <>
-            <div className="flex flex-col gap-1">
-              <span className="text-[10px] text-muted-foreground">Scheme name</span>
-              <Input
-                className="h-8 w-[260px] text-xs"
-                value={schemeName}
-                disabled={!canClassify}
-                onChange={e => setSchemeName(e.target.value)}
-                placeholder="e.g. National Mission on Natural Farming"
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <span className="text-[10px] text-muted-foreground">Scheme code (auto)</span>
-              <span className="flex h-8 items-center rounded-md border border-dashed border-input px-2 text-xs text-muted-foreground">
-                {doc.scheme_code && doc.scheme_name === schemeName.trim() ? doc.scheme_code : (schemeName.trim() ? previewSchemeCode(schemeName) : '—')}
-              </span>
-            </div>
-          </>
-        )}
+        <div className="flex flex-col gap-1">
+          <span className="text-[10px] text-muted-foreground">Code</span>
+          <span className="flex h-8 items-center rounded-md border border-dashed border-input px-2 text-xs text-muted-foreground">
+            {doc.code || '—'}
+          </span>
+        </div>
         {canClassify && (
           <Button size="sm" className="h-8 text-xs" disabled={!canSave || saving || alreadySaved} onClick={save}>
             {saving ? 'Saving…' : alreadySaved ? 'Saved' : 'Save'}
@@ -307,8 +249,8 @@ export function DocumentClassificationPanel({ doc, workflowId, canClassify, onSa
       ) : null}
       {canClassify && nameError ? <p className="text-xs text-destructive">{nameError}</p> : null}
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
-      {!canClassify && !hasKind ? (
-        <p className="text-xs text-muted-foreground">You don't have permission to set document type.</p>
+      {!canClassify ? (
+        <p className="text-xs text-muted-foreground">You don't have permission to change the document type.</p>
       ) : null}
     </div>
   )
@@ -869,13 +811,6 @@ export default function DocumentOpsView() {
       && canRunAction(action)
   )
   const canRemoveDocument = canAdmin && (doc?.available_actions || []).includes('disable_document')
-  // 'document' is never offered as a choice in the classification panel (only
-  // scheme/advisory/video/custom are) — seeing it here means the panel was
-  // never used. Mirrors the same check the reingest endpoint enforces server-side.
-  const isDocClassified = Boolean(
-    (doc?.document_kind && doc.document_kind !== 'document') || doc?.scheme_code || doc?.scheme_name
-  )
-  const ingestBlockedByClassification = doc?.stage === 'ready_for_ingestion' && !isDocClassified
   const sortedPages = useMemo(() => [...pages].sort((a, b) => a.page_number - b.page_number), [pages])
   const reviewedPages = useMemo(() => pages.filter(p => p.is_reviewed).length, [pages])
   const reviewedChunks = useMemo(() => chunks.filter(c => c.is_reviewed).length, [chunks])
@@ -1042,30 +977,18 @@ export default function DocumentOpsView() {
             networkPublish={doc.network_publish}
           />
           <div className="flex shrink-0 flex-wrap items-center gap-1.5 xl:justify-end">
-            {visibleActions.slice(0, 4).map(action => {
-              const blockedByClassification = action === 'approve_ingestion' && ingestBlockedByClassification
-              return (
-                <Button
-                  key={action}
-                  size="sm"
-                  variant={action.includes('approve') ? 'success' : action.includes('reindex') ? 'warning' : 'outline'}
-                  className="h-8 text-xs"
-                  disabled={Boolean(actionPending) || blockedByClassification}
-                  title={
-                    blockedByClassification
-                      ? 'Set document type below before approving for dev'
-                      : undefined
-                  }
-                  onClick={() => runAction(action)}
-                >
-                  {actionPending === action
-                    ? 'Working…'
-                    : blockedByClassification
-                      ? 'Set document type first'
-                      : summarizeAvailableAction(action)}
-                </Button>
-              )
-            })}
+            {visibleActions.slice(0, 4).map(action => (
+              <Button
+                key={action}
+                size="sm"
+                variant={action.includes('approve') ? 'success' : action.includes('reindex') ? 'warning' : 'outline'}
+                className="h-8 text-xs"
+                disabled={Boolean(actionPending)}
+                onClick={() => runAction(action)}
+              >
+                {actionPending === action ? 'Working…' : summarizeAvailableAction(action)}
+              </Button>
+            ))}
             {canRemoveDocument && (
               <Button
                 size="sm"
