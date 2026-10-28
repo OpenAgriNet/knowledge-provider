@@ -98,7 +98,7 @@ class TestDiscoveryPublishServicePublish:
         mock_client.post.return_value = mock_response
 
         with patch("pipeline.discovery_publish_service.httpx.Client", return_value=mock_client):
-            result = service.publish(transaction_id="txn-123", document_kind="advisory")
+            result = service.publish(transaction_id="txn-123", kind="advisory")
 
         mock_client.post.assert_called_once()
         call_args = mock_client.post.call_args
@@ -153,8 +153,8 @@ class TestDiscoveryPublishServicePublish:
         mock_client.post.return_value = mock_response
 
         with patch("pipeline.discovery_publish_service.httpx.Client", return_value=mock_client):
-            first = service.publish(transaction_id="txn-shared", document_kind="advisory")
-            second = service.publish(transaction_id="txn-shared", document_kind="advisory")
+            first = service.publish(transaction_id="txn-shared", kind="advisory")
+            second = service.publish(transaction_id="txn-shared", kind="advisory")
 
         assert first["envelope"]["context"]["transactionId"] == "txn-shared"
         assert second["envelope"]["context"]["transactionId"] == "txn-shared"
@@ -180,7 +180,7 @@ class TestDiscoveryPublishServicePublish:
 
         with patch("pipeline.discovery_publish_service.httpx.Client", return_value=mock_client):
             with pytest.raises(httpx.HTTPStatusError):
-                service.publish(transaction_id="txn-123", document_kind="advisory")
+                service.publish(transaction_id="txn-123", kind="advisory")
 
     @pytest.mark.unit
     def test_publish_raises_on_connection_error(self, monkeypatch):
@@ -197,7 +197,7 @@ class TestDiscoveryPublishServicePublish:
 
         with patch("pipeline.discovery_publish_service.httpx.Client", return_value=mock_client):
             with pytest.raises(httpx.ConnectError):
-                service.publish(transaction_id="txn-123", document_kind="advisory")
+                service.publish(transaction_id="txn-123", kind="advisory")
 
 
 class TestDiscoveryPublishServiceSchemeCatalog:
@@ -220,7 +220,7 @@ class TestDiscoveryPublishServiceSchemeCatalog:
         mock_client.post.return_value = mock_response
 
         with patch("pipeline.discovery_publish_service.httpx.Client", return_value=mock_client):
-            result = service.publish(transaction_id="txn-9", document_kind="scheme")
+            result = service.publish(transaction_id="txn-9", kind="scheme")
 
         envelope = mock_client.post.call_args.kwargs["json"]
         catalog = envelope["message"]["catalogs"][0]
@@ -244,7 +244,7 @@ class TestDiscoveryPublishServiceSkipsUnmappedKinds:
         mock_client = MagicMock()
 
         with patch("pipeline.discovery_publish_service.httpx.Client", return_value=mock_client):
-            result = service.publish(transaction_id="txn-skip", document_kind=kind)
+            result = service.publish(transaction_id="txn-skip", kind=kind)
 
         mock_client.post.assert_not_called()
         assert result["skipped"] is True
@@ -265,7 +265,7 @@ class TestDiscoveryPublishServiceResult:
             "pipeline.discovery_publish_service.httpx.Client",
             return_value=_client_returning(response),
         ):
-            result = service.publish(transaction_id="txn-v", document_kind="advisory")
+            result = service.publish(transaction_id="txn-v", kind="advisory")
 
         assert result["result_status"] == status
 
@@ -281,7 +281,7 @@ class TestDiscoveryPublishServiceResult:
             "pipeline.discovery_publish_service.httpx.Client",
             return_value=_client_returning(response),
         ):
-            result = service.publish(transaction_id="txn-v", document_kind="advisory")
+            result = service.publish(transaction_id="txn-v", kind="advisory")
 
         assert result["errors"] == errors
 
@@ -306,7 +306,7 @@ class TestDiscoveryPublishServiceResult:
             "pipeline.discovery_publish_service.httpx.Client",
             return_value=_client_returning(response),
         ):
-            result = service.publish(transaction_id="txn-v", document_kind="advisory")
+            result = service.publish(transaction_id="txn-v", kind="advisory")
 
         assert result["result_status"] == "ACCEPTED"
 
@@ -333,7 +333,7 @@ class TestDiscoveryPublishServiceResult:
             "pipeline.discovery_publish_service.httpx.Client",
             return_value=_client_returning(response),
         ):
-            result = service.publish(transaction_id="txn-v", document_kind="advisory")
+            result = service.publish(transaction_id="txn-v", kind="advisory")
 
         assert result["result_status"] is None
         assert result["errors"] == []
@@ -351,7 +351,7 @@ class TestDiscoveryPublishServiceResult:
             "pipeline.discovery_publish_service.httpx.Client",
             return_value=_client_returning(response),
         ):
-            result = service.publish(transaction_id="txn-v", document_kind="advisory")
+            result = service.publish(transaction_id="txn-v", kind="advisory")
 
         assert result["result_status"] is None
         assert result["errors"] == []
@@ -361,7 +361,7 @@ class TestDiscoveryPublishServiceResult:
         service = _service(monkeypatch)
 
         with patch("pipeline.discovery_publish_service.httpx.Client", return_value=MagicMock()):
-            result = service.publish(transaction_id="txn-v", document_kind="video")
+            result = service.publish(transaction_id="txn-v", kind="video")
 
         assert result["skipped"] is True
         assert result["result_status"] is None
@@ -384,7 +384,7 @@ class TestDiscoveryPublishServiceLogging:
             )
             with patch("pipeline.discovery_publish_service.httpx.Client", return_value=ok):
                 service.publish(
-                    transaction_id="txn-log", document_kind="advisory", workflow_id="wf-log"
+                    transaction_id="txn-log", kind="advisory", workflow_id="wf-log"
                 )
 
         messages = [r.getMessage() for r in caplog.records]
@@ -410,7 +410,7 @@ class TestDiscoveryPublishServiceLogging:
             with patch("pipeline.discovery_publish_service.httpx.Client", return_value=client):
                 with pytest.raises(httpx.ConnectError):
                     service.publish(
-                        transaction_id="txn-log", document_kind="advisory", workflow_id="wf-log"
+                        transaction_id="txn-log", kind="advisory", workflow_id="wf-log"
                     )
 
         errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
@@ -430,7 +430,7 @@ class TestDiscoveryPublishServiceLogging:
                 "pipeline.discovery_publish_service.httpx.Client", return_value=MagicMock()
             ):
                 service.publish(
-                    transaction_id="txn-log", document_kind="video", workflow_id="wf-log"
+                    transaction_id="txn-log", kind="video", workflow_id="wf-log"
                 )
 
         messages = [r.getMessage() for r in caplog.records]
