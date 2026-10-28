@@ -40,7 +40,6 @@ import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Checkbox } from '../components/ui/checkbox'
 import { Input } from '../components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select'
 import { Skeleton } from '../components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { Textarea } from '../components/ui/textarea'
@@ -107,13 +106,15 @@ function validateValidity(validFrom, validTo) {
   return ''
 }
 
-const DOCUMENT_KIND_OPTIONS = [
-  { value: 'scheme', label: 'Scheme' },
-  { value: 'advisory', label: 'Advisory' },
-]
+// The type is chosen at upload and fixed afterwards: it decides the catalog the
+// document lives in, so this panel only displays it.
+const DOCUMENT_KIND_LABELS = {
+  scheme: 'Scheme',
+  advisory: 'Advisory',
+  video: 'Video',
+}
 
 export function DocumentClassificationPanel({ doc, workflowId, canClassify, onSaved }) {
-  const [kind, setKind] = useState(doc.kind || '')
   // The display name is documents.name; main's lock rule still applies to it.
   const savedName = doc.name || filenameStem(doc.filename)
   const [name, setName] = useState(savedName)
@@ -131,7 +132,6 @@ export function DocumentClassificationPanel({ doc, workflowId, canClassify, onSa
   const nameError = displayNameError(name)
   const nameChanged = name.trim() !== savedName
   const canSave =
-    Boolean(kind) &&
     !nameError &&
     !validityError
 
@@ -144,7 +144,6 @@ export function DocumentClassificationPanel({ doc, workflowId, canClassify, onSa
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          kind,
           ...(nameChanged ? { name: name.trim() } : {}),
           // Omitted entirely when the feature is off, so classifying a
           // document leaves whatever period the upload stamped untouched.
@@ -162,8 +161,7 @@ export function DocumentClassificationPanel({ doc, workflowId, canClassify, onSa
   }
 
   const alreadySaved =
-    doc.kind === kind
-    && !nameChanged
+    !nameChanged
     && (!DOCUMENT_VALIDITY_ENABLED
       || (doc.valid_from === validFrom && (doc.valid_to || '') === validTo))
 
@@ -190,16 +188,9 @@ export function DocumentClassificationPanel({ doc, workflowId, canClassify, onSa
         </div>
         <div className="flex flex-col gap-1">
           <span className="text-[10px] text-muted-foreground">Type</span>
-          <Select value={kind} onValueChange={setKind} disabled={!canClassify}>
-            <SelectTrigger className="h-8 w-[160px] text-xs">
-              <SelectValue placeholder="Select type" />
-            </SelectTrigger>
-            <SelectContent>
-              {DOCUMENT_KIND_OPTIONS.map(opt => (
-                <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <span className="flex h-8 w-[160px] items-center rounded-md border border-dashed border-input px-2 text-xs text-muted-foreground">
+            {DOCUMENT_KIND_LABELS[doc.kind] || doc.kind || '—'}
+          </span>
         </div>
         {DOCUMENT_VALIDITY_ENABLED && (
           <>

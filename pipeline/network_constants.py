@@ -42,9 +42,11 @@ GROUP_CATALOG_NAME_TEMPLATE = "{group_name} {catalog_name}"
 # placeholder (ADR 0003 types schemes as KnowledgeAdvisory) - change it here only.
 KIND_SCHEME = "scheme"
 KIND_ADVISORY = "advisory"
+KIND_VIDEO = "video"
 KIND_TO_CATALOG_TYPE = {
     KIND_SCHEME: "openagrinet:AgricultureResource",
     KIND_ADVISORY: "openagrinet:KnowledgeAdvisory",
+    KIND_VIDEO: "openagrinet:VideoResource",
 }
 CATALOG_TYPE_TO_KIND = {schema: kind for kind, schema in KIND_TO_CATALOG_TYPE.items()}
 
