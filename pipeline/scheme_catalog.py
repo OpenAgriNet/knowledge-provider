@@ -16,7 +16,6 @@ from typing import Any, Optional
 
 from . import db, document_validity
 from . import display_name as display_name_rules
-from .network_constants import catalog_type_for_kind
 
 SCHEME_CODE_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
@@ -515,7 +514,6 @@ def build_snapshot(
 def apply_scheme_metadata(
     workflow_id: str,
     *,
-    kind: Optional[str] = None,
     code: Optional[str] = None,
     name: Optional[str] = None,
     aliases: Optional[list[str]] = None,
@@ -549,12 +547,7 @@ def apply_scheme_metadata(
         display_name_rules.ensure_editable(doc)
         updates["name"] = display_name_rules.normalize(display_name)
 
-    if kind is not None:
-        new_kind = kind.strip().lower()
-        catalog_type_for_kind(new_kind)  # ValueError for a kind with no catalog type
-        updates["kind"] = new_kind
-    else:
-        new_kind = old_kind
+    new_kind = old_kind  # the kind is fixed at upload; it is the document's catalog
 
     new_code = old_code
     if code is not None:
