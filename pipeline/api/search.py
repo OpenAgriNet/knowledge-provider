@@ -8,6 +8,7 @@ name is looked up at call time.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import re
@@ -192,6 +193,12 @@ async def run_search(payload: dict, user: RequireSearch):
     search-capable caller may ask for any group.
     """
     from ..vector_store import get_default_index_name, get_vector_store
+
+    logging.info(
+        "search payload user=%s payload=%s",
+        user.username or user.email or user.user_id,
+        json.dumps(payload, ensure_ascii=False, default=str),
+    )
 
     settings = db.get_search_settings()
     index_name = payload.get("index_name") or settings.get("indexName") or get_default_index_name()
