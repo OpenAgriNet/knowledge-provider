@@ -702,8 +702,7 @@ def _prepare_records(
             "instance": resolved_group,  # vector payload key, kept for consumers
             "instance_name": group_name,
             "provider_id": provider_id,
-            "type": "scheme" if is_scheme else "document",
-            "document_kind": kind,
+            "type": kind,
             "source": "docs-pipeline",
             "filename": external_slug,
             "name_gu": name_gu,
