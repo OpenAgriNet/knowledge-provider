@@ -595,3 +595,13 @@ This repository favors explicitness over silent automation:
 - downstream indexing is a separate concern from content ownership
 
 That makes it a good fit for teams that need document traceability and operational control rather than a black-box ingestion flow.
+
+## License
+
+Copyright (c) Centre for Open Societal Systems (COSS).
+
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+See [LICENSE](LICENSE) for the full text.
