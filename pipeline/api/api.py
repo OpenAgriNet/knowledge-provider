@@ -29,7 +29,7 @@ except Exception:
 
 from urllib.parse import quote
 
-from fastapi import FastAPI, File, Header, HTTPException, Query, Request, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi import Path as PathParam
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -41,6 +41,7 @@ from slowapi.util import get_remote_address
 from temporalio.client import Client, WorkflowFailureError
 
 from .. import db, document_validity, scheme_catalog
+from .. import display_name as display_name_rules
 from ..auth.config import load_auth_config, validate_auth_config
 from ..auth.deps import (
     CurrentUser,
@@ -951,6 +952,7 @@ async def upload_and_process(
     index_name: str = "documents-index",
     stop_after_ocr: bool = False,
     instance: str = "",
+    display_name: Optional[str] = Form(None),
 ):
     """
     Upload a supported file and start processing workflow.
@@ -964,6 +966,10 @@ async def upload_and_process(
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in ALLOWED_EXTENSIONS:
         raise HTTPException(400, f"Unsupported file type: {suffix}")
+    try:
+        display_name = display_name_rules.normalize(display_name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
     # Read file content
     content = await file.read()
@@ -1057,6 +1063,7 @@ async def upload_and_process(
         source_filename=file.filename,
         source_file_fingerprint=file_hash,
         filepath=minio_path,
+        display_name=display_name,
         stage="registered",
         stop_after_ocr=stop_after_ocr,
         instance=create_instance,
@@ -2047,9 +2054,12 @@ async def patch_scheme_metadata(
             network_visible=body.network_visible,
             valid_from=body.valid_from,
             valid_to=body.valid_to,
+            display_name=body.display_name,
         )
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
+    except display_name_rules.DisplayNameLocked as exc:
+        raise HTTPException(409, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
@@ -2076,6 +2086,7 @@ async def patch_scheme_metadata(
         "network_visible": bool(int(doc["network_visible"])) if doc.get("network_visible") is not None else True,
         "valid_from": doc.get("valid_from"),
         "valid_to": doc.get("valid_to"),
+        "display_name": doc.get("display_name"),
         "catalog_version": result.get("catalog_version"),
         "requires_reindex": result.get("requires_reindex"),
         "pending_reindex": result.get("pending_reindex"),

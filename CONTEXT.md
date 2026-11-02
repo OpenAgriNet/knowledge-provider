@@ -48,5 +48,9 @@ _Avoid_: "document type" — collides with `source_type`/`canonical_input_type`,
 The period a document's chunks answer searches in, held as `documents.valid_from` / `documents.valid_to` and stamped onto every chunk's vector payload as `start_date` / `end_date`. Defaulted on upload to start that day with no end, meaning it never expires; a reviewer can narrow either end in the same form that sets the Knowledge Kind, behind the `VITE_DOCUMENT_VALIDITY_ENABLED` flag. Both ends are inclusive, and search filters on it so an expired or not-yet-started document is never answered from. Chunks ingested before it existed carry neither date and stay searchable — see `docs/ADR/0005-document-validity-filters-search.md`.
 _Avoid_: "expiry" — there is a start as well as an end. Also avoid calling it the document's lifetime: the document stays in the console, editable and reingestable, once its period has passed; only its search answers stop.
 
+**Display Name**:
+The farmer-facing name of a document, shown to farmers as the source of an answer. Set by the contributor at upload, prefilled from the filename, and editable until the document is first published to Dev; fixed after that. One known gap: a document whose PROD promotion fails lands in `failed` and can still be renamed; its Dev chunks keep the old name until it is reingested. A document uploaded without one is named by its manifest title, else its filename.
+_Avoid_: "title" — collides with the manifest's English/Gujarati titles; "filename" — the file's name is only the starting suggestion.
+
 **network_visible**:
 An operator-controlled flag on a document/scheme (not a pipeline stage) that gates whether it's exposed to other BAPs through the pull-based Scheme Catalog snapshot. Independent of Publish to Network.

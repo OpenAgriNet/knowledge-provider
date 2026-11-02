@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '../components/ui/button'
 import { Badge } from '../components/ui/badge'
+import { Input } from '../components/ui/input'
 import {
   Upload,
   FileText,
@@ -24,6 +25,7 @@ import { apiFetch } from '../auth/keycloak'
 import { useAuth } from '../auth/AuthProvider'
 import { defaultUploadInstance, PORTAL_INSTANCE } from '../lib/instanceLabels'
 import { fetchJson, formatCompactDateTime, getDocumentListLabel, summarizeIngestStatus } from '../lib/pipelineUi'
+import { displayNameError, filenameStem } from '../lib/displayName'
 
 const SUPPORTED_TYPES = ['.pdf', '.doc', '.docx']
 const MAX_SIZE_MB = 100
@@ -60,6 +62,7 @@ export default function NewDocumentView() {
     portalInstance: user?.portal_instance || PORTAL_INSTANCE,
   })
   const [file, setFile] = useState(null)
+  const [displayName, setDisplayName] = useState('')
   const [dragging, setDragging] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadSuccess, setUploadSuccess] = useState(false)
@@ -105,6 +108,7 @@ export default function NewDocumentView() {
       setValidationError('')
       setUploadError('')
       setFile(nextFile)
+      setDisplayName(filenameStem(nextFile.name))
     }
   }
 
@@ -119,8 +123,10 @@ export default function NewDocumentView() {
     if (event.target.files?.[0]) handleFile(event.target.files[0])
   }
 
+  const nameError = file ? displayNameError(displayName) : ''
+
   async function handleSubmit() {
-    if (!file || !canUpload) return
+    if (!file || !canUpload || nameError) return
     if (!documentInstance && !isSuperAdmin) {
       setUploadError(
         'No state on your account. Ask an admin to assign a Keycloak group (e.g. /states/MH/admin).',
@@ -132,6 +138,7 @@ export default function NewDocumentView() {
     try {
       const formData = new FormData()
       formData.append('file', file)
+      formData.append('display_name', displayName.trim())
       // State users: Keycloak group state only. Super-admin: portal BV when unset.
       const uploadInstance = documentInstance || (isSuperAdmin ? PORTAL_INSTANCE : '')
       if (!uploadInstance) {
@@ -159,6 +166,7 @@ export default function NewDocumentView() {
 
   function resetUpload() {
     setFile(null)
+    setDisplayName('')
     setUploadSuccess(false)
     setLastWorkflowId('')
     setUploadError('')
@@ -263,6 +271,7 @@ export default function NewDocumentView() {
                       className="h-7 text-xs"
                       onClick={() => {
                         setFile(null)
+                        setDisplayName('')
                         setValidationError('')
                       }}
                     >
@@ -314,6 +323,23 @@ export default function NewDocumentView() {
             </div>
           </div>
 
+          {file ? (
+            <div className="space-y-1">
+              <label htmlFor="display-name" className="text-sm font-medium text-foreground">
+                Display name
+              </label>
+              <Input
+                id="display-name"
+                value={displayName}
+                aria-invalid={Boolean(nameError)}
+                onChange={(event) => setDisplayName(event.target.value)}
+              />
+              <p className={nameError ? 'text-xs text-destructive' : 'text-xs text-muted-foreground'}>
+                {nameError || 'Farmers see this name as the source of their answers.'}
+              </p>
+            </div>
+          ) : null}
+
           {validationError ? (
             <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
               <AlertCircle className="mt-0.5 size-4 shrink-0" />
@@ -355,7 +381,7 @@ export default function NewDocumentView() {
           <Button
             className="h-10 w-full text-sm font-medium sm:w-auto sm:min-w-[200px]"
             onClick={handleSubmit}
-            disabled={!file || uploading || !canUpload}
+            disabled={!file || uploading || !canUpload || Boolean(nameError)}
           >
             {uploading ? (
               <>

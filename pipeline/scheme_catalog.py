@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from . import db, document_validity
+from . import display_name as display_name_rules
 
 SCHEME_CODE_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
@@ -756,6 +757,7 @@ def apply_scheme_metadata(
     network_visible: Optional[bool] = None,
     valid_from: Optional[str] = None,
     valid_to: Optional[str] = None,
+    display_name: Optional[str] = None,
 ) -> dict[str, Any]:
     """Update document scheme fields and rebuild catalog when needed.
 
@@ -775,6 +777,11 @@ def apply_scheme_metadata(
     old_kind = (doc.get("document_kind") or "document").strip().lower()
     code_renamed = False
     pending_reindex = False
+
+    stored_display_name = doc.get("display_name")
+    if display_name is not None and (stored_display_name is None or display_name.strip() != stored_display_name):
+        display_name_rules.ensure_editable(doc)
+        updates["display_name"] = display_name_rules.normalize(display_name)
 
     if document_kind is not None:
         kind = document_kind.strip().lower().replace(" ", "-")
