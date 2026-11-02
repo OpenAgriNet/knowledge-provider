@@ -648,6 +648,7 @@ def _prepare_records(
     valid_from: str | None = None,
     valid_to: str | None = None,
     provider_id: str | None = None,
+    display_name: str | None = None,
 ) -> list[dict]:
     metadata = _get_doc_metadata(filename)
     resolved_instance = _normalize_instance(instance)
@@ -657,7 +658,7 @@ def _prepare_records(
     external_slug = workflow_id or filename
     default_name = filename.replace(".pdf", "").replace(".PDF", "")
     name_gu = name_gu or metadata.get("title_gu") or default_name
-    name_en = name_en or metadata.get("title_en") or default_name
+    name_en = name_en or display_name or metadata.get("title_en") or default_name
     category_tags = metadata.get("category_tags", "")
     quality_score = metadata.get("quality_score", "")
     priority_rank = metadata.get("priority_rank", "")
@@ -1249,6 +1250,7 @@ async def prepare_for_ingestion(
         instance=(doc or {}).get("instance"),
         **_validity_fields_from_doc(doc),
         provider_id=_provider_id_from_doc(doc),
+        display_name=(doc or {}).get("display_name"),
     )
     activity.logger.info(f"Prepared {len(records)} records")
     return records
@@ -1360,6 +1362,7 @@ async def promote_document_to_prod_qdrant(
         **scheme_kwargs,
         **_validity_fields_from_doc(doc),
         provider_id=_provider_id_from_doc(doc),
+        display_name=doc.get("display_name"),
     )
     activity.logger.info(
         "Promoting %s records to PROD Qdrant collection %s (kind=%s)",
@@ -1430,6 +1433,7 @@ async def ingest_document_from_db(
         **_scheme_fields_from_doc(doc),
         **_validity_fields_from_doc(doc),
         provider_id=_provider_id_from_doc(doc),
+        display_name=doc.get("display_name"),
     )
     payload_path = _write_json_temp(records)
     try:

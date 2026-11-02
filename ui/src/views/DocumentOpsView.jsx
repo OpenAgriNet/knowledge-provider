@@ -45,6 +45,7 @@ import { Skeleton } from '../components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { Textarea } from '../components/ui/textarea'
 import { DOCUMENT_VALIDITY_ENABLED } from '../config'
+import { displayNameError, filenameStem } from '../lib/displayName'
 import {
   fetchJson,
   formatCompactDateTime,
@@ -129,7 +130,7 @@ const DOCUMENT_KIND_OPTIONS = [
   { value: '__custom__', label: 'Custom…' },
 ]
 
-function DocumentClassificationPanel({ doc, workflowId, canClassify, onSaved }) {
+export function DocumentClassificationPanel({ doc, workflowId, canClassify, onSaved }) {
   const hasKind = doc.document_kind && doc.document_kind !== 'document'
   // 'document' is the unclassified default, not a choice the panel offers, so
   // it seeds the select as empty — otherwise the select renders blank while the
@@ -141,6 +142,10 @@ function DocumentClassificationPanel({ doc, workflowId, canClassify, onSaved }) 
   )
   const [customKind, setCustomKind] = useState(hasKind && !DOCUMENT_KIND_OPTIONS.some(o => o.value === doc.document_kind) ? doc.document_kind : '')
   const [schemeName, setSchemeName] = useState(doc.scheme_name || '')
+  const savedDisplayName = doc.display_name || filenameStem(doc.filename)
+  const [displayName, setDisplayName] = useState(savedDisplayName)
+  const displayNameChanged = displayName.trim() !== savedDisplayName
+  const displayNameLocked = !canClassify || Boolean(doc.ingested_at)
   const [validFrom, setValidFrom] = useState(doc.valid_from || todayISODate())
   // Blank when the document has no end date, which is the normal case - an
   // empty field here reads as "never expires", not as "not filled in yet".
@@ -153,8 +158,10 @@ function DocumentClassificationPanel({ doc, workflowId, canClassify, onSaved }) 
   const validityError = DOCUMENT_VALIDITY_ENABLED
     ? validateValidity(validFrom, validTo)
     : ''
+  const nameError = displayNameError(displayName)
   const canSave =
     Boolean(effectiveKind) &&
+    !nameError &&
     (!isScheme || schemeName.trim().length > 0) &&
     !validityError
 
@@ -168,6 +175,7 @@ function DocumentClassificationPanel({ doc, workflowId, canClassify, onSaved }) 
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           document_kind: effectiveKind,
+          ...(displayNameChanged ? { display_name: displayName.trim() } : {}),
           ...(isScheme ? { scheme_name: schemeName.trim() } : {}),
           // Omitted entirely when the feature is off, so classifying a
           // document leaves whatever period the upload stamped untouched.
@@ -186,6 +194,7 @@ function DocumentClassificationPanel({ doc, workflowId, canClassify, onSaved }) 
 
   const alreadySaved =
     doc.document_kind === effectiveKind
+    && !displayNameChanged
     && (!isScheme || doc.scheme_name === schemeName.trim())
     && (!DOCUMENT_VALIDITY_ENABLED
       || (doc.valid_from === validFrom && (doc.valid_to || '') === validTo))
@@ -198,6 +207,19 @@ function DocumentClassificationPanel({ doc, workflowId, canClassify, onSaved }) 
           : 'Document type — used by the Master Catalog / AI layer'}
       </p>
       <div className="flex flex-wrap items-end gap-2">
+        <div className="flex flex-col gap-1">
+          <label htmlFor="classification-display-name" className="text-[10px] text-muted-foreground">
+            Display name
+          </label>
+          <Input
+            id="classification-display-name"
+            className="h-8 w-[260px] text-xs"
+            value={displayName}
+            disabled={displayNameLocked}
+            aria-invalid={Boolean(nameError)}
+            onChange={e => setDisplayName(e.target.value)}
+          />
+        </div>
         <div className="flex flex-col gap-1">
           <span className="text-[10px] text-muted-foreground">Type</span>
           <Select value={kind} onValueChange={setKind} disabled={!canClassify}>
@@ -283,6 +305,7 @@ function DocumentClassificationPanel({ doc, workflowId, canClassify, onSaved }) 
           the end date blank and it never expires.
         </p>
       ) : null}
+      {canClassify && nameError ? <p className="text-xs text-destructive">{nameError}</p> : null}
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
       {!canClassify && !hasKind ? (
         <p className="text-xs text-muted-foreground">You don't have permission to set document type.</p>

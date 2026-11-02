@@ -239,6 +239,7 @@ class SchemeMetadataUpdate(BaseModel):
     network_visible: Optional[bool] = None
     valid_from: Optional[str] = None
     valid_to: Optional[str] = None
+    display_name: Optional[str] = None
 
 
 class DocumentArtifact(BaseModel):

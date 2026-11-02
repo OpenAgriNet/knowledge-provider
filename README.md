@@ -470,8 +470,9 @@ The API is organized around a few major groups.
 ### Ingestion
 
 - `POST /documents`
-- `POST /upload`
+- `POST /upload` — optional `display_name` form field (trimmed, 1–150 chars): the Display Name farmers see as the answer source. Omitted, chunks fall back to the manifest title, then the filename.
 - `POST /documents/batch`
+- `PATCH /documents/{workflow_id}/scheme-metadata` — also accepts `display_name`; `409` once the document has been published to Dev.
 
 ### Document Listing And Summary
 
