@@ -12,7 +12,6 @@ import os
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
-from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
@@ -29,7 +28,7 @@ except Exception:
 
 from urllib.parse import quote
 
-from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi import Path as PathParam
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -40,7 +39,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from temporalio.client import Client, WorkflowFailureError
 
-from .. import db, document_validity, scheme_catalog
+from .. import db, scheme_catalog
 from .. import display_name as display_name_rules
 from ..auth.config import load_auth_config, validate_auth_config
 from ..auth.deps import (
@@ -51,7 +50,6 @@ from ..auth.deps import (
     RequirePipeline,
     RequireReview,
     RequireSearch,
-    RequireUpload,
 )
 from ..auth.email_otp import (
     exchange_authorization_code,
@@ -258,9 +256,11 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # Routers split out of this module, one per resource. Register them here.
 from .documents import router as documents_router  # noqa: E402
 from .search import router as search_router  # noqa: E402
+from .upload import router as upload_router  # noqa: E402
 
 app.include_router(search_router)
 app.include_router(documents_router)
+app.include_router(upload_router)
 # TODO(api-split): extract the remaining resources into their own routers,
 # one file each under pipeline/api/, following search.py: the per-document
 # /documents/{workflow_id} routes, pages, chunks, artifacts, vector indexes,
@@ -778,212 +778,6 @@ async def admin_set_user_access(
         access_type=data.access_type,
         state=data.state or None,
         role=data.role or None,
-    )
-
-
-@app.post("/upload", response_model=DocumentSummary)
-@limiter.limit(RATE_LIMIT_UPLOAD)
-async def upload_and_process(
-    request: Request,  # Required for rate limiting
-    user: RequireUpload,
-    file: UploadFile = File(...),
-    auto_approve: bool = False,
-    chunk_size: int = 450,
-    chunk_overlap: int = 128,
-    min_tokens: int = 100,
-    index_name: str = "documents-index",
-    stop_after_ocr: bool = False,
-    instance: str = "",
-    display_name: Optional[str] = Form(None),
-):
-    """
-    Upload a supported file and start processing workflow.
-
-    The file is stored in MinIO and then processed through the pipeline.
-    Validates both file extension and PDF magic bytes for security.
-    Rate limited to 10 requests/minute per IP.
-    Requires permission: upload (no-op while AUTH_DISABLED=true).
-    """
-    create_instance = _resolve_create_instance(user, instance)
-    suffix = Path(file.filename or "").suffix.lower()
-    if suffix not in ALLOWED_EXTENSIONS:
-        raise HTTPException(400, f"Unsupported file type: {suffix}")
-    try:
-        display_name = display_name_rules.normalize(display_name)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-
-    # Read file content
-    content = await file.read()
-    file_size = len(content)
-
-    # Validate PDF magic bytes (%PDF-) only for PDF uploads
-    if suffix == ".pdf":
-        pdf_magic = b"%PDF-"
-        if len(content) < 5 or content[:5] != pdf_magic:
-            raise HTTPException(400, "Invalid PDF file: file does not have valid PDF header")
-
-    # Generate unique object name
-    file_hash = hashlib.md5(content).hexdigest()
-    object_name = f"{file_hash}/{file.filename}"
-
-    # Upload to MinIO
-    content_type = "application/pdf" if suffix == ".pdf" else "application/octet-stream"
-    minio_client.put_object(
-        MINIO_BUCKET,
-        object_name,
-        BytesIO(content),
-        length=file_size,
-        content_type=content_type
-    )
-
-    # Use minio:// URI as filepath
-    minio_path = f"minio://{MINIO_BUCKET}/{object_name}"
-
-    workflow_id = get_workflow_id(minio_path)
-    document_id = file_hash
-    canonical_document_id = file_hash
-
-    # Reuse only when SQLite still tracks this workflow.
-    # If SQLite was purged, avoid returning stale Temporal state and create a fresh run ID.
-    existing_doc = db.get_document(workflow_id)
-    if existing_doc:
-        existing_doc = assert_document_instance_access(user, existing_doc)
-        try:
-            handle = temporal_client.get_workflow_handle(workflow_id)
-            state = await handle.query("get_state")
-            if state:
-                return DocumentSummary(
-                    document_id=document_id,
-                    canonical_document_id=canonical_document_id,
-                    workflow_id=workflow_id,
-                    filename=file.filename,
-                    source_filename=file.filename,
-                    source_file_fingerprint=file_hash,
-                    authoritative=bool(existing_doc.get("source_manifest_name")) if existing_doc else False,
-                    instance=normalize_instance(existing_doc.get("instance")),
-                    stage=DocumentStage(state.get("stage", "registered")),
-                    page_count=state.get("page_count", 0),
-                    chunk_count=state.get("chunk_count", 0),
-                    error_message=state.get("error_message"),
-                )
-        except HTTPException:
-            raise
-        except Exception:
-            pass
-    else:
-        workflow_id = _rerun_workflow_id(workflow_id)
-
-    # Start new workflow
-    handle = await temporal_client.start_workflow(
-        DocumentPipelineWorkflow.run,
-        args=[
-            document_id,
-            file.filename,
-            minio_path,
-            chunk_size,
-            chunk_overlap,
-            min_tokens,
-            index_name,
-            auto_approve,
-            stop_after_ocr,
-            prod_stage_disabled(),
-        ],
-        id=workflow_id,
-        task_queue=TASK_QUEUE,
-    )
-
-    # Save to SQLite for visibility during processing
-    actor = _actor_from_user(user)
-    # See the manifest upload path above: the period starts at the upload.
-    validity = document_validity.default_period()
-    db.upsert_document(
-        workflow_id=workflow_id,
-        document_id=document_id,
-        canonical_document_id=canonical_document_id,
-        filename=file.filename,
-        source_filename=file.filename,
-        source_file_fingerprint=file_hash,
-        filepath=minio_path,
-        display_name=display_name,
-        stage="registered",
-        stop_after_ocr=stop_after_ocr,
-        instance=create_instance,
-        uploaded_by_user_id=actor.get("user_id") or None,
-        uploaded_by_username=actor.get("username") or None,
-        uploaded_by_email=actor.get("email") or None,
-        uploaded_by_roles=actor.get("roles_csv") or None,
-        valid_from=validity.start_date,
-        valid_to=validity.end_date,
-    )
-    job_id = db.create_document_job(
-        workflow_id=workflow_id,
-        job_type="ocr_only" if stop_after_ocr else "pipeline",
-        temporal_workflow_id=workflow_id,
-        status="running",
-        current_stage="registered",
-        config={
-            "auto_approve": auto_approve,
-            "chunk_size": chunk_size,
-            "chunk_overlap": chunk_overlap,
-            "min_tokens": min_tokens,
-            "index_name": index_name,
-            "stop_after_ocr": stop_after_ocr,
-            "uploaded_by": actor,
-        },
-    )
-    original_artifact_id = db.add_document_artifact(
-        workflow_id=workflow_id,
-        job_id=job_id,
-        artifact_type="original_upload",
-        stage="registered",
-        storage_uri=minio_path,
-        mime_type=content_type,
-        filename=file.filename,
-        size_bytes=file_size,
-        metadata={"uploaded_via": "upload_endpoint", "uploaded_by": actor},
-    )
-    _log_audit(
-        workflow_id=workflow_id,
-        action_type="document_upload",
-        entity_type="document",
-        field_name="registered",
-        new_value=file.filename,
-        metadata={
-            "source": "upload_endpoint",
-            "instance": create_instance,
-            "size_bytes": file_size,
-            "auto_approve": auto_approve,
-        },
-        user=user,
-    )
-    source_type = "spreadsheet" if suffix in {".csv", ".xlsx"} else "document"
-    canonical_input_type = "spreadsheet" if suffix in {".csv", ".xlsx"} else "pdf"
-    db.update_document_fields(
-        workflow_id,
-        latest_job_id=job_id,
-        original_artifact_id=original_artifact_id,
-        source_type=source_type,
-        canonical_input_type=canonical_input_type,
-        stop_after_ocr=1 if stop_after_ocr else 0,
-    )
-
-    return DocumentSummary(
-        document_id=document_id,
-        canonical_document_id=canonical_document_id,
-        workflow_id=workflow_id,
-        filename=file.filename,
-        source_filename=file.filename,
-        source_file_fingerprint=file_hash,
-        authoritative=False,
-        instance=create_instance,
-        stage=DocumentStage.REGISTERED,
-        page_count=0,
-        chunk_count=0,
-        uploaded_by_user_id=actor.get("user_id") or None,
-        uploaded_by_username=actor.get("username") or None,
-        uploaded_by_email=actor.get("email") or None,
-        uploaded_by_roles=actor.get("roles") or [],
     )
 
 
