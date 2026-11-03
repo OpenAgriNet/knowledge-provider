@@ -123,3 +123,13 @@ def test_inventory_refuses_a_route_type_it_does_not_know():
 
     with pytest.raises(TypeError, match="UnknownRoute"):
         list(iter_api_routes(Router()))
+
+
+@pytest.mark.api
+@pytest.mark.unit
+@pytest.mark.parametrize("path", ["/documents/summary", "/documents/cohorts"])
+def test_collection_routes_are_not_taken_for_a_workflow_id(test_client, path):
+    response = test_client.get(path)
+
+    assert response.status_code == 200
+    assert "total_documents" in response.json()
