@@ -54,7 +54,8 @@ Interactive API docs once running: `http://localhost:8001/docs`.
 `pipeline/api/` layout:
 - `api.py` — the FastAPI app and most routes. `__init__.py` only re-exports `app`.
 - `search.py` — `POST /search` as an `APIRouter`.
-- `documents.py` — collection-level `/documents` routes (`POST /documents`, `POST /documents/batch`, `GET /documents`, `/summary`, `/cohorts`) as an `APIRouter` with prefix `/documents`; reads shared state (`temporal_client`, `limiter`, helpers) from `api.py` at call time. Per-document `/documents/{workflow_id}` routes stay in `api.py`. Remaining resources move out the same way; see `TODO(api-split)` in `api.py`.
+- `documents.py` — collection-level `/documents` routes (`POST /documents`, `POST /documents/batch`, `GET /documents`, `/summary`, `/cohorts`) as an `APIRouter` with prefix `/documents`; reads shared state (`temporal_client`, `limiter`, helpers) from `api.py` at call time. Per-document `/documents/{workflow_id}` routes stay in `api.py`.
+- `upload.py` — `POST /upload` (multipart file + optional `display_name`) as an `APIRouter`; same call-time access to `api.py` state (`minio_client`, `MINIO_BUCKET`, `temporal_client`). Remaining resources move out the same way; see `TODO(api-split)` in `api.py`.
 
 Rules:
 - Add a new endpoint to its resource's router file if one exists, else near its siblings in `api.py`.
