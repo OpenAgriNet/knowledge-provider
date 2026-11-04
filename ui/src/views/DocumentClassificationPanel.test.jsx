@@ -53,7 +53,9 @@ describe('DocumentClassificationPanel display name', () => {
     await user.click(screen.getByRole('button', { name: /^save$/i }))
 
     await waitFor(() => expect(onSaved).toHaveBeenCalled())
-    expect(patchBody()).toMatchObject({ kind: 'advisory', name: 'Bollworm Control' })
+    expect(patchBody()).toMatchObject({ name: 'Bollworm Control' })
+    // Document type is read-only after upload, so it is never sent back.
+    expect(patchBody()).not.toHaveProperty('kind')
   })
 
   it('blocks saving a blank display name', async () => {
@@ -80,14 +82,15 @@ describe('DocumentClassificationPanel display name', () => {
     expect(screen.getByLabelText(/display name/i)).toBeDisabled()
   })
 
-  it('does not resend an unchanged display name', async () => {
+  it('does not offer to save a display name retyped unchanged', async () => {
     const user = userEvent.setup()
-    const { onSaved } = renderPanel({ ...baseDoc, kind: 'scheme', name: '' })
-    await user.type(screen.getByPlaceholderText(/national mission/i), 'PM Kisan')
-    await user.click(screen.getByRole('button', { name: /^save$/i }))
+    renderPanel()
+    const field = screen.getByLabelText(/display name/i)
+    await user.clear(field)
+    await user.type(field, 'Cotton Pest Advisory')
 
-    await waitFor(() => expect(onSaved).toHaveBeenCalled())
-    expect(patchBody()).not.toHaveProperty('name')
+    expect(screen.getByRole('button', { name: /saved/i })).toBeDisabled()
+    expect(fetchJson).not.toHaveBeenCalled()
   })
 
   it('counts a document without a stored name as already saved', () => {

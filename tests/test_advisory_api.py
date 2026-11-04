@@ -23,7 +23,7 @@ def _rec(content_id, published=1, status="Published"):
 def client(db_connection, monkeypatch):
     from fastapi.testclient import TestClient
 
-    from pipeline import api
+    from pipeline.api import api
 
     monkeypatch.setattr(api.limiter, "enabled", False)  # many posts per test process
     with patch.dict(os.environ, {"WEBHOOK_API_KEY": TEST_KEY, "AUTH_DISABLED": "true"}):
@@ -32,7 +32,7 @@ def client(db_connection, monkeypatch):
 
 @pytest.fixture
 def temporal(monkeypatch):
-    from pipeline import api
+    from pipeline.api import api
 
     mock = AsyncMock()
     monkeypatch.setattr(api, "temporal_client", mock)
@@ -95,7 +95,7 @@ class TestWebhookStartsIndexing:
         assert len(db_connection.get_unindexed_webhook_record_ids()) == 1
 
     def test_still_200_when_temporal_client_is_none(self, client, db_connection, monkeypatch):
-        from pipeline import api
+        from pipeline.api import api
 
         monkeypatch.setattr(api, "temporal_client", None)
         assert client.post("/webhook", json=[_rec(1)], headers=H).status_code == 200
@@ -161,7 +161,7 @@ class TestAdminEndpoints:
     def test_endpoints_require_a_signed_in_admin(self, db_connection, temporal, monkeypatch):
         from fastapi.testclient import TestClient
 
-        from pipeline import api
+        from pipeline.api import api
 
         env = {
             "AUTH_DISABLED": "false",

@@ -1075,7 +1075,7 @@ class TestUploadCatalogIdentity:
     @pytest.fixture(autouse=True)
     def _fresh_rate_limit(self):
         # /upload is limited per IP; these tests post more often than one minute allows.
-        import pipeline.api as api
+        from pipeline.api import api
 
         api.limiter.reset()
         yield
@@ -1256,7 +1256,7 @@ class TestUploadCatalogIdentity:
     def test_replacing_a_document_needs_rights_in_its_group(self, db_connection):
         from fastapi import HTTPException
 
-        import pipeline.api as api
+        from pipeline.api import api
 
         self._mh_doc(db_connection)
         identity = lambda user: api._resolve_document_identity(  # noqa: E731
@@ -1279,7 +1279,7 @@ class TestUploadCatalogIdentity:
     def test_upload_into_a_group_needs_upload_rights_there(self, db_connection):
         from fastapi import HTTPException
 
-        import pipeline.api as api
+        from pipeline.api import api
 
         mixed = self._user("/states/MH/contributor", "/states/GJ/view")
         # Allowed where the user can upload, refused where they only view.
@@ -1293,7 +1293,7 @@ class TestUploadCatalogIdentity:
     def test_a_disabled_or_running_document_cannot_be_replaced(self, db_connection):
         from fastapi import HTTPException
 
-        import pipeline.api as api
+        from pipeline.api import api
 
         db = db_connection
         contributor = self._user("/states/MH/contributor")
@@ -1315,7 +1315,7 @@ class TestUploadCatalogIdentity:
     def test_a_document_live_in_prod_needs_approval_rights_to_replace(self, db_connection):
         from fastapi import HTTPException
 
-        import pipeline.api as api
+        from pipeline.api import api
 
         db = db_connection
         self._mh_doc(db)
@@ -1351,7 +1351,7 @@ class TestVectorKeysToDelete:
     @pytest.mark.api
     @pytest.mark.unit
     def test_disable_never_deletes_a_key_another_live_document_is_indexed_under(self, db_connection):
-        import pipeline.api as api
+        from pipeline.api import api
 
         db = db_connection
         uuid_a = db.upsert_document(

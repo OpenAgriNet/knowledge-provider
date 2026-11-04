@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import NewDocumentView from './NewDocumentView'
 
 const apiFetch = vi.fn()
@@ -33,6 +33,18 @@ async function pickFile(user, name = 'PM Kisan Guidelines.pdf') {
   await user.upload(input, new File(['%PDF-1.4'], name, { type: 'application/pdf' }))
 }
 
+// Radix Select needs these browser APIs, which jsdom lacks.
+beforeAll(() => {
+  window.HTMLElement.prototype.hasPointerCapture ??= () => false
+  window.HTMLElement.prototype.releasePointerCapture ??= () => {}
+  window.HTMLElement.prototype.scrollIntoView ??= () => {}
+})
+
+async function pickKind(user, label = 'Advisory') {
+  await user.click(screen.getByRole('combobox', { name: /document type/i }))
+  await user.click(await screen.findByRole('option', { name: label }))
+}
+
 describe('NewDocumentView display name', () => {
   beforeEach(() => {
     apiFetch.mockReset()
@@ -55,6 +67,7 @@ describe('NewDocumentView display name', () => {
     const user = userEvent.setup()
     renderView()
     await pickFile(user)
+    await pickKind(user)
     const field = screen.getByLabelText(/display name/i)
     await user.clear(field)
     await user.type(field, 'Cotton Pest Advisory')
