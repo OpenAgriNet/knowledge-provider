@@ -16,10 +16,15 @@ from typing import Optional
 
 import httpx
 
-from .catalog_builder import build_catalog
+from .catalog_builder import build_catalog, is_publishable_kind, normalize_document_kind
 from .network_constants import BECKN_VERSION, RESULT_ACCEPTED
+from .network_group import load_provider_naming, named_group, provider_for
 
 logger = logging.getLogger(__name__)
+
+
+class PublishConfigError(RuntimeError):
+    pass
 
 
 class DiscoveryPublishService:
@@ -28,17 +33,17 @@ class DiscoveryPublishService:
     def __init__(
         self,
         endpoint: Optional[str] = None,
-        sender_id: Optional[str] = None,
         timeout: float = 30.0,
     ):
         self.endpoint = endpoint or os.environ.get("DISCOVERY_SERVICE_ENDPOINT")
+        self.provider_naming = load_provider_naming()
         # Doubles as context.networkId.
-        self.sender_id = sender_id or os.environ.get("NETWORK_SENDER_ID")
+        self.sender_id = self.provider_naming.network_id
 
         if not self.endpoint:
-            raise RuntimeError("DISCOVERY_SERVICE_ENDPOINT must be set to publish to the network.")
+            raise PublishConfigError("DISCOVERY_SERVICE_ENDPOINT must be set to publish to the network.")
         if not self.sender_id:
-            raise RuntimeError("NETWORK_SENDER_ID must be set to publish to the network.")
+            raise PublishConfigError("NETWORK_SENDER_ID must be set to publish to the network.")
 
         self.timeout = timeout
 
@@ -47,6 +52,7 @@ class DiscoveryPublishService:
         transaction_id: str,
         kind: Optional[str],
         workflow_id: Optional[str] = None,
+        group: Optional[str] = None,
     ) -> dict:
         """
         POST a catalog/publish envelope for `kind`.
@@ -59,21 +65,18 @@ class DiscoveryPublishService:
         with `skipped=True`: the spec declares `message.catalogs` as
         `minItems: 1`, so there is no valid "publish nothing" request to send.
         """
-        catalog = build_catalog(kind)
-        if catalog is None:
+        if not is_publishable_kind(kind):
             logger.info(
                 "workflow_id=%s kind=%s network_publish_skipped=True",
                 workflow_id,
                 kind,
             )
-            return {
-                "skipped": True,
-                "envelope": None,
-                "status_code": None,
-                "response_body": None,
-                "result_status": None,
-                "errors": [],
-            }
+            return self._skipped()
+
+        catalog_group = named_group(group)
+        provider = provider_for(self.provider_naming, kind, catalog_group)
+        catalog_name = self.provider_naming.catalog_name(normalize_document_kind(kind), catalog_group)
+        catalog = build_catalog(kind, provider, catalog_name, catalog_group)
 
         envelope = {
             "context": {
@@ -153,6 +156,17 @@ class DiscoveryPublishService:
             "response_body": response.text,
             "result_status": result_status,
             "errors": errors,
+        }
+
+    @staticmethod
+    def _skipped() -> dict:
+        return {
+            "skipped": True,
+            "envelope": None,
+            "status_code": None,
+            "response_body": None,
+            "result_status": None,
+            "errors": [],
         }
 
     def _read_result(

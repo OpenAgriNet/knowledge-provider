@@ -46,7 +46,7 @@ VITE_API_PROXY_TARGET=http://localhost:8001   # or in-cluster API URL in compose
 
 ## Backend (API + worker)
 
-Root `.env` (see `.env.example`). Required by FastAPI (`pipeline/api.py`), Temporal worker (`pipeline/worker.py`), and activities.
+Root `.env` (see `.env.example`). Required by FastAPI (`pipeline/api/`), Temporal worker (`pipeline/worker.py`), and activities.
 
 ### Required
 
@@ -246,13 +246,20 @@ Exposes `/catalog/v1/*` so **bharat-oan-api** and **bharat-provider-backend** ca
 
 ### Publish to Network
 
-First piece of the network-discovery push architecture: once a document's PROD promotion succeeds, the `publishing_to_network` pipeline stage POSTs a Beckn-shaped `publish` envelope to an external Discovery Service. It's a PROD-only stage (see `docs/ADR/0004-publishing-to-network-is-prod-only.md`) — skipped entirely when `DISABLE_PROD_SETTING=true`, since a document never reaches the network without first promoting to PROD. This is going to be the only way the experience layer discovers schemas going forward — the Master Scheme Catalog pull API above stays in place for backward compatibility. The catalog announces the *knowledge kind* the document was classified as — one catalog with exactly one `OnDemand` resource for `advisory`, another for `scheme`; any other `document_kind` publishes nothing. Publishing is **off by default**: set `PUBLISH_TO_NETWORK=true` to turn it on (see `docs/ADR/0005-publish-to-network-is-opt-in.md`). While it is off the activity records a `network_publish_skipped` artifact and the stage is left out of `GET /pipeline/stages`, so the UI stepper does not show it. `DISCOVERY_SERVICE_ENDPOINT` and `NETWORK_SENDER_ID` are **required only when `PUBLISH_TO_NETWORK` is on**.
+First piece of the network-discovery push architecture: once a document's PROD promotion succeeds, the `publishing_to_network` pipeline stage POSTs a Beckn-shaped `publish` envelope to an external Discovery Service. It's a PROD-only stage (see `docs/ADR/0004-publishing-to-network-is-prod-only.md`) — skipped entirely when `DISABLE_PROD_SETTING=true`, since a document never reaches the network without first promoting to PROD. This is going to be the only way the experience layer discovers schemas going forward — the Master Scheme Catalog pull API above stays in place for backward compatibility. The catalog announces the *knowledge kind* the document was classified as — one catalog with exactly one `OnDemand` resource for `advisory`, another for `scheme`; any other `document_kind` publishes nothing. The stage only calls the network when `ENABLE_PUBLISH_TO_NETWORK=true`; otherwise it records a `network_publish_skipped` artifact with the reason and the document completes. The UI shows the step in amber with that reason. `DISCOVERY_SERVICE_ENDPOINT` and `NETWORK_SENDER_ID` are **required** when publishing is enabled; a missing one fails the publish without retry.
+
+Each instance has one provider for both its advisory and scheme catalogs: id and descriptor code `{instance}.{network_id}`, the network id being `NETWORK_SENDER_ID` (`bv.provider.oan.dev`, `mh.provider.oan.dev`), named after the instance (`Bharat Vistaar`, `Maharashtra`). Catalogs are named `Advisories|Schemes from documents`. A document filed under a state (its **Group**, taken from the document's `instance`) uses the group code as the instance, prefixes catalog and resource ids with it (`mh-cat-oan-knowledge-provider-advisories`) and names its catalogs `<Group name> <catalog name>` (`Maharashtra Advisories from documents`). Documents under the portal instance (`PORTAL_INSTANCE`, `bv`) or the default instance (`DEFAULT_INSTANCE`) have no Group: they use the portal instance in the provider id and keep the unprefixed ids. Every Group publishes. An instance can replace the default provider id in the provider id overrides file (`PROVIDER_CONFIG_OVERRIDE_PATH`); instances it leaves out keep the default. A missing or malformed file, or a template with an unknown placeholder, stops both the API and the worker from booting. The file is not mounted by `docker-compose.yml` — mount your own into the `api` and `worker` containers and point the variable at it; `deploy/network_group_providers.example.json` shows the shape. See `docs/ADR/0006-publish-to-network-under-per-group-provider.md`.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `PUBLISH_TO_NETWORK` | `false` | Turns the Discovery Service publish on (`true`/`1`/`yes`). Read when the publish activity runs, not when a workflow starts, so changing it never affects the path of a workflow already in flight |
-| `DISCOVERY_SERVICE_ENDPOINT` | *(empty — required when `PUBLISH_TO_NETWORK` is on)* | Base URL of the external Discovery Service; the pipeline POSTs to `{DISCOVERY_SERVICE_ENDPOINT}/publish` |
-| `NETWORK_SENDER_ID` | *(empty — required when `PUBLISH_TO_NETWORK` is on)* | This instance's Beckn `senderId`, also sent as `networkId` |
+| `ENABLE_PUBLISH_TO_NETWORK` | `false` | `true` publishes each promoted document's catalog to the network. Anything else skips the step: the document completes and its Publish to Network step shows as skipped. Read when the step runs, so a change applies to the next publish after the worker restarts |
+| `DISCOVERY_SERVICE_ENDPOINT` | *(empty — required)* | Base URL of the external Discovery Service; the pipeline POSTs to `{DISCOVERY_SERVICE_ENDPOINT}/publish` |
+| `NETWORK_SENDER_ID` | *(empty — required)* | This instance's Beckn `senderId`, also sent as `networkId` |
+| `PROVIDER_CONFIG_OVERRIDE_PATH` | unset (bundled `pipeline/network_group_providers.json`, `{}` — no overrides) | Path to a JSON object of instance code → provider id, set per deployment, e.g. `{"ka": "ka.example.com"}`. Codes are case-insensitive. A missing file, invalid JSON, or an empty or invalid id (same rule as the template) stop the API and worker from starting |
+| `NETWORK_PROVIDER_ID_TEMPLATE` | `{instance}.{network_id}` | Default provider id and descriptor code, unless overridden in the file above. `{instance}` is the group code, or `PORTAL_INSTANCE` for documents with no Group; `{network_id}` is `NETWORK_SENDER_ID`. With no `NETWORK_SENDER_ID`, chunks get no `provider_id`. Must use both and render a valid provider id (lowercase letters, digits, `-` and `.`, no leading, trailing or repeated `.`), or the API and worker refuse to start. A document whose instance code renders an invalid id fails its publish without retry |
+| `NETWORK_ADVISORY_CATALOG_NAME` | `Advisories from documents` | Name of the advisory catalog |
+| `NETWORK_SCHEMES_CATALOG_NAME` | `Schemes from documents` | Name of the scheme catalog |
+| `NETWORK_GROUP_CATALOG_NAME_TEMPLATE` | `{group_name} {catalog_name}` | Catalog name for a Group, e.g. `Maharashtra Advisories from documents`. Must use `{group_name}`, or the API and worker refuse to start |
 | `DISCOVERY_SERVICE_PUBLISH_INITIAL_INTERVAL_SECONDS` | `30` | Wait before the first retry of a failed publish |
 | `DISCOVERY_SERVICE_PUBLISH_BACKOFF_COEFFICIENT` | `2.0` | Multiplier applied to the wait after each retry |
 | `DISCOVERY_SERVICE_PUBLISH_MAX_INTERVAL_SECONDS` | `300` | Cap on the wait between retries |
@@ -269,7 +276,8 @@ First piece of the network-discovery push architecture: once a document's PROD p
 | Temporal / MinIO / Postgres (`DATABASE_URL`) | — | ✅ | ✅ |
 | OCR / translation / chunking / domain tags | — | config / status | ✅ runs jobs |
 | Qdrant (`VECTOR_DB_*`) | — | ✅ | ✅ |
-| Publish to Network (`PUBLISH_TO_NETWORK`, `DISCOVERY_SERVICE_ENDPOINT`, `NETWORK_SENDER_ID`) | — | ✅ `PUBLISH_TO_NETWORK` only (stage list) | ✅ runs the publish activity |
+| Publish to Network (`DISCOVERY_SERVICE_ENDPOINT`, `NETWORK_SENDER_ID`) | — | — | ✅ runs the publish activity |
+| Network provider config (`PROVIDER_CONFIG_OVERRIDE_PATH`, `NETWORK_*_PROVIDER_*`) | — | validated at boot | ✅ validated at boot, used by the publish activity |
 
 ---
 

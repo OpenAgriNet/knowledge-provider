@@ -267,6 +267,7 @@ class SchemeMetadataUpdate(BaseModel):
     network_visible: Optional[bool] = None
     valid_from: Optional[str] = None
     valid_to: Optional[str] = None
+    display_name: Optional[str] = None
 
 
 class DocumentArtifact(BaseModel):
@@ -309,6 +310,17 @@ class DocumentIndexStatus(BaseModel):
     details_json: Optional[str] = None
 
 
+PUBLISH_SKIPPED_DISABLED = "disabled"
+PUBLISH_SKIPPED_UNMAPPED_KIND = "unmapped_kind"
+
+
+class NetworkPublishOutcome(BaseModel):
+    status: str
+    reason_code: Optional[str] = None
+    reason: Optional[str] = None
+    created_at: Optional[str] = None
+
+
 class DocumentDetail(DocumentSummary):
     filepath: str
     translated_count: int = 0
@@ -327,6 +339,7 @@ class DocumentDetail(DocumentSummary):
     current_job: Optional[dict[str, Any]] = None
     artifacts: list[DocumentArtifact] = []
     index_status: list[DocumentIndexStatus] = []
+    network_publish: Optional[NetworkPublishOutcome] = None
 
 
 class DocumentGraph(BaseModel):

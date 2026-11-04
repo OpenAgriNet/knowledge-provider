@@ -471,8 +471,9 @@ The API is organized around a few major groups.
 ### Ingestion
 
 - `POST /documents`
-- `POST /upload`
+- `POST /upload` — optional `display_name` form field (trimmed, 1–150 chars): the Display Name farmers see as the answer source. Omitted, chunks fall back to the manifest title, then the filename.
 - `POST /documents/batch`
+- `PATCH /documents/{workflow_id}/scheme-metadata` — also accepts `display_name`; `409` once the document has been published to Dev.
 
 ### Document Listing And Summary
 
@@ -517,7 +518,7 @@ Translation data is surfaced through the page model and review endpoints.
 - `GET /documents/{workflow_id}/qdrant`
 - `GET /documents/{workflow_id}/qdrant/chunks`
 - `POST /documents/{workflow_id}/reingest`
-- `POST /search` — only answers from documents whose validity period covers today; `valid_on` asks about another day and `include_expired` drops the filter (see `docs/openapi-search.yaml`)
+- `POST /search` — only answers from documents whose validity period covers today; `valid_on` asks about another day and `include_expired` drops the filter. Optional `group` (e.g. `mh`) limits results to one group's documents; omitted means every group, and the response's `effective_config.group` echoes what was applied (see `docs/openapi-search.yaml`)
 - `GET /indexes/summary`
 - `GET /indexes/{index_name}/settings`
 - `GET /indexes/{index_name}/stats`

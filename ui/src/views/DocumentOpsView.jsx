@@ -44,6 +44,7 @@ import { Skeleton } from '../components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { Textarea } from '../components/ui/textarea'
 import { DOCUMENT_VALIDITY_ENABLED } from '../config'
+import { displayNameError, filenameStem } from '../lib/displayName'
 import {
   fetchJson,
   formatCompactDateTime,
@@ -113,8 +114,11 @@ const DOCUMENT_KIND_LABELS = {
   video: 'Video',
 }
 
-function DocumentClassificationPanel({ doc, workflowId, canClassify, onSaved }) {
-  const [name, setName] = useState(doc.name || '')
+export function DocumentClassificationPanel({ doc, workflowId, canClassify, onSaved }) {
+  // The display name is documents.name; main's lock rule still applies to it.
+  const savedName = doc.name || filenameStem(doc.filename)
+  const [name, setName] = useState(savedName)
+  const nameLocked = !canClassify || Boolean(doc.ingested_at)
   const [validFrom, setValidFrom] = useState(doc.valid_from || todayISODate())
   // Blank when the document has no end date, which is the normal case - an
   // empty field here reads as "never expires", not as "not filled in yet".
@@ -125,8 +129,10 @@ function DocumentClassificationPanel({ doc, workflowId, canClassify, onSaved }) 
   const validityError = DOCUMENT_VALIDITY_ENABLED
     ? validateValidity(validFrom, validTo)
     : ''
+  const nameError = displayNameError(name)
+  const nameChanged = name.trim() !== savedName
   const canSave =
-    name.trim().length > 0 &&
+    !nameError &&
     !validityError
 
   async function save() {
@@ -138,7 +144,7 @@ function DocumentClassificationPanel({ doc, workflowId, canClassify, onSaved }) 
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: name.trim(),
+          ...(nameChanged ? { name: name.trim() } : {}),
           // Omitted entirely when the feature is off, so classifying a
           // document leaves whatever period the upload stamped untouched.
           ...(DOCUMENT_VALIDITY_ENABLED
@@ -155,7 +161,7 @@ function DocumentClassificationPanel({ doc, workflowId, canClassify, onSaved }) 
   }
 
   const alreadySaved =
-    doc.name === name.trim()
+    !nameChanged
     && (!DOCUMENT_VALIDITY_ENABLED
       || (doc.valid_from === validFrom && (doc.valid_to || '') === validTo))
 
@@ -167,6 +173,19 @@ function DocumentClassificationPanel({ doc, workflowId, canClassify, onSaved }) 
           : 'Document type — used by the Master Catalog / AI layer'}
       </p>
       <div className="flex flex-wrap items-end gap-2">
+        <div className="flex flex-col gap-1">
+          <label htmlFor="classification-display-name" className="text-[10px] text-muted-foreground">
+            Display name
+          </label>
+          <Input
+            id="classification-display-name"
+            className="h-8 w-[260px] text-xs"
+            value={name}
+            disabled={nameLocked}
+            aria-invalid={Boolean(nameError)}
+            onChange={e => setName(e.target.value)}
+          />
+        </div>
         <div className="flex flex-col gap-1">
           <span className="text-[10px] text-muted-foreground">Type</span>
           <span className="flex h-8 w-[160px] items-center rounded-md border border-dashed border-input px-2 text-xs text-muted-foreground">
@@ -199,16 +218,6 @@ function DocumentClassificationPanel({ doc, workflowId, canClassify, onSaved }) 
           </>
         )}
         <div className="flex flex-col gap-1">
-          <span className="text-[10px] text-muted-foreground">Name</span>
-          <Input
-            className="h-8 w-[260px] text-xs"
-            value={name}
-            disabled={!canClassify}
-            onChange={e => setName(e.target.value)}
-            placeholder="e.g. National Mission on Natural Farming"
-          />
-        </div>
-        <div className="flex flex-col gap-1">
           <span className="text-[10px] text-muted-foreground">Code</span>
           <span className="flex h-8 items-center rounded-md border border-dashed border-input px-2 text-xs text-muted-foreground">
             {doc.code || '—'}
@@ -229,6 +238,7 @@ function DocumentClassificationPanel({ doc, workflowId, canClassify, onSaved }) 
           the end date blank and it never expires.
         </p>
       ) : null}
+      {canClassify && nameError ? <p className="text-xs text-destructive">{nameError}</p> : null}
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
       {!canClassify ? (
         <p className="text-xs text-muted-foreground">You don't have permission to change the document type.</p>
@@ -274,6 +284,7 @@ const ACTIVE_STAGES = new Set([
   'chunking',
   'ingesting',
   'ingesting_prod',
+  'publishing_to_network',
 ])
 
 // These actions just signal a Temporal workflow and return immediately — the
@@ -309,6 +320,7 @@ function stageWantsChunks(stage, chunkCount = 0) {
     'ingesting',
     'approval_for_prod',
     'ingesting_prod',
+    'publishing_to_network',
     'completed',
   ].includes(stage || '')
 }
@@ -584,7 +596,7 @@ export default function DocumentOpsView() {
       setActiveTab('translation')
     } else if (stage === 'chunk_review' || stage === 'chunking' || stage === 'ready_for_ingestion') {
       setActiveTab('chunks')
-    } else if (stage === 'ingesting' || stage === 'approval_for_prod' || stage === 'ingesting_prod' || stage === 'completed') {
+    } else if (stage === 'ingesting' || stage === 'approval_for_prod' || stage === 'ingesting_prod' || stage === 'publishing_to_network' || stage === 'completed') {
       setActiveTab('index')
     }
   }, [doc?.stage, workflowId, searchParams])
@@ -848,8 +860,8 @@ export default function DocumentOpsView() {
   const removalEnvironments = (() => {
     const stage = doc?.stage
     if (!stage) return []
-    const inDev = ['ingesting', 'approval_for_prod', 'ingesting_prod', 'completed'].includes(stage)
-    const inProd = ['ingesting_prod', 'completed'].includes(stage)
+    const inDev = ['ingesting', 'approval_for_prod', 'ingesting_prod', 'publishing_to_network', 'completed'].includes(stage)
+    const inProd = ['ingesting_prod', 'publishing_to_network', 'completed'].includes(stage)
     const envs = []
     if (inDev) envs.push('Dev')
     if (inProd) envs.push('Production')
@@ -939,12 +951,21 @@ export default function DocumentOpsView() {
           </div>
         ) : null}
 
+        {doc.network_publish?.status === 'skipped' ? (
+          <PanelNotice
+            tone="warning"
+            title="Publish to Network skipped"
+            message={doc.network_publish.reason || 'This document was not published to the network.'}
+          />
+        ) : null}
+
         <div className="flex min-w-0 flex-col gap-2 xl:flex-row xl:items-center xl:gap-3">
           <PipelineStepper
             className="min-w-0 flex-1"
             currentStage={doc.stage}
             hasPages={pages.length > 0 || Boolean(doc.page_count)}
             hasChunks={chunks.length > 0 || Boolean(doc.chunk_count)}
+            networkPublish={doc.network_publish}
           />
           <div className="flex shrink-0 flex-wrap items-center gap-1.5 xl:justify-end">
             {visibleActions.slice(0, 4).map(action => (

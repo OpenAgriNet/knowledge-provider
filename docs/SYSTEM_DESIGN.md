@@ -130,7 +130,7 @@ flowchart TB
 | Container | Image / code | Responsibility | Default port |
 |---|---|---|---|
 | **ui** | `ui/` React SPA | Operator console; never talks to Temporal/Qdrant directly | 3000 |
-| **api** | `pipeline/api.py` | Auth, commands, read models, search proxy, admin | 8001 |
+| **api** | `pipeline/api/` | Auth, commands, read models, search proxy, admin | 8001 |
 | **worker** | `pipeline/worker.py` | Heavy activities; same image as API | — |
 | **temporal** | official image | Workflow durability, signals, retries | 7233 |
 | **minio** | official | Source PDF + stage artifacts | 9000 |

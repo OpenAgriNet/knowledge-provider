@@ -242,7 +242,7 @@ def asgi_client(db_connection, mock_temporal_client, mock_minio_client):
 
     from fastapi.testclient import TestClient
 
-    from pipeline import api
+    from pipeline.api import api
 
     api.temporal_client = mock_temporal_client
     api.minio_client = mock_minio_client

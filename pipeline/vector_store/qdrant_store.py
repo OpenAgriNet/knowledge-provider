@@ -23,6 +23,7 @@ PAYLOAD_FIELDS = (
     "workflow_id",
     "instance",
     "instance_name",
+    "provider_id",
     "type",
     "source",
     "filename",
@@ -229,38 +230,35 @@ def _validity_conditions(on_date: str) -> list[qmodels.Filter]:
     ]
 
 
+def _exact(key: str, value: Any) -> qmodels.FieldCondition:
+    """Condition: payload `key` equals `value`."""
+    return qmodels.FieldCondition(key=key, match=qmodels.MatchValue(value=value))
+
+
 def _build_filter(
     doc_id: Optional[str] = None,
     chunk_num: Optional[int] = None,
     exclude_reference: bool = False,
     valid_on: Optional[str] = None,
+    instance: Optional[str] = None,
+    provider_id: Optional[str] = None,
 ) -> Optional[qmodels.Filter]:
     """Assemble a Qdrant filter. `valid_on` (`YYYY-MM-DD`) restricts the result
     to chunks valid on that day; None leaves validity out entirely, which is
     what the delete/list paths want - an expired chunk is still that
-    document's chunk."""
+    document's chunk. `instance` keeps only chunks tagged with that group
+    code (the API calls it `group`); None means every group."""
     must: list[qmodels.Condition] = []
+    if instance is not None:
+        must.append(_exact("instance", instance))
+    if provider_id is not None:
+        must.append(_exact("provider_id", provider_id))
     if doc_id is not None:
-        must.append(
-            qmodels.FieldCondition(
-                key="doc_id",
-                match=qmodels.MatchValue(value=doc_id),
-            )
-        )
+        must.append(_exact("doc_id", doc_id))
     if chunk_num is not None:
-        must.append(
-            qmodels.FieldCondition(
-                key="chunk_num",
-                match=qmodels.MatchValue(value=int(chunk_num)),
-            )
-        )
+        must.append(_exact("chunk_num", int(chunk_num)))
     if exclude_reference:
-        must.append(
-            qmodels.FieldCondition(
-                key="is_reference",
-                match=qmodels.MatchValue(value=False),
-            )
-        )
+        must.append(_exact("is_reference", False))
     if valid_on:
         must.extend(_validity_conditions(valid_on))
     if not must:
@@ -296,6 +294,7 @@ class QdrantVectorStore:
         "workflow_id": qmodels.PayloadSchemaType.KEYWORD,
         "filename": qmodels.PayloadSchemaType.KEYWORD,
         "instance": qmodels.PayloadSchemaType.KEYWORD,
+        "provider_id": qmodels.PayloadSchemaType.KEYWORD,
         "chunk_num": qmodels.PayloadSchemaType.INTEGER,
         "is_reference": qmodels.PayloadSchemaType.BOOL,
         "type": qmodels.PayloadSchemaType.KEYWORD,
@@ -538,6 +537,8 @@ class QdrantVectorStore:
         attributes_to_retrieve: Optional[list[str]] = None,
         apply_validity: bool = True,
         valid_on: Optional[str] = None,
+        instance: Optional[str] = None,
+        provider_id: Optional[str] = None,
     ) -> dict[str, Any]:
         """Search `name`, by default returning only chunks valid today.
 
@@ -545,12 +546,17 @@ class QdrantVectorStore:
         `apply_validity=False` drops the period filter altogether - both exist
         for the operator who needs to see what an expired document still holds,
         and neither is what a caller serving an end user should pass.
+
+        `instance` limits the search to one group's chunks (e.g. `mh`); None
+        searches every group. The same filter feeds every mode.
         """
         mode = (search_mode or "TENSOR").upper()
         as_of = (valid_on or self.today()) if apply_validity else None
         query_filter = _build_filter(
             exclude_reference=exclude_reference,
             valid_on=as_of,
+            instance=instance,
+            provider_id=provider_id,
         )
 
         if mode == "LEXICAL":

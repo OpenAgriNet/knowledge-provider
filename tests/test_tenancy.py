@@ -15,6 +15,7 @@ from pipeline.auth.tenancy import (
     allowed_groups,
     assert_document_group_access,
     assert_group_access,
+    group_for_instance,
     resolve_create_group,
     user_can_access_group,
 )
@@ -354,8 +355,8 @@ def test_upsert_does_not_reassign_group(db_connection):
 
 def test_api_helpers_hide_cross_tenant_mutations(db_connection, monkeypatch):
     """Mutation helpers must 404 (not 403) for other tenants."""
-    import pipeline.api as api
     import pipeline.db as db_mod
+    from pipeline.api import api
 
     monkeypatch.setattr(api, "db", db_mod)
     _register(db_mod,
@@ -377,6 +378,44 @@ def test_api_helpers_hide_cross_tenant_mutations(db_connection, monkeypatch):
         api._require_document_for_user("wf-tenant-b-doc", user)
     assert exc.value.status_code == 404
     assert api._document_for_user_or_none("wf-tenant-b-doc", user) is None
+
+
+class TestGroupForInstance:
+    @pytest.fixture(autouse=True)
+    def _default_instances(self, monkeypatch):
+        monkeypatch.delenv("PORTAL_INSTANCE", raising=False)
+        monkeypatch.delenv("DEFAULT_INSTANCE", raising=False)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "instance,expected",
+        [
+            ("mh", "mh"),
+            ("  MH ", "mh"),
+            ("ka", "ka"),
+            ("bv", None),
+            ("BV", None),
+            ("default", None),
+            ("", None),
+            (None, None),
+        ],
+    )
+    def test_states_are_groups_and_platform_instances_are_not(self, instance, expected):
+        assert group_for_instance(instance) == expected
+
+    @pytest.mark.unit
+    def test_follows_a_configured_portal_instance(self, monkeypatch):
+        monkeypatch.setenv("PORTAL_INSTANCE", "portal")
+
+        assert group_for_instance("portal") is None
+        assert group_for_instance("mh") == "mh"
+
+    @pytest.mark.unit
+    def test_follows_a_configured_default_instance(self, monkeypatch):
+        monkeypatch.setenv("DEFAULT_INSTANCE", "local")
+
+        assert group_for_instance("local") is None
+        assert group_for_instance("mh") == "mh"
 
 
 def test_group_is_reached_through_the_documents_catalog(db_connection):

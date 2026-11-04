@@ -1,0 +1,309 @@
+from pathlib import Path
+
+import pytest
+
+from pipeline.group_names import GROUP_NAMES
+from pipeline.network_group import (
+    DEFAULT_PROVIDER_CONFIG_OVERRIDE_PATH,
+    PROVIDER_CONFIG_OVERRIDE_PATH_ENV,
+    NetworkProviderConfigError,
+    load_provider_id_overrides,
+    load_provider_naming,
+    named_group,
+    parse_provider_id_overrides,
+    provider_for,
+)
+
+
+@pytest.fixture(autouse=True)
+def _default_env(monkeypatch):
+    for name in (
+        "PORTAL_INSTANCE",
+        "DEFAULT_INSTANCE",
+        "NETWORK_PROVIDER_ID_TEMPLATE",
+        "NETWORK_GROUP_CATALOG_NAME_TEMPLATE",
+        "NETWORK_ADVISORY_CATALOG_NAME",
+        "NETWORK_SCHEMES_CATALOG_NAME",
+        PROVIDER_CONFIG_OVERRIDE_PATH_ENV,
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("NETWORK_SENDER_ID", "provider.oan.dev")
+
+
+class TestParseProviderIdOverrides:
+    @pytest.mark.unit
+    @pytest.mark.parametrize("raw", [None, "", "   "])
+    def test_unset_means_no_overrides(self, raw):
+        assert parse_provider_id_overrides(raw, "providers.json") == {}
+
+    @pytest.mark.unit
+    def test_codes_are_case_insensitive_and_ids_trimmed(self):
+        parsed = parse_provider_id_overrides('{" KA ": " ka.example.com ", "tn": "tn.example.com"}', "providers.json")
+
+        assert parsed == {"ka": "ka.example.com", "tn": "tn.example.com"}
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "not json",
+            '["ka"]',
+            '"ka.example.com"',
+            '{"ka": {"advisory": "advisory.ka.com"}}',
+            '{"ka": ""}',
+            '{"ka": 42}',
+            '{"": "ka.example.com"}',
+            '{"KA": "a.example", "ka": "b.example"}',
+            '{"ka": "KA.example.com"}',
+            '{"ka": "ka example.com"}',
+            '{"ka": ".ka.example.com"}',
+            '{"ka": "ka.example.com."}',
+            '{"ka": "ka..example.com"}',
+        ],
+    )
+    def test_malformed_overrides_are_rejected(self, raw):
+        with pytest.raises(NetworkProviderConfigError, match="providers.json"):
+            parse_provider_id_overrides(raw, "providers.json")
+
+    @pytest.mark.unit
+    def test_the_old_per_kind_shape_says_what_to_write_instead(self):
+        with pytest.raises(NetworkProviderConfigError, match='"ka": "ka.example.com"'):
+            parse_provider_id_overrides('{"ka": {"advisory": "advisory.ka.com"}}', "providers.json")
+
+
+def _providers_file(monkeypatch, tmp_path, content):
+    path = tmp_path / "network_group_providers.json"
+    path.write_text(content)
+    monkeypatch.setenv(PROVIDER_CONFIG_OVERRIDE_PATH_ENV, str(path))
+    return path
+
+
+class TestLoadProviderIdOverrides:
+    @pytest.mark.unit
+    def test_reads_the_configured_file(self, monkeypatch, tmp_path):
+        _providers_file(monkeypatch, tmp_path, '{"ka": "ka.example.com"}')
+
+        assert load_provider_id_overrides() == {"ka": "ka.example.com"}
+
+    @pytest.mark.unit
+    def test_unset_path_uses_the_bundled_empty_default(self, monkeypatch):
+        monkeypatch.delenv(PROVIDER_CONFIG_OVERRIDE_PATH_ENV, raising=False)
+
+        assert DEFAULT_PROVIDER_CONFIG_OVERRIDE_PATH.is_file()
+        assert load_provider_id_overrides() == {}
+
+    @pytest.mark.unit
+    def test_missing_file_raises(self, monkeypatch, tmp_path):
+        missing = tmp_path / "absent.json"
+        monkeypatch.setenv(PROVIDER_CONFIG_OVERRIDE_PATH_ENV, str(missing))
+
+        with pytest.raises(NetworkProviderConfigError, match="absent.json"):
+            load_provider_id_overrides()
+
+    @pytest.mark.unit
+    def test_malformed_file_raises(self, monkeypatch, tmp_path):
+        _providers_file(monkeypatch, tmp_path, "{broken")
+
+        with pytest.raises(NetworkProviderConfigError, match="network_group_providers.json"):
+            load_provider_id_overrides()
+
+    @pytest.mark.unit
+    def test_example_file_is_valid(self):
+        example = Path(__file__).parents[1] / "deploy" / "network_group_providers.example.json"
+
+        assert parse_provider_id_overrides(example.read_text(), str(example)) == {"ka": "ka.example.com"}
+
+
+class TestLoadProviderNaming:
+    @pytest.mark.unit
+    def test_defaults(self):
+        naming = load_provider_naming()
+
+        assert naming.shared_instance == "bv"
+        assert naming.shared_name == "Bharat Vistaar"
+        assert naming.network_id == "provider.oan.dev"
+        assert naming.id_template == "{instance}.{network_id}"
+        assert naming.group_catalog_name_template == "{group_name} {catalog_name}"
+        assert naming.catalog_names == {"advisory": "Advisories from documents", "scheme": "Schemes from documents"}
+        assert naming.provider_id_overrides == {}
+
+    @pytest.mark.unit
+    def test_network_id_given_wins_over_the_environment(self):
+        assert load_provider_naming("provider.oan.prod").network_id == "provider.oan.prod"
+
+    @pytest.mark.unit
+    def test_no_network_id_is_allowed_at_boot(self, monkeypatch):
+        monkeypatch.delenv("NETWORK_SENDER_ID", raising=False)
+
+        assert load_provider_naming().network_id is None
+
+    @pytest.mark.unit
+    def test_carries_the_provider_id_overrides(self, monkeypatch, tmp_path):
+        _providers_file(monkeypatch, tmp_path, '{"ka": "ka.example.com"}')
+
+        assert load_provider_naming().provider_id_overrides == {"ka": "ka.example.com"}
+
+    @pytest.mark.unit
+    def test_reads_overrides(self, monkeypatch):
+        monkeypatch.setenv("PORTAL_INSTANCE", "Portal")
+        monkeypatch.setenv("NETWORK_PROVIDER_ID_TEMPLATE", "{network_id}-{instance}")
+        monkeypatch.setenv("NETWORK_GROUP_CATALOG_NAME_TEMPLATE", "{catalog_name} - {group_name}")
+        monkeypatch.setenv("NETWORK_ADVISORY_CATALOG_NAME", "Advice")
+        monkeypatch.setenv("NETWORK_SCHEMES_CATALOG_NAME", "Schemes")
+
+        naming = load_provider_naming()
+
+        assert naming.shared_instance == "portal"
+        assert naming.id_template == "{network_id}-{instance}"
+        assert naming.group_catalog_name_template == "{catalog_name} - {group_name}"
+        assert naming.catalog_names == {"advisory": "Advice", "scheme": "Schemes"}
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "env_name,template",
+        [
+            ("NETWORK_PROVIDER_ID_TEMPLATE", "{state}.{network_id}"),
+            ("NETWORK_PROVIDER_ID_TEMPLATE", "{kind}.{instance}.{network_id}"),
+            ("NETWORK_PROVIDER_ID_TEMPLATE", "{0}.{network_id}"),
+            ("NETWORK_PROVIDER_ID_TEMPLATE", "{instance.{network_id}"),
+            ("NETWORK_PROVIDER_ID_TEMPLATE", "{instance.x}.{network_id}"),
+            ("NETWORK_GROUP_CATALOG_NAME_TEMPLATE", "{group} {catalog_name}"),
+        ],
+    )
+    def test_unknown_placeholders_are_rejected(self, monkeypatch, env_name, template):
+        monkeypatch.setenv(env_name, template)
+
+        with pytest.raises(NetworkProviderConfigError, match=env_name):
+            load_provider_naming()
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("template", ["{instance}.provider.oan.dev", "{network_id}", "provider.oan.dev"])
+    def test_id_template_must_use_instance_and_network_id(self, monkeypatch, template):
+        monkeypatch.setenv("NETWORK_PROVIDER_ID_TEMPLATE", template)
+
+        with pytest.raises(NetworkProviderConfigError, match="must use"):
+            load_provider_naming()
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("template", ["{catalog_name}", "Knowledge from documents"])
+    def test_group_catalog_name_template_must_name_the_group(self, monkeypatch, template):
+        monkeypatch.setenv("NETWORK_GROUP_CATALOG_NAME_TEMPLATE", template)
+
+        with pytest.raises(NetworkProviderConfigError, match="must use"):
+            load_provider_naming()
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "template",
+        [
+            "{instance} {network_id}",
+            "{instance}.{network_id}.",
+            ".{instance}.{network_id}",
+            "{instance}..{network_id}",
+            "{instance}.Provider.{network_id}",
+            "{instance}/{network_id}",
+        ],
+    )
+    def test_id_template_must_render_a_valid_id(self, monkeypatch, template):
+        monkeypatch.setenv("NETWORK_PROVIDER_ID_TEMPLATE", template)
+
+        with pytest.raises(NetworkProviderConfigError, match="provider id"):
+            load_provider_naming()
+
+    @pytest.mark.unit
+    def test_every_known_instance_is_checked_at_boot(self, monkeypatch):
+        monkeypatch.setitem(GROUP_NAMES, "ladakh_ut", "Ladakh")
+
+        with pytest.raises(NetworkProviderConfigError, match="provider id"):
+            load_provider_naming()
+
+    @pytest.mark.unit
+    def test_an_invalid_network_id_is_rejected(self, monkeypatch):
+        monkeypatch.setenv("NETWORK_SENDER_ID", "Provider.OAN.dev")
+
+        with pytest.raises(NetworkProviderConfigError, match="provider id"):
+            load_provider_naming()
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("template", ["{instance}-{network_id}", "{network_id}.{instance}"])
+    def test_id_template_with_a_valid_shape_is_accepted(self, monkeypatch, template):
+        monkeypatch.setenv("NETWORK_PROVIDER_ID_TEMPLATE", template)
+
+        assert load_provider_naming().id_template == template
+
+
+class TestBootRefusesMalformedProviderMap:
+    @pytest.fixture
+    def broken_map(self, monkeypatch, tmp_path):
+        _providers_file(monkeypatch, tmp_path, "{broken")
+        monkeypatch.setenv("TRANSLATION_PROVIDER", "none")
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_worker_does_not_start(self, broken_map, monkeypatch):
+        import pipeline.worker as worker
+
+        async def never_connect(*args, **kwargs):
+            raise AssertionError("worker connected to Temporal despite a bad provider map")
+
+        monkeypatch.setattr(worker.Client, "connect", never_connect)
+
+        with pytest.raises(NetworkProviderConfigError):
+            await worker.main()
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_api_does_not_start(self, broken_map, monkeypatch):
+        import pipeline.api.api as api
+
+        async def never_connect(*args, **kwargs):
+            raise AssertionError("API connected to Temporal despite a bad provider map")
+
+        monkeypatch.setattr(api.Client, "connect", never_connect)
+
+        with pytest.raises(NetworkProviderConfigError):
+            async with api.lifespan(api.app):
+                pass
+
+
+class TestProviderFor:
+    @pytest.fixture(autouse=True)
+    def _naming(self):
+        from pipeline.network_provider import ProviderNaming
+
+        self.naming = ProviderNaming(
+            shared_instance="bv",
+            shared_name="Bharat Vistaar",
+            network_id="provider.oan.dev",
+            provider_id_overrides={"ka": "ka.example.com"},
+        )
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "kind,code,expected",
+        [
+            ("advisory", None, "bv.provider.oan.dev"),
+            ("scheme", None, "bv.provider.oan.dev"),
+            (" Scheme ", "mh", "mh.provider.oan.dev"),
+            ("advisory", "mh", "mh.provider.oan.dev"),
+            ("scheme", "ka", "ka.example.com"),
+        ],
+    )
+    def test_one_provider_per_instance_for_both_published_kinds(self, kind, code, expected):
+        assert provider_for(self.naming, kind, named_group(code))["id"] == expected
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("kind", ["document", "video", "", None])
+    def test_other_kinds_have_no_provider(self, kind):
+        assert provider_for(self.naming, kind, named_group("mh")) is None
+
+    @pytest.mark.unit
+    def test_no_network_id_means_no_provider(self):
+        from dataclasses import replace
+
+        assert provider_for(replace(self.naming, network_id=None), "advisory", named_group("mh")) is None
+
+    @pytest.mark.unit
+    def test_named_group_carries_the_display_name(self):
+        assert named_group("mh").name == "Maharashtra"
+        assert named_group(None) is None

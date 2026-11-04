@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from . import db, document_validity
+from . import display_name as display_name_rules
 
 SCHEME_CODE_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
@@ -521,6 +522,7 @@ def apply_scheme_metadata(
     network_visible: Optional[bool] = None,
     valid_from: Optional[str] = None,
     valid_to: Optional[str] = None,
+    display_name: Optional[str] = None,
 ) -> dict[str, Any]:
     """Update document catalog fields and rebuild catalog when needed.
 
@@ -539,6 +541,11 @@ def apply_scheme_metadata(
     old_kind = (doc.get("kind") or "").strip().lower()
     code_renamed = False
     pending_reindex = False
+
+    stored_display_name = doc.get("name")  # v2: the display name is documents.name
+    if display_name is not None and (stored_display_name is None or display_name.strip() != stored_display_name):
+        display_name_rules.ensure_editable(doc)
+        updates["name"] = display_name_rules.normalize(display_name)
 
     new_kind = old_kind  # the kind is fixed at upload; it is the document's catalog
 

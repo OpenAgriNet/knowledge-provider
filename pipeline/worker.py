@@ -29,6 +29,7 @@ from .activities import (
     update_document_state,
 )
 from .advisory_start import backfill_on_start
+from .network_group import validate_network_provider_config
 from .workflows import (
     AdvisoryIndexWorkflow,
     AdvisoryPromoteWorkflow,
@@ -58,6 +59,8 @@ TASK_QUEUE = "ocr-pipeline"
 
 async def main():
     """Start the worker."""
+    validate_network_provider_config()
+
     translation_provider = os.environ.get("TRANSLATION_PROVIDER", "gemma_vllm").strip().lower()
     if translation_provider in {"gemma_vllm", "gemma4", "gemma"}:
         if not os.environ.get("TRANSLATION_VLLM_BASE_URL", "").strip():

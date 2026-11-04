@@ -14,6 +14,7 @@ from pipeline.auth.deps import get_current_user, require_permission
 from pipeline.auth.jwt import claims_to_user
 from pipeline.auth.models import local_bypass_user
 from pipeline.auth.permissions import Permission, permissions_for_roles
+from tests.route_inventory import application_routes
 
 
 def test_permissions_for_roles():
@@ -199,15 +200,11 @@ def test_every_route_is_gated_or_explicitly_classified():
         # credential, and the access token has usually expired by then.
         ("POST", "/auth/session/refresh"),
         ("POST", "/auth/otp/refresh"),
+        # Inbound webhook for external systems: gated by its own x-api-key
+        # (require_webhook_key, fails closed when WEBHOOK_API_KEY is unset),
+        # not by a user token.
+        ("POST", "/webhook"),
     }
-    # Framework-provided routes (docs / schema) — not application surfaces.
-    framework_paths = {
-        "/openapi.json",
-        "/docs",
-        "/docs/oauth2-redirect",
-        "/redoc",
-    }
-
     def dependency_calls(dependant):
         calls = {dependant.call}
         for child in dependant.dependencies:
@@ -215,19 +212,12 @@ def test_every_route_is_gated_or_explicitly_classified():
         return calls
 
     ungated = []
-    for route in app.routes:
-        methods = getattr(route, "methods", None) or set()
-        path = getattr(route, "path", None)
-        dependant = getattr(route, "dependant", None)
-        if not path or dependant is None:
-            continue
-        if path in framework_paths:
-            continue
-        has_auth = get_current_user in dependency_calls(dependant)
-        for method in methods - {"HEAD", "OPTIONS"}:
-            key = (method, path)
-            if not has_auth and key not in public:
-                ungated.append(f"{method} {path}")
+    # application_routes descends into included routers; a plain walk over
+    # app.routes would skip every router-mounted endpoint and pass vacuously.
+    for method, path, route in application_routes(app):
+        has_auth = get_current_user in dependency_calls(route.dependant)
+        if not has_auth and (method, path) not in public:
+            ungated.append(f"{method} {path}")
 
     assert not ungated, (
         "These routes are neither gated nor on the public allowlist "

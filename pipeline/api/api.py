@@ -8,14 +8,11 @@ import asyncio
 import hashlib
 import json
 import logging
-import math
 import os
 import re
 import time
-from collections import Counter
 from contextlib import asynccontextmanager
 from datetime import datetime
-from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -23,7 +20,8 @@ from typing import Any, Dict, List, Optional
 try:
     from dotenv import load_dotenv
 
-    _env_path = Path(__file__).resolve().parents[1] / ".env"
+    # parents[0] = pipeline/api, [1] = pipeline, [2] = repo root
+    _env_path = Path(__file__).resolve().parents[2] / ".env"
     if _env_path.is_file():
         load_dotenv(_env_path, override=False)
 except Exception:
@@ -31,7 +29,7 @@ except Exception:
 
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi import Path as PathParam
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -42,10 +40,11 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from temporalio.client import Client, WorkflowFailureError
 
-from . import db, document_validity, scheme_catalog
-from .advisory_start import start_advisory_index, start_advisory_promote
-from .auth.config import load_auth_config, validate_auth_config
-from .auth.deps import (
+from .. import db, scheme_catalog
+from .. import display_name as display_name_rules
+from ..advisory_start import start_advisory_index, start_advisory_promote
+from ..auth.config import load_auth_config, validate_auth_config
+from ..auth.deps import (
     CurrentUser,
     RequireAdmin,
     RequireApproveIngestion,
@@ -53,24 +52,23 @@ from .auth.deps import (
     RequirePipeline,
     RequireReview,
     RequireSearch,
-    RequireUpload,
 )
-from .auth.email_otp import (
+from ..auth.email_otp import (
     exchange_authorization_code,
     normalize_email,
     refresh_tokens,
     send_otp,
     verify_otp,
 )
-from .auth.keycloak_admin import (
+from ..auth.keycloak_admin import (
     list_access_options,
     list_realm_users,
     provision_user,
     set_user_access,
 )
-from .auth.models import AuthUser
-from .auth.permissions import Permission
-from .auth.tenancy import (
+from ..auth.models import AuthUser
+from ..auth.permissions import Permission
+from ..auth.tenancy import (
     PORTAL_GROUP,
     allowed_groups,
     assert_document_group_access,
@@ -79,33 +77,33 @@ from .auth.tenancy import (
     unrestricted,
     user_can_access_group,
 )
-from .group_names import prod_stage_disabled, publish_to_network_enabled
-from .models import (
+from ..group_names import prod_stage_disabled
+from ..models import (
     PIPELINE_STAGES,
     PROD_ONLY_STAGES,
+    PUBLISH_SKIPPED_UNMAPPED_KIND,
     AuditLogResponse,
     BulkWorkflowActionRequest,
     BulkWorkflowActionResponse,
     BulkWorkflowActionResult,
     ChunkUpdate,
-    DocumentCohortsResponse,
     DocumentDetail,
     DocumentGraph,
     DocumentStage,
     DocumentSummary,
+    NetworkPublishOutcome,
     OperationQueueEntry,
     OperationQueueResponse,
     PageUpdate,
-    RegisterFolderRequest,
-    RegisterRequest,
     ReindexStateRequest,
     SchemeMetadataUpdate,
     SearchSettings,
     SearchSettingsUpdate,
     SettingsAuditResponse,
 )
-from .network_constants import catalog_type_for_kind
-from .workflows import (
+from ..network_constants import RESULT_REJECTED, catalog_type_for_kind
+from ..network_group import validate_network_provider_config
+from ..workflows import (
     ChunkingOnlyWorkflow,
     DocumentPipelineWorkflow,
     OcrOnlyWorkflow,
@@ -128,7 +126,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 TASK_QUEUE = "ocr-pipeline"
-_TOKEN_RE = re.compile(r"[\w\-]+", re.UNICODE)
 
 # Global clients
 temporal_client: Optional[Client] = None
@@ -140,6 +137,8 @@ MINIO_BUCKET = "documents"
 async def lifespan(app: FastAPI):
     """Initialize Temporal and MinIO clients on startup."""
     global temporal_client, minio_client, MINIO_BUCKET
+
+    validate_network_provider_config()
 
     auth_cfg = load_auth_config()
     validate_auth_config(auth_cfg)
@@ -301,6 +300,20 @@ async def canonicalize_document_identifier(request: Request, call_next):
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Routers split out of this module, one per resource. Register them here.
+from .documents import router as documents_router  # noqa: E402
+from .search import router as search_router  # noqa: E402
+from .upload import router as upload_router  # noqa: E402
+
+app.include_router(search_router)
+app.include_router(documents_router)
+app.include_router(upload_router)
+# TODO(api-split): extract the remaining resources into their own routers,
+# one file each under pipeline/api/, following search.py: the per-document
+# /documents/{workflow_id} routes, pages, chunks, artifacts, vector indexes,
+# catalog, audit, settings, auth, admin.
+# tests/test_api_routes.py pins the route table so a move cannot drop one.
 
 
 # Allowed base directories for file access (configurable via env)
@@ -651,160 +664,9 @@ def _mark_reindex_required(workflow_id: str, reason: str, metadata: Optional[dic
     return doc
 
 
-def _normalize_text(value: str) -> str:
-    return re.sub(r"\s+", " ", (value or "").strip().lower())
-
-
-def _tokenize(value: str) -> list[str]:
-    return _TOKEN_RE.findall(_normalize_text(value))
-
-
-def _prepare_query_for_e5(query: str) -> str:
-    cleaned = query.strip()
-    if cleaned.lower().startswith("query:"):
-        return cleaned
-    return f"query: {cleaned}"
-
-
-def _token_overlap_score(query: str, text: str) -> float:
-    query_tokens = set(_tokenize(query))
-    text_tokens = set(_tokenize(text))
-    if not query_tokens or not text_tokens:
-        return 0.0
-    return len(query_tokens & text_tokens) / len(query_tokens)
-
-
-def _metadata_blob(hit: dict) -> str:
-    return " ".join(
-        str(hit.get(key) or "")
-        for key in (
-            "name",
-            "name_en",
-            "name_gu",
-            "filename",
-            "title_en",
-            "title_gu",
-            "category_tags",
-            "description",
-            "doc_short_description",
-            "doc_llm_description",
-        )
-    )
-
-
-def _rank_desc(values: list[float]) -> list[int]:
-    order = sorted(range(len(values)), key=lambda idx: values[idx], reverse=True)
-    ranks = [0] * len(values)
-    for pos, idx in enumerate(order, start=1):
-        ranks[idx] = pos
-    return ranks
-
-
-def _expand_query(query: str, profile: str) -> str:
-    q = (query or "").strip()
-    mode = (profile or "none").strip().lower()
-    if not q or mode in {"none", ""}:
-        return q
-    if mode not in {"gu-v1", "gu_v1"}:
-        return q
-
-    rules = [
-        (r"ખરવા|મોવાસા|fmd", "foot and mouth disease FMD blisters lesions mouth ulcer"),
-        (r"આફરો|bloat", "ruminal bloat tympany frothy bloat"),
-        (r"તાવ|fever", "pyrexia febrile infection"),
-        (r"કબજ|constipation", "constipation bowel obstruction laxative"),
-        (r"ગળિયો|ગળાની", "throat infection pharyngitis upper respiratory"),
-        (r"કૃમિ|કરમિયા|deworm", "deworming helminth anthelmintic dose"),
-        (r"ગર્ભપાત|ગાભણ", "abortion pregnancy gestation prenatal feeding"),
-        (r"ચરમિયા|ચામડી|ખંજવાળ|hair fall", "dermatitis skin disease mange ectoparasite tick"),
-    ]
-
-    additions: list[str] = []
-    query_lower = q.lower()
-    for pattern, terms in rules:
-        if re.search(pattern, query_lower, flags=re.IGNORECASE):
-            additions.append(terms)
-    if not additions:
-        return q
-    return f"{q} {' '.join(additions)}".strip()
-
-
-def _bm25lite_scores(query: str, docs: list[str]) -> list[float]:
-    query_tokens = _tokenize(query)
-    if not query_tokens or not docs:
-        return [0.0] * len(docs)
-
-    doc_tokens = [_tokenize(doc) for doc in docs]
-    avg_len = max(1.0, sum(len(tokens) for tokens in doc_tokens) / max(1, len(doc_tokens)))
-    df: Counter[str] = Counter()
-    for tokens in doc_tokens:
-        for token in set(tokens):
-            df[token] += 1
-
-    k1 = 1.2
-    b = 0.75
-    scores: list[float] = []
-    for tokens in doc_tokens:
-        tf = Counter(tokens)
-        dl = len(tokens)
-        norm = k1 * (1 - b + b * dl / avg_len)
-        score = 0.0
-        for term in query_tokens:
-            if term not in tf:
-                continue
-            idf = math.log(1.0 + (len(doc_tokens) - df[term] + 0.5) / (df[term] + 0.5))
-            score += idf * (tf[term] * (k1 + 1.0)) / (tf[term] + norm)
-        scores.append(score)
-    return scores
-
-
-def _rerank_hits(query: str, hits: list[dict], rerank_mode: str) -> list[dict]:
-    mode = (rerank_mode or "none").strip().lower()
-    if mode in {"", "none"} or not hits:
-        return hits
-
-    raw_scores = [float(hit.get("_score", hit.get("score", 0.0)) or 0.0) for hit in hits]
-    min_score = min(raw_scores)
-    max_score = max(raw_scores)
-    denom = (max_score - min_score) if max_score > min_score else 1.0
-    semantic_scores = [(raw - min_score) / denom for raw in raw_scores]
-    text_scores = [_token_overlap_score(query, str(hit.get("text") or "")) for hit in hits]
-    meta_scores = [_token_overlap_score(query, _metadata_blob(hit)) for hit in hits]
-
-    rescored: list[dict] = []
-    if mode == "bm25lite":
-        docs = [f"{str(hit.get('text') or '')} {_metadata_blob(hit)}".strip() for hit in hits]
-        bm_scores = _bm25lite_scores(query, docs)
-        bm_min = min(bm_scores) if bm_scores else 0.0
-        bm_max = max(bm_scores) if bm_scores else 1.0
-        bm_denom = (bm_max - bm_min) if bm_max > bm_min else 1.0
-        bm_norm = [(score - bm_min) / bm_denom for score in bm_scores]
-        for hit, semantic, bm25, meta in zip(hits, semantic_scores, bm_norm, meta_scores):
-            enriched = dict(hit)
-            enriched["_rerank_score"] = (0.50 * semantic) + (0.40 * bm25) + (0.10 * meta) + (-0.10 if bool(hit.get("is_reference", False)) else 0.0)
-            rescored.append(enriched)
-    elif mode in {"rrf-lite", "rrf_lite", "rrf"}:
-        sem_rank = _rank_desc(semantic_scores)
-        text_rank = _rank_desc(text_scores)
-        meta_rank = _rank_desc(meta_scores)
-        k = 30
-        for idx, hit in enumerate(hits):
-            enriched = dict(hit)
-            enriched["_rerank_score"] = (1.0 / (k + sem_rank[idx])) + (1.0 / (k + text_rank[idx])) + (1.0 / (k + meta_rank[idx]))
-            rescored.append(enriched)
-    else:
-        for hit, semantic, text_score, meta in zip(hits, semantic_scores, text_scores, meta_scores):
-            enriched = dict(hit)
-            enriched["_rerank_score"] = (0.60 * semantic) + (0.30 * max(text_score, meta)) + (0.10 * meta)
-            rescored.append(enriched)
-
-    rescored.sort(key=lambda hit: float(hit.get("_rerank_score", 0.0)), reverse=True)
-    return rescored
-
-
 def delete_single_chunk_from_index(document_id: str, chunk_num: int, index_name: str = "documents-index") -> dict:
     """Delete a single chunk from the vector index by doc_id + chunk_num."""
-    from .vector_store import get_default_index_name, get_vector_store
+    from ..vector_store import get_default_index_name, get_vector_store
 
     try:
         store = get_vector_store()
@@ -816,7 +678,7 @@ def delete_single_chunk_from_index(document_id: str, chunk_num: int, index_name:
 
 def delete_chunks_from_index(document_id: str, index_name: str = "documents-index") -> dict:
     """Delete all chunks for a document from the vector index."""
-    from .vector_store import get_default_index_name, get_vector_store
+    from ..vector_store import get_default_index_name, get_vector_store
 
     try:
         store = get_vector_store()
@@ -1035,552 +897,6 @@ async def admin_set_user_access(
     )
 
 
-@app.post("/documents", response_model=DocumentSummary)
-@limiter.limit(RATE_LIMIT_UPLOAD)
-async def start_document_workflow(
-    request: Request,  # Required for rate limiting
-    data: RegisterRequest,
-    user: RequireUpload,
-    auto_approve: bool = False,
-    chunk_size: int = 450,
-    chunk_overlap: int = 128,
-    min_tokens: int = 100,
-    index_name: str = "documents-index",
-    stop_after_ocr: bool = False,
-    group: str = "",
-    kind: str = Query(..., description="scheme or advisory"),
-    code: str = "",
-):
-    """
-    Start a new document processing workflow.
-
-    ``kind`` picks the tenant's catalog (scheme or advisory). ``code``
-    names the document in it; when that code already exists the existing
-    document is updated with the new file instead of a second one being created.
-
-    The workflow will:
-    1. Run OCR
-    2. Wait for approval (unless auto_approve=True)
-    3. Create chunks
-    4. Wait for approval (unless auto_approve=True)
-    5. Ingest to the vector index
-
-    Note: File path must be within allowed directories (ALLOWED_FILE_PATHS env var).
-    Rate limited to 10 requests/minute per IP.
-    Requires permission: upload (no-op while AUTH_DISABLED=true).
-    """
-    create_group = _resolve_create_group(user, group)
-    # Validate file path to prevent path traversal attacks
-    filepath = validate_file_path(data.filepath)
-    source_filename = get_filename_from_path(filepath)
-    doc_kind, doc_code, replace_doc = _resolve_document_identity(
-        user, create_group, kind, code, source_filename
-    )
-    source_file_fingerprint = _compute_file_fingerprint(filepath)
-    canonical_document_id = source_file_fingerprint
-
-    workflow_id = get_workflow_id(str(filepath))
-    document_id = canonical_document_id
-
-    # Reuse only when Postgres still tracks this workflow.
-    # If Postgres was purged, avoid returning stale Temporal state and create a fresh run ID.
-    existing_doc = db.get_document(workflow_id)
-    if existing_doc:
-        # Same fingerprint/path must not leak or restart another tenant's doc.
-        existing_doc = assert_document_group_access(user, existing_doc)
-        try:
-            handle = temporal_client.get_workflow_handle(workflow_id)
-            state = await handle.query("get_state")
-            if state:
-                return DocumentSummary(
-                    document_id=document_id,
-                    canonical_document_id=canonical_document_id,
-                    workflow_id=workflow_id,
-                    filename=source_filename,
-                    source_filename=source_filename,
-                    source_file_fingerprint=source_file_fingerprint,
-                    authoritative=bool(existing_doc.get("source_manifest_name")) if existing_doc else False,
-                    group=normalize_group(existing_doc.get("group")),
-                    stage=DocumentStage(state.get("stage", "registered")),
-                    page_count=state.get("page_count", 0),
-                    chunk_count=state.get("chunk_count", 0),
-                    error_message=state.get("error_message"),
-                )
-        except HTTPException:
-            raise
-        except Exception:
-            pass  # Workflow doesn't exist or is not queryable; proceed to new run
-    else:
-        workflow_id = _rerun_workflow_id(workflow_id)
-
-    # Start new workflow
-    handle = await temporal_client.start_workflow(
-        DocumentPipelineWorkflow.run,
-        args=[
-            document_id,
-            get_filename_from_path(filepath),
-            str(filepath),
-            chunk_size,
-            chunk_overlap,
-            min_tokens,
-            index_name,
-            auto_approve,
-            stop_after_ocr,
-            prod_stage_disabled(),
-        ],
-        id=workflow_id,
-        task_queue=TASK_QUEUE,
-    )
-
-    # Save to Postgres for visibility during processing
-    actor = _actor_from_user(user)
-    # The period this document is searchable in starts here, at the one moment
-    # that knows the upload day. A reviewer confirms or moves it later, on the
-    # form that sets the document type.
-    validity = document_validity.default_period()
-    if replace_doc:
-        document_uuid = replace_doc["id"]
-        db.reset_document_for_reupload(
-            document_uuid,
-            filename=source_filename,
-            filepath=str(filepath),
-            fingerprint=source_file_fingerprint,
-        )
-    else:
-        try:
-            document_uuid = db.upsert_document(
-                workflow_id=workflow_id,
-                document_id=document_id,
-                canonical_document_id=canonical_document_id,
-                filename=source_filename,
-                source_filename=source_filename,
-                source_file_fingerprint=source_file_fingerprint,
-                filepath=str(filepath),
-                stage="registered",
-                stop_after_ocr=stop_after_ocr,
-                group=create_group,
-                uploaded_by_user_id=actor.get("user_id") or None,
-                uploaded_by_username=actor.get("username") or None,
-                uploaded_by_email=actor.get("email") or None,
-                uploaded_by_roles=actor.get("roles_csv") or None,
-                valid_from=validity.start_date,
-                valid_to=validity.end_date,
-                with_workflow=False,
-                kind=doc_kind,
-                code=doc_code,
-                name=_document_title(source_filename),
-            )
-        except db.DuplicateDocumentCode as exc:
-            raise HTTPException(409, str(exc)) from exc
-    db.create_document_job(
-        workflow_id=document_uuid,
-        job_type="ocr_only" if stop_after_ocr else "pipeline",
-        temporal_workflow_id=workflow_id,
-        status="running",
-        current_stage="registered",
-        config={
-            "auto_approve": auto_approve,
-            "chunk_size": chunk_size,
-            "chunk_overlap": chunk_overlap,
-            "min_tokens": min_tokens,
-            "index_name": index_name,
-            "stop_after_ocr": stop_after_ocr,
-            "uploaded_by": actor,
-        },
-        actor=actor,
-    )
-    _log_audit(
-        workflow_id=workflow_id,
-        action_type="document_upload",
-        entity_type="document",
-        field_name="registered",
-        new_value=source_filename,
-        metadata={
-            "source": "register_endpoint",
-            "group": create_group,
-            "kind": doc_kind,
-            "code": doc_code,
-            "replaced_existing": bool(replace_doc),
-        },
-        user=user,
-    )
-
-    return DocumentSummary(
-        document_id=document_id,
-        canonical_document_id=canonical_document_id,
-        workflow_id=workflow_id,
-        filename=source_filename,
-        source_filename=source_filename,
-        source_file_fingerprint=source_file_fingerprint,
-        authoritative=False,
-        group=create_group,
-        stage=DocumentStage.REGISTERED,
-        page_count=0,
-        chunk_count=0,
-        uploaded_by_user_id=actor.get("user_id") or None,
-        uploaded_by_username=actor.get("username") or None,
-        uploaded_by_email=actor.get("email") or None,
-        uploaded_by_roles=actor.get("roles") or [],
-    )
-
-
-@app.post("/upload", response_model=DocumentSummary)
-@limiter.limit(RATE_LIMIT_UPLOAD)
-async def upload_and_process(
-    request: Request,  # Required for rate limiting
-    user: RequireUpload,
-    file: UploadFile = File(...),
-    auto_approve: bool = False,
-    chunk_size: int = 450,
-    chunk_overlap: int = 128,
-    min_tokens: int = 100,
-    index_name: str = "documents-index",
-    stop_after_ocr: bool = False,
-    group: str = "",
-    kind: str = Query(..., description="scheme or advisory"),
-    code: str = "",
-):
-    """
-    Upload a supported file and start processing workflow.
-
-    ``kind`` picks the tenant's catalog (scheme or advisory). ``code``
-    names the document in it; when that code already exists the existing
-    document is updated with the new file instead of a second one being created.
-
-    The file is stored in MinIO and then processed through the pipeline.
-    Validates both file extension and PDF magic bytes for security.
-    Rate limited to 10 requests/minute per IP.
-    Requires permission: upload (no-op while AUTH_DISABLED=true).
-    """
-    create_group = _resolve_create_group(user, group)
-    doc_kind, doc_code, replace_doc = _resolve_document_identity(
-        user, create_group, kind, code, file.filename or ""
-    )
-    suffix = Path(file.filename or "").suffix.lower()
-    if suffix not in ALLOWED_EXTENSIONS:
-        raise HTTPException(400, f"Unsupported file type: {suffix}")
-
-    # Read file content
-    content = await file.read()
-    file_size = len(content)
-
-    # Validate PDF magic bytes (%PDF-) only for PDF uploads
-    if suffix == ".pdf":
-        pdf_magic = b"%PDF-"
-        if len(content) < 5 or content[:5] != pdf_magic:
-            raise HTTPException(400, "Invalid PDF file: file does not have valid PDF header")
-
-    # Generate unique object name
-    file_hash = hashlib.md5(content).hexdigest()
-    object_name = f"{file_hash}/{file.filename}"
-
-    # Upload to MinIO
-    content_type = "application/pdf" if suffix == ".pdf" else "application/octet-stream"
-    minio_client.put_object(
-        MINIO_BUCKET,
-        object_name,
-        BytesIO(content),
-        length=file_size,
-        content_type=content_type
-    )
-
-    # Use minio:// URI as filepath
-    minio_path = f"minio://{MINIO_BUCKET}/{object_name}"
-
-    workflow_id = get_workflow_id(minio_path)
-    document_id = file_hash
-    canonical_document_id = file_hash
-
-    # Reuse only when Postgres still tracks this workflow.
-    # If Postgres was purged, avoid returning stale Temporal state and create a fresh run ID.
-    existing_doc = db.get_document(workflow_id)
-    if existing_doc:
-        existing_doc = assert_document_group_access(user, existing_doc)
-        try:
-            handle = temporal_client.get_workflow_handle(workflow_id)
-            state = await handle.query("get_state")
-            if state:
-                return DocumentSummary(
-                    document_id=document_id,
-                    canonical_document_id=canonical_document_id,
-                    workflow_id=workflow_id,
-                    filename=file.filename,
-                    source_filename=file.filename,
-                    source_file_fingerprint=file_hash,
-                    authoritative=bool(existing_doc.get("source_manifest_name")) if existing_doc else False,
-                    group=normalize_group(existing_doc.get("group")),
-                    stage=DocumentStage(state.get("stage", "registered")),
-                    page_count=state.get("page_count", 0),
-                    chunk_count=state.get("chunk_count", 0),
-                    error_message=state.get("error_message"),
-                )
-        except HTTPException:
-            raise
-        except Exception:
-            pass
-    else:
-        workflow_id = _rerun_workflow_id(workflow_id)
-
-    # Start new workflow
-    handle = await temporal_client.start_workflow(
-        DocumentPipelineWorkflow.run,
-        args=[
-            document_id,
-            file.filename,
-            minio_path,
-            chunk_size,
-            chunk_overlap,
-            min_tokens,
-            index_name,
-            auto_approve,
-            stop_after_ocr,
-            prod_stage_disabled(),
-        ],
-        id=workflow_id,
-        task_queue=TASK_QUEUE,
-    )
-
-    # Save to Postgres for visibility during processing
-    actor = _actor_from_user(user)
-    # See the manifest upload path above: the period starts at the upload.
-    validity = document_validity.default_period()
-    if replace_doc:
-        document_uuid = replace_doc["id"]
-        db.reset_document_for_reupload(
-            document_uuid,
-            filename=file.filename,
-            filepath=minio_path,
-            fingerprint=file_hash,
-        )
-    else:
-        try:
-            document_uuid = db.upsert_document(
-                workflow_id=workflow_id,
-                document_id=document_id,
-                canonical_document_id=canonical_document_id,
-                filename=file.filename,
-                source_filename=file.filename,
-                source_file_fingerprint=file_hash,
-                filepath=minio_path,
-                stage="registered",
-                stop_after_ocr=stop_after_ocr,
-                group=create_group,
-                uploaded_by_user_id=actor.get("user_id") or None,
-                uploaded_by_username=actor.get("username") or None,
-                uploaded_by_email=actor.get("email") or None,
-                uploaded_by_roles=actor.get("roles_csv") or None,
-                valid_from=validity.start_date,
-                valid_to=validity.end_date,
-                with_workflow=False,
-                kind=doc_kind,
-                code=doc_code,
-                name=_document_title(file.filename or ""),
-            )
-        except db.DuplicateDocumentCode as exc:
-            raise HTTPException(409, str(exc)) from exc
-    job_id = db.create_document_job(
-        workflow_id=document_uuid,
-        job_type="ocr_only" if stop_after_ocr else "pipeline",
-        temporal_workflow_id=workflow_id,
-        status="running",
-        current_stage="registered",
-        config={
-            "auto_approve": auto_approve,
-            "chunk_size": chunk_size,
-            "chunk_overlap": chunk_overlap,
-            "min_tokens": min_tokens,
-            "index_name": index_name,
-            "stop_after_ocr": stop_after_ocr,
-            "uploaded_by": actor,
-        },
-        actor=actor,
-    )
-    db.add_document_artifact(
-        workflow_id=workflow_id,
-        job_id=job_id,
-        artifact_type="original_upload",
-        stage="registered",
-        storage_uri=minio_path,
-        mime_type=content_type,
-        filename=file.filename,
-        size_bytes=file_size,
-        metadata={"uploaded_via": "upload_endpoint", "uploaded_by": actor},
-    )
-    _log_audit(
-        workflow_id=workflow_id,
-        action_type="document_upload",
-        entity_type="document",
-        field_name="registered",
-        new_value=file.filename,
-        metadata={
-            "source": "upload_endpoint",
-            "group": create_group,
-            "kind": doc_kind,
-            "code": doc_code,
-            "replaced_existing": bool(replace_doc),
-            "size_bytes": file_size,
-            "auto_approve": auto_approve,
-        },
-        user=user,
-    )
-    source_type = "spreadsheet" if suffix in {".csv", ".xlsx"} else "document"
-    canonical_input_type = "spreadsheet" if suffix in {".csv", ".xlsx"} else "pdf"
-    db.update_document_fields(
-        workflow_id,
-        source_type=source_type,
-        canonical_input_type=canonical_input_type,
-        stop_after_ocr=1 if stop_after_ocr else 0,
-    )
-
-    return DocumentSummary(
-        document_id=document_id,
-        canonical_document_id=canonical_document_id,
-        workflow_id=workflow_id,
-        filename=file.filename,
-        source_filename=file.filename,
-        source_file_fingerprint=file_hash,
-        authoritative=False,
-        group=create_group,
-        stage=DocumentStage.REGISTERED,
-        page_count=0,
-        chunk_count=0,
-        uploaded_by_user_id=actor.get("user_id") or None,
-        uploaded_by_username=actor.get("username") or None,
-        uploaded_by_email=actor.get("email") or None,
-        uploaded_by_roles=actor.get("roles") or [],
-    )
-
-
-@app.post("/documents/batch", response_model=list[DocumentSummary])
-@limiter.limit("5/minute")  # Stricter limit for batch operations
-async def start_batch_workflows(
-    request: Request,  # Required for rate limiting
-    data: RegisterFolderRequest,
-    user: RequireUpload,
-    auto_approve: bool = False,
-    chunk_size: int = 450,
-    chunk_overlap: int = 128,
-    min_tokens: int = 100,
-    stop_after_ocr: bool = False,
-    group: str = "",
-    kind: str = Query(..., description="scheme or advisory"),
-):
-    """Start workflows for all supported documents in a directory."""
-    create_group = _resolve_create_group(user, group)
-    directory = Path(data.directory)
-    if not directory.exists():
-        raise HTTPException(404, f"Directory not found: {data.directory}")
-
-    candidate_files = [p for p in directory.glob("*") if p.is_file() and p.suffix.lower() in ALLOWED_EXTENSIONS]
-    if not candidate_files:
-        raise HTTPException(400, "No supported files found")
-
-    results = []
-    for pdf_path in candidate_files:
-        try:
-            result = await start_document_workflow(
-                request,
-                RegisterRequest(filepath=str(pdf_path)),
-                user,
-                auto_approve=auto_approve,
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap,
-                min_tokens=min_tokens,
-                stop_after_ocr=stop_after_ocr,
-                group=create_group,
-                kind=kind,
-                code="",
-            )
-            results.append(result)
-        except Exception as e:
-            # Log full error, return sanitized message
-            logging.error(f"Batch workflow error for {pdf_path.name}: {str(e)}")
-            results.append(DocumentSummary(
-                document_id=hashlib.md5(str(pdf_path).encode()).hexdigest(),
-                workflow_id=get_workflow_id(str(pdf_path)),
-                filename=pdf_path.name,
-                authoritative=False,
-                stage=DocumentStage.FAILED,
-                page_count=0,
-                chunk_count=0,
-                error_message="Failed to start workflow",
-            ))
-
-    return results
-
-
-@app.get("/documents", response_model=list[DocumentSummary])
-async def list_documents(
-    user: CurrentUser,
-    stage: Optional[DocumentStage] = None,
-    limit: int = Query(100, le=500),
-    offset: int = Query(0, ge=0),
-    x_include_disabled: Optional[str] = Header(None, alias="X-Include-Disabled")
-):
-    """
-    List all document workflows.
-
-    Uses Postgres for fast listing (no Temporal queries for performance).
-    Disabled (soft-deleted) documents are excluded by default - use X-Include-Disabled: true to show them.
-    Results are limited to groups the caller can access.
-
-    Pagination:
-    - limit: Max documents to return (default 100, max 500)
-    - offset: Skip first N documents (default 0)
-    """
-    stage_filter = stage.value if stage else None
-    include_disabled = x_include_disabled and x_include_disabled.lower() == "true"
-
-    # Use Postgres only for fast listing - no Temporal queries
-    docs = db.list_documents(
-        stage=stage_filter,
-        limit=limit,
-        offset=offset,
-        include_disabled=include_disabled,
-        groups=_group_scope_for_user(user),
-    )
-
-    return [_document_summary_from_row(doc) for doc in docs]
-
-
-@app.get("/documents/summary", response_model=DocumentCohortsResponse)
-async def get_documents_summary(
-    user: CurrentUser,
-    x_include_disabled: Optional[str] = Header(None, alias="X-Include-Disabled")
-):
-    """Return aggregate Postgres counts for dashboard totals and migration planning."""
-    include_disabled = x_include_disabled and x_include_disabled.lower() == "true"
-    group_scope = _group_scope_for_user(user)
-    summary = db.get_document_summary_counts(
-        include_disabled=include_disabled,
-        groups=group_scope,
-    )
-    by_group = db.get_document_counts_by_group(
-        include_disabled=include_disabled,
-        groups=group_scope,
-    )
-    return _document_cohorts_payload(summary, by_group)
-
-
-@app.get("/documents/cohorts", response_model=DocumentCohortsResponse)
-async def get_document_cohorts(
-    user: CurrentUser,
-    x_include_disabled: Optional[str] = Header(None, alias="X-Include-Disabled")
-):
-    """Return machine-friendly cohort counts for queueing and orchestration."""
-    include_disabled = x_include_disabled and x_include_disabled.lower() == "true"
-    group_scope = _group_scope_for_user(user)
-    summary = db.get_document_summary_counts(
-        include_disabled=include_disabled,
-        groups=group_scope,
-    )
-    by_group = db.get_document_counts_by_group(
-        include_disabled=include_disabled,
-        groups=group_scope,
-    )
-    return _document_cohorts_payload(summary, by_group)
-
-
 @app.get("/operations/queue", response_model=OperationQueueResponse)
 async def get_operations_queue(
     user: RequireSearch,
@@ -1652,9 +968,37 @@ async def get_run(job_id: str, user: RequireSearch):
     return run
 
 
+NETWORK_PUBLISH_ARTIFACT_TYPES = {"network_publish_payload", "network_publish_skipped"}
+
+
+def _network_publish_outcome(artifacts: list[dict]) -> NetworkPublishOutcome | None:
+    latest = next((a for a in artifacts if a.get("artifact_type") in NETWORK_PUBLISH_ARTIFACT_TYPES), None)
+    if latest is None:
+        return None
+    try:
+        exchange = json.loads(latest.get("metadata_json") or "{}")
+    except ValueError:
+        exchange = {}
+    if latest["artifact_type"] == "network_publish_skipped":
+        return NetworkPublishOutcome(
+            status="skipped",
+            reason_code=exchange.get("reason_code") or PUBLISH_SKIPPED_UNMAPPED_KIND,
+            reason=exchange.get("reason") or "No network catalog is mapped to this document kind.",
+            created_at=latest.get("created_at"),
+        )
+    if exchange.get("result_status") == RESULT_REJECTED:
+        return NetworkPublishOutcome(
+            status="rejected",
+            reason=f"The network rejected the catalog: {exchange.get('errors') or []}",
+            created_at=latest.get("created_at"),
+        )
+    return NetworkPublishOutcome(status="published", created_at=latest.get("created_at"))
+
+
 def _build_document_detail(doc: dict) -> DocumentDetail:
     workflow_id = doc["workflow_id"]
     current_job = db.get_latest_document_job(workflow_id)
+    artifacts = db.list_document_artifacts(workflow_id)
     return DocumentDetail(
         id=doc.get("id"),
         document_id=doc["document_id"],
@@ -1689,8 +1033,9 @@ def _build_document_detail(doc: dict) -> DocumentDetail:
         normalized_artifact_id=doc.get("normalized_artifact_id"),
         latest_job_id=doc.get("latest_job_id"),
         current_job=current_job,
-        artifacts=db.list_document_artifacts(workflow_id),
+        artifacts=artifacts,
         index_status=db.list_document_index_status(workflow_id),
+        network_publish=_network_publish_outcome(artifacts),
         uploaded_by_user_id=doc.get("uploaded_by_user_id"),
         uploaded_by_username=doc.get("uploaded_by_username"),
         uploaded_by_email=doc.get("uploaded_by_email"),
@@ -1737,7 +1082,7 @@ def _service_key_ok(request: Request) -> bool:
 
 def _require_catalog_read(request: Request, user: AuthUser) -> None:
     """Service key, search/admin JWT, or AUTH_DISABLED without keys."""
-    from .auth.permissions import Permission
+    from ..auth.permissions import Permission
 
     if _service_key_ok(request):
         return
@@ -1792,7 +1137,7 @@ def _delete_document_points_from_prod(doc: dict) -> dict:
         or "documents-index"
     ).strip()
     try:
-        from .vector_store.qdrant_store import QdrantVectorStore, get_qdrant_client
+        from ..vector_store.qdrant_store import QdrantVectorStore, get_qdrant_client
 
         client = get_qdrant_client(url=prod_url, api_key=prod_key)
         store = QdrantVectorStore(client=client)
@@ -1821,7 +1166,7 @@ def _delete_scheme_points_from_prod(doc: dict) -> dict:
         os.environ.get("PROD_SCHEME_VECTOR_DB_COLLECTION_NAME") or "schemes-index"
     ).strip()
     try:
-        from .vector_store.qdrant_store import QdrantVectorStore, get_qdrant_client
+        from ..vector_store.qdrant_store import QdrantVectorStore, get_qdrant_client
 
         client = get_qdrant_client(url=prod_url, api_key=prod_key)
         store = QdrantVectorStore(client=client)
@@ -2336,9 +1681,12 @@ async def patch_scheme_metadata(
             network_visible=body.network_visible,
             valid_from=body.valid_from,
             valid_to=body.valid_to,
+            display_name=body.display_name,
         )
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
+    except display_name_rules.DisplayNameLocked as exc:
+        raise HTTPException(409, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
@@ -2457,7 +1805,7 @@ async def catalog_tool_prompt(request: Request, user: CurrentUser):
 @app.post("/catalog/v1/rebuild")
 async def catalog_rebuild(request: Request, user: RequireAdmin):
     """Admin: bump the catalog version (entries are computed from documents)."""
-    from .auth.permissions import Permission
+    from ..auth.permissions import Permission
 
     # Admin JWT always OK; service key also accepted for automation
     if not _service_key_ok(request) and not user.has_permission(Permission.ADMIN):
@@ -3879,7 +3227,7 @@ async def resolve_provenance_chunk(
 
     Used by chat/retrieval clients when search hits lack workflow_id (legacy rows) or for enrichment.
     """
-    from .activities import _infer_section
+    from ..activities import _infer_section
 
     resolved_doc_id = doc_id
     resolved_chunk_num = chunk_num
@@ -3911,7 +3259,7 @@ async def get_document_qdrant_status(
     index_name: str = Query("documents-index"),
 ):
     """Return vector-index status/chunks for a document."""
-    from .vector_store import get_default_index_name, get_vector_store
+    from ..vector_store import get_default_index_name, get_vector_store
 
     doc = _require_document_for_user(workflow_id, user)
 
@@ -3974,7 +3322,7 @@ async def list_document_qdrant_chunks(
 
 @app.get("/indexes/{index_name}/settings")
 async def get_vector_index_settings(index_name: str, user: RequireSearch):
-    from .vector_store import get_vector_store
+    from ..vector_store import get_vector_store
 
     try:
         return get_vector_store().get_settings(index_name)
@@ -3984,7 +3332,7 @@ async def get_vector_index_settings(index_name: str, user: RequireSearch):
 
 @app.get("/indexes/{index_name}/stats")
 async def get_vector_index_stats(index_name: str, user: RequireSearch):
-    from .vector_store import get_vector_store
+    from ..vector_store import get_vector_store
 
     try:
         return get_vector_store().get_stats(index_name)
@@ -3998,7 +3346,7 @@ async def get_vector_indexes_summary(
     x_include_disabled: Optional[str] = Header(None, alias="X-Include-Disabled"),
 ):
     """Summarize index coverage from Postgres-backed index status plus live vector-store stats."""
-    from .vector_store import get_vector_store
+    from ..vector_store import get_vector_store
 
     include_disabled = x_include_disabled and x_include_disabled.lower() == "true"
     summaries = db.list_index_summaries(
@@ -4027,133 +3375,6 @@ async def get_vector_indexes_summary(
     return results
 
 
-@app.post("/search")
-async def run_search(payload: dict, user: RequireSearch):
-    from .vector_store import get_default_index_name, get_vector_store
-
-    settings = db.get_search_settings()
-    index_name = payload.get("index_name") or settings.get("indexName") or get_default_index_name()
-    query = (payload.get("query") or "").strip()
-    if not query:
-        raise HTTPException(400, "query is required")
-
-    logging.info(
-        "search request user=%s index=%s query=%r top_k=%s",
-        user.username or user.email or user.user_id,
-        index_name,
-        query,
-        payload.get("top_k"),
-    )
-
-    search_mode = (payload.get("search_mode") or settings.get("searchMethod") or "HYBRID").upper()
-    top_k = max(1, min(int(payload.get("top_k") or settings.get("limit") or 12), 50))
-    candidate_multiplier = max(1, int(payload.get("candidate_multiplier") or settings.get("candidateMultiplier") or 10))
-    requested_candidate_cap = payload.get("candidate_cap")
-    if requested_candidate_cap is None:
-        candidate_cap = min(max(top_k * candidate_multiplier, top_k), int(settings.get("candidateCap") or 120))
-    else:
-        candidate_cap = int(requested_candidate_cap)
-    candidate_cap = max(top_k, min(candidate_cap, 200))
-    max_chunks_per_doc = max(1, int(payload.get("max_chunks_per_doc") or settings.get("maxChunksPerDoc") or 2))
-    use_e5_prefix = bool(payload.get("use_e5_prefix", settings.get("useE5Prefix", True)))
-    exclude_reference = bool(payload.get("exclude_reference", settings.get("excludeReference", True)))
-    alpha = float(payload.get("hybrid_alpha") or settings.get("alpha") or 0.6)
-    ranking_method = payload.get("ranking_method") or settings.get("rankingMethod") or "rrf"
-    ef_search = int(payload.get("ef_search") or settings.get("efSearch") or 256)
-    query_expansion_profile = payload.get("query_expansion_profile") or settings.get("queryExpansionProfile") or "gu-v1"
-    rerank_mode = payload.get("rerank_mode") or settings.get("rerankMode") or "none"
-    hybrid_rrf_k = int(payload.get("hybrid_rrf_k") or settings.get("hybridRrfK") or 60)
-    # Validity is on by default: a search serving a farmer must not answer from
-    # a document that has expired or has not started. Both overrides are
-    # operator tools - `include_expired` to inspect what an expired document
-    # still holds, `valid_on` to ask what search would have returned on another
-    # day - and the response echoes which day was actually applied.
-    include_expired = bool(payload.get("include_expired", False))
-    valid_on = (payload.get("valid_on") or "").strip() or None
-    if valid_on:
-        try:
-            # Reassigned, not just checked: parse_day returns the canonical
-            # zero-padded form, and the vector store's date range rejects the
-            # `2026-9-3` spelling that strptime happily accepts.
-            valid_on = document_validity.parse_day(valid_on, "valid_on")
-        except document_validity.DocumentValidityError as exc:
-            raise HTTPException(400, str(exc)) from None
-    expanded_query = _expand_query(query, query_expansion_profile)
-    # Qdrant embeddings apply E5 prefixes internally; don't pre-prefix here.
-    search_query = expanded_query
-
-    store = get_vector_store()
-    backend = store.backend
-    # HYBRID on Qdrant currently maps to dense tensor search (lexical is separate mode).
-    store_mode = "TENSOR" if backend == "qdrant" and search_mode == "HYBRID" else search_mode
-
-    try:
-        result = store.search(
-            name=index_name,
-            query=search_query,
-            limit=candidate_cap,
-            search_mode=store_mode,
-            exclude_reference=exclude_reference,
-            use_e5_prefix=use_e5_prefix,
-            hybrid_alpha=alpha,
-            ef_search=ef_search,
-            apply_validity=not include_expired,
-            valid_on=valid_on,
-        )
-    except Exception as error:
-        raise HTTPException(400, f"Vector search failed ({backend}): {error}") from error
-
-    hits = result.get("hits", [])
-    hits = _rerank_hits(query, hits, rerank_mode)
-    final_hits = []
-    per_doc_counts: dict[str, int] = {}
-    for hit in hits:
-        doc_key = hit.get("doc_id") or hit.get("filename") or "__unknown__"
-        if per_doc_counts.get(doc_key, 0) >= max_chunks_per_doc:
-            continue
-        per_doc_counts[doc_key] = per_doc_counts.get(doc_key, 0) + 1
-        final_hits.append(hit)
-        if len(final_hits) >= top_k:
-            break
-
-    logging.info(
-        "search response user=%s index=%s query=%r candidate_count=%s final_count=%s",
-        user.username or user.email or user.user_id,
-        index_name,
-        query,
-        len(hits),
-        len(final_hits),
-    )
-
-    return {
-        "effective_config": {
-            "index_name": index_name,
-            "backend": backend,
-            "query": query,
-            "search_mode": search_mode,
-            "store_search_mode": store_mode,
-            "top_k": top_k,
-            "candidate_cap": candidate_cap,
-            "candidate_multiplier": candidate_multiplier,
-            "max_chunks_per_doc": max_chunks_per_doc,
-            "use_e5_prefix": use_e5_prefix,
-            "exclude_reference": exclude_reference,
-            "hybrid_alpha": alpha,
-            "ranking_method": ranking_method,
-            "hybrid_rrf_k": hybrid_rrf_k,
-            "ef_search": ef_search,
-            "query_expansion_profile": query_expansion_profile,
-            "query_expansion_applied": expanded_query != query,
-            "rerank_mode": rerank_mode,
-            "apply_validity": not include_expired,
-            "valid_on": result.get("valid_on"),
-            "filter_string": None,
-        },
-        "candidate_count": len(hits),
-        "final_count": len(final_hits),
-        "hits": final_hits,
-        "raw_hits": hits if payload.get("include_raw_hits") else None,
-    }
 
 
 # =============================================================================
@@ -4287,8 +3508,8 @@ async def get_vector_index_schema(
     index_name: str = Query("documents-index", description="Vector index / collection name"),
 ):
     """Report the live vector index's field schema vs. the canonical passage schema."""
-    from .activities import _passage_schema_field_names
-    from .vector_store import get_default_index_name, get_vector_store
+    from ..activities import _passage_schema_field_names
+    from ..vector_store import get_default_index_name, get_vector_store
 
     resolved = index_name or get_default_index_name()
     store = get_vector_store()
@@ -4322,7 +3543,7 @@ async def create_vector_index(
 ):
     """Create the vector index/collection — a cosine Qdrant collection sized from EMBEDDING_VECTOR_SIZE."""
     _ = user
-    from .vector_store import get_default_index_name, get_vector_store
+    from ..vector_store import get_default_index_name, get_vector_store
 
     resolved = index_name or get_default_index_name()
     store = get_vector_store()
@@ -4340,7 +3561,7 @@ async def get_ingest_info(user: RequireAdmin):
     Return what the running container's ingest code would send to the vector index.
     Use this to verify the API/worker image has the passage schema (text_for_embedding, etc.).
     """
-    from .activities import _passage_schema_field_names, _prepare_records
+    from ..activities import _passage_schema_field_names, _prepare_records
 
     passage_fields = sorted(_passage_schema_field_names())
     has_text_for_embedding = "text_for_embedding" in set(passage_fields)
@@ -4421,17 +3642,14 @@ async def reconcile_document_states(user: RequirePipeline):
 async def get_pipeline_stages(user: RequireSearch):
     """Get the pipeline stages for UI stepper display.
 
-    The PROD stages are omitted when DISABLE_PROD_SETTING is on, and the
-    network publish stage is omitted unless PUBLISH_TO_NETWORK is on, so the
-    stepper shows the pipeline the documents will actually follow.
+    The PROD stages are omitted when DISABLE_PROD_SETTING is on, so the stepper
+    shows the pipeline the documents will actually follow.
     """
     prod_disabled = prod_stage_disabled()
-    network_disabled = not publish_to_network_enabled()
     return [
         {"id": stage[0], "label": stage[1], "description": stage[2]}
         for stage in PIPELINE_STAGES
         if not (prod_disabled and stage[0] in PROD_ONLY_STAGES)
-        and not (network_disabled and stage[0] == "publishing_to_network")
     ]
 
 

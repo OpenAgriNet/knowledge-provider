@@ -12,9 +12,7 @@ export default defineConfig({
   },
   test: {
     environment: 'jsdom',
-    // No tests exist yet — writing them is separate follow-up work.
-    // This keeps CI green on the runner/config itself in the meantime.
-    passWithNoTests: true,
+    setupFiles: ['./src/test/setup.js'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html'],

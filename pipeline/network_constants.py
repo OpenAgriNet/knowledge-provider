@@ -15,7 +15,7 @@ ADVISORY_RESOURCE_ID = "res-oan-knowledge-provider-advisories"
 SCHEMES_CATALOG_ID = "cat-oan-knowledge-provider-schemes"
 SCHEMES_RESOURCE_ID = "res-oan-knowledge-provider-schemes"
 
-ADVISORY_CATALOG_NAME = "Agricultural advisory from documents"
+ADVISORY_CATALOG_NAME = "Advisories from documents"
 ADVISORY_RESOURCE_NAME = "Agricultural advisory"
 SCHEMES_CATALOG_NAME = "Schemes from documents"
 SCHEMES_RESOURCE_NAME = "Government schemes"
@@ -32,6 +32,9 @@ SCHEME_SUBJECT_CATEGORIES = ["Scheme"]
 SCHEME_TOPICS = ["Government schemes"]
 
 DEFAULT_DOCUMENT_KIND = "document"
+
+PROVIDER_ID_TEMPLATE = "{instance}.{network_id}"
+GROUP_CATALOG_NAME_TEMPLATE = "{group_name} {catalog_name}"
 
 # Knowledge kinds the pipeline serves, and the network schema each maps to.
 # ``catalogs.type`` stores the schema name; code asks this map what a type means
@@ -64,13 +67,3 @@ def kind_for_catalog_type(catalog_type: str) -> str:
         return CATALOG_TYPE_TO_KIND[catalog_type]
     except KeyError:
         raise ValueError(f"Unknown catalog type {catalog_type!r}") from None
-
-# Same provider on every catalog - this pipeline publishes as one provider
-# regardless of knowledge kind.
-CATALOG_PROVIDER = {
-    "id": "knowledge-provider",
-    "descriptor": {
-        "code": "oan-knowledge-provider",
-        "name": "OAN Knowledge Provider",
-    },
-}

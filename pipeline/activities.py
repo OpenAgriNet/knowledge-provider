@@ -24,12 +24,16 @@ from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
 from . import document_validity, scheme_catalog
+from .auth.tenancy import group_for_instance
 from .catalog_builder import normalize_document_kind
 from .chunking import chunk_pages, load_chunking_config
-from .discovery_publish_service import DiscoveryPublishService
+from .discovery_publish_service import DiscoveryPublishService, PublishConfigError
 from .document_repository import DocumentRepository
 from .group_names import group_display_name, publish_to_network_enabled
+from .models import PUBLISH_SKIPPED_DISABLED, PUBLISH_SKIPPED_UNMAPPED_KIND
 from .network_constants import RESULT_REJECTED
+from .network_group import load_provider_naming, named_group, provider_for
+from .network_provider import InvalidProviderIdError
 from .ocr import ocr_pdf as run_ocr_pdf
 from .ocr import ocr_pdf_in_segments as run_ocr_pdf_in_segments
 from .translation import load_translation_config, translate_pages
@@ -643,6 +647,8 @@ def _prepare_records(
     aliases: list[str] | None = None,
     valid_from: str | None = None,
     valid_to: str | None = None,
+    provider_id: str | None = None,
+    display_name: str | None = None,
 ) -> list[dict]:
     metadata = _get_doc_metadata(filename)
     resolved_group = _normalize_group(group)
@@ -652,7 +658,7 @@ def _prepare_records(
     external_slug = workflow_id or filename
     default_name = filename.replace(".pdf", "").replace(".PDF", "")
     name_gu = name_gu or metadata.get("title_gu") or default_name
-    name_en = name_en or metadata.get("title_en") or default_name
+    name_en = name_en or display_name or metadata.get("title_en") or default_name
     category_tags = metadata.get("category_tags", "")
     quality_score = metadata.get("quality_score", "")
     priority_rank = metadata.get("priority_rank", "")
@@ -695,6 +701,7 @@ def _prepare_records(
             "workflow_id": workflow_id or "",
             "instance": resolved_group,  # vector payload key, kept for consumers
             "instance_name": group_name,
+            "provider_id": provider_id,
             "type": kind,
             "source": "docs-pipeline",
             "filename": external_slug,
@@ -747,6 +754,16 @@ def _scheme_fields_from_doc(doc: dict | None) -> dict:
         "name": doc.get("name"),
         "aliases": [str(a) for a in (doc.get("aliases") or [])],
     }
+
+
+def _provider_id_from_doc(doc: dict | None) -> str | None:
+    doc = doc or {}
+    group = named_group(group_for_instance(doc.get("group")))
+    try:
+        provider = provider_for(load_provider_naming(), doc.get("kind"), group)
+    except InvalidProviderIdError as exc:
+        raise ApplicationError(str(exc), non_retryable=True) from exc
+    return provider["id"] if provider else None
 
 
 def _validity_fields_from_doc(doc: dict | None) -> dict:
@@ -802,6 +819,7 @@ def _passage_schema_definition(use_tensor_prefix_field: bool = True) -> dict:
         {"name": "workflow_id", "type": "text", "features": ["filter"]},
         {"name": "instance", "type": "text", "features": ["filter"]},
         {"name": "instance_name", "type": "text", "features": ["filter"]},
+        {"name": "provider_id", "type": "text", "features": ["filter"]},
         {"name": "type", "type": "text", "features": ["filter"]},
         {"name": "source", "type": "text", "features": ["filter"]},
         {"name": "filename", "type": "text", "features": ["filter"]},
@@ -1216,6 +1234,8 @@ async def prepare_for_ingestion(
         description=description,
         group=(doc or {}).get("group"),
         **_validity_fields_from_doc(doc),
+        provider_id=_provider_id_from_doc(doc),
+        display_name=(doc or {}).get("name"),
     )
     activity.logger.info(f"Prepared {len(records)} records")
     return records
@@ -1326,6 +1346,8 @@ async def promote_document_to_prod_qdrant(
         group=doc.get("group"),
         **scheme_kwargs,
         **_validity_fields_from_doc(doc),
+        provider_id=_provider_id_from_doc(doc),
+        display_name=doc.get("name"),
     )
     activity.logger.info(
         "Promoting %s records to PROD Qdrant collection %s (kind=%s)",
@@ -1437,6 +1459,8 @@ async def ingest_document_from_db(
         group=doc.get("group"),
         **_scheme_fields_from_doc(doc),
         **_validity_fields_from_doc(doc),
+        provider_id=_provider_id_from_doc(doc),
+        display_name=doc.get("name"),
     )
     payload_path = _write_json_temp(records)
     try:
@@ -1488,30 +1512,30 @@ async def publish_catalog_to_network(workflow_id: str, transaction_id: str) -> d
     document_kind = normalize_document_kind(repository.get_document_kind(workflow_id))
 
     if publish_to_network_enabled():
-        service = DiscoveryPublishService()
-        result = await asyncio.to_thread(
-            service.publish, transaction_id, document_kind, workflow_id
-        )
-        skip_reason = "no network catalog is mapped to this document kind"
+        group = repository.get_document_group(workflow_id)
+        try:
+            service = DiscoveryPublishService()
+        except PublishConfigError as exc:
+            raise ApplicationError(str(exc), non_retryable=True) from exc
+        try:
+            result = await asyncio.to_thread(
+                service.publish, transaction_id, document_kind, workflow_id, group
+            )
+        except InvalidProviderIdError as exc:
+            raise ApplicationError(str(exc), non_retryable=True) from exc
+        skip = (PUBLISH_SKIPPED_UNMAPPED_KIND, f"No network catalog is mapped to document kind '{document_kind}'.") if result["skipped"] else None
     else:
-        # Checked here, not in the workflow, so a replaying workflow never
-        # changes path when the setting flips. No Discovery Service settings
-        # are needed while publishing is off.
-        result = {
-            "skipped": True,
-            "result_status": None,
-            "envelope": None,
-            "errors": [],
-        }
-        skip_reason = "PUBLISH_TO_NETWORK is off"
+        result = {"skipped": True, "result_status": None}
+        skip = (PUBLISH_SKIPPED_DISABLED, "Publish to Network is disabled (ENABLE_PUBLISH_TO_NETWORK is not true).")
 
-    if result["skipped"]:
+    if skip:
         artifact_type = "network_publish_skipped"
         filename = "network_publish_skipped.json"
         exchange = {
             "skipped": True,
-            "kind": document_kind,
-            "reason": skip_reason,
+            "document_kind": document_kind,
+            "reason_code": skip[0],
+            "reason": skip[1],
         }
     else:
         artifact_type = "network_publish_payload"
@@ -1559,10 +1583,11 @@ async def publish_catalog_to_network(workflow_id: str, transaction_id: str) -> d
         )
 
     return {
-        "status": "skipped" if result["skipped"] else "published",
+        "status": "skipped" if skip else "published",
+        "reason_code": skip[0] if skip else None,
         "document_kind": document_kind,
         "transaction_id": transaction_id,
-        "message_id": None if result["skipped"] else result["envelope"]["context"]["messageId"],
+        "message_id": None if skip else result["envelope"]["context"]["messageId"],
         "result_status": result["result_status"],
     }
 

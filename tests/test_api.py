@@ -1,5 +1,5 @@
 """
-Unit tests for pipeline/api.py - FastAPI endpoints.
+Unit tests for pipeline/api - FastAPI endpoints.
 
 Tests cover:
 - Health endpoints
@@ -51,21 +51,6 @@ class TestHealthEndpoints:
         stages = response.json()
         assert len(stages) > 0
         assert all("id" in s and "label" in s for s in stages)
-
-    @pytest.mark.api
-    @pytest.mark.unit
-    def test_pipeline_stages_network_publish_follows_toggle(self, test_client, monkeypatch):
-        """publishing_to_network is listed only when PUBLISH_TO_NETWORK is on."""
-        monkeypatch.delenv("DISABLE_PROD_SETTING", raising=False)
-
-        monkeypatch.delenv("PUBLISH_TO_NETWORK", raising=False)
-        off = {s["id"] for s in test_client.get("/pipeline/stages").json()}
-        assert "publishing_to_network" not in off
-        assert "ingesting_prod" in off
-
-        monkeypatch.setenv("PUBLISH_TO_NETWORK", "true")
-        on = {s["id"] for s in test_client.get("/pipeline/stages").json()}
-        assert "publishing_to_network" in on
 
 
 class TestDocumentEndpoints:
@@ -572,103 +557,51 @@ class TestSearchValidity:
 
     @pytest.mark.api
     @pytest.mark.unit
-    def test_applies_validity_by_default(self, test_client, monkeypatch):
+    def test_applies_validity_by_default(self, test_client, capturing_store):
         from datetime import date
-
-        captured = {}
-
-        class FakeStore:
-            backend = "qdrant"
-
-            def search(self, **kwargs):
-                captured.update(kwargs)
-                return {"hits": [], "valid_on": kwargs.get("valid_on") or date.today().isoformat()}
-
-        monkeypatch.setattr(
-            "pipeline.vector_store.get_vector_store", lambda: FakeStore()
-        )
 
         response = test_client.post("/search", json={"query": "kisan"})
 
         assert response.status_code == 200
-        assert captured["apply_validity"] is True
+        assert capturing_store.captured["apply_validity"] is True
         config = response.json()["effective_config"]
         assert config["apply_validity"] is True
         assert config["valid_on"] == date.today().isoformat()
 
     @pytest.mark.api
     @pytest.mark.unit
-    def test_an_operator_can_ask_about_another_day(self, test_client, monkeypatch):
-        captured = {}
-
-        class FakeStore:
-            backend = "qdrant"
-
-            def search(self, **kwargs):
-                captured.update(kwargs)
-                return {"hits": [], "valid_on": kwargs.get("valid_on")}
-
-        monkeypatch.setattr(
-            "pipeline.vector_store.get_vector_store", lambda: FakeStore()
-        )
-
+    def test_an_operator_can_ask_about_another_day(self, test_client, capturing_store):
         response = test_client.post(
             "/search", json={"query": "kisan", "valid_on": "2027-01-01"}
         )
 
         assert response.status_code == 200
-        assert captured["valid_on"] == "2027-01-01"
+        assert capturing_store.captured["valid_on"] == "2027-01-01"
         assert response.json()["effective_config"]["valid_on"] == "2027-01-01"
 
     @pytest.mark.api
     @pytest.mark.unit
-    def test_an_operator_can_include_expired_documents(self, test_client, monkeypatch):
-        captured = {}
-
-        class FakeStore:
-            backend = "qdrant"
-
-            def search(self, **kwargs):
-                captured.update(kwargs)
-                return {"hits": [], "valid_on": None}
-
-        monkeypatch.setattr(
-            "pipeline.vector_store.get_vector_store", lambda: FakeStore()
-        )
-
+    def test_an_operator_can_include_expired_documents(self, test_client, capturing_store):
         response = test_client.post(
             "/search", json={"query": "kisan", "include_expired": True}
         )
 
         assert response.status_code == 200
-        assert captured["apply_validity"] is False
+        assert capturing_store.captured["apply_validity"] is False
         assert response.json()["effective_config"]["apply_validity"] is False
 
     @pytest.mark.api
     @pytest.mark.unit
-    def test_normalises_valid_on_before_it_reaches_the_store(self, test_client, monkeypatch):
+    def test_normalises_valid_on_before_it_reaches_the_store(self, test_client, capturing_store):
         # strptime accepts "2026-9-3" but the vector store's date range does
         # not, so validating without using the parsed value turned a bad
         # request into a "Vector search failed" 400 blaming the store.
-        captured = {}
-
-        class FakeStore:
-            backend = "qdrant"
-
-            def search(self, **kwargs):
-                captured.update(kwargs)
-                return {"hits": [], "valid_on": kwargs.get("valid_on")}
-
-        monkeypatch.setattr(
-            "pipeline.vector_store.get_vector_store", lambda: FakeStore()
-        )
-
         response = test_client.post(
             "/search", json={"query": "kisan", "valid_on": "2026-9-3"}
         )
 
         assert response.status_code == 200
-        assert captured["valid_on"] == "2026-09-03"
+        assert capturing_store.captured["valid_on"] == "2026-09-03"
         assert response.json()["effective_config"]["valid_on"] == "2026-09-03"
 
     @pytest.mark.api
@@ -680,6 +613,128 @@ class TestSearchValidity:
 
         assert response.status_code == 400
         assert "YYYY-MM-DD" in response.json()["detail"]
+
+
+class TestSearchGroup:
+    """`group` narrows a search to one group's chunks (story #202).
+
+    The API says `group`; the store and the chunk payload say `instance`.
+    The endpoint is the only place that maps one name to the other.
+    """
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_passes_the_group_to_the_store_as_instance(self, test_client, capturing_store):
+        response = test_client.post("/search", json={"query": "kisan", "group": "mh"})
+
+        assert response.status_code == 200
+        assert capturing_store.captured["instance"] == "mh"
+        assert response.json()["effective_config"]["group"] == "mh"
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    @pytest.mark.parametrize("raw", ["MH", "  mh ", " Mh\n"])
+    def test_normalises_case_and_whitespace(self, test_client, capturing_store, raw):
+        response = test_client.post("/search", json={"query": "kisan", "group": raw})
+
+        assert capturing_store.captured["instance"] == "mh"
+        assert response.json()["effective_config"]["group"] == "mh"
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    @pytest.mark.parametrize("body", [
+        {"query": "kisan"},
+        {"query": "kisan", "group": ""},
+        {"query": "kisan", "group": "   "},
+        {"query": "kisan", "group": None},
+    ])
+    def test_absent_or_empty_group_means_no_filter(self, test_client, capturing_store, body):
+        response = test_client.post("/search", json=body)
+
+        assert response.status_code == 200
+        assert capturing_store.captured["instance"] is None
+        assert response.json()["effective_config"]["group"] is None
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    @pytest.mark.parametrize("bad", [["mh"], 7, {"code": "mh"}])
+    def test_rejects_a_non_string_group(self, test_client, capturing_store, bad):
+        response = test_client.post("/search", json={"query": "kisan", "group": bad})
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "group must be a string"
+        assert capturing_store.captured == {}, "the store must not be called for a bad request"
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_unknown_group_is_an_empty_success(self, test_client, capturing_store):
+        response = test_client.post("/search", json={"query": "kisan", "group": "xx"})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["hits"] == []
+        assert body["final_count"] == 0
+        assert body["effective_config"]["group"] == "xx"
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_group_composes_with_include_expired(self, test_client, capturing_store):
+        test_client.post(
+            "/search", json={"query": "kisan", "group": "mh", "include_expired": True}
+        )
+
+        assert capturing_store.captured["instance"] == "mh"
+        assert capturing_store.captured["apply_validity"] is False
+
+
+class TestSearchProviderId:
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_passes_one_provider_id_to_the_store(self, test_client, capturing_store):
+        response = test_client.post("/search", json={"query": "kisan", "provider_id": "mh.provider.oan.dev"})
+
+        assert response.status_code == 200
+        assert capturing_store.captured["provider_id"] == "mh.provider.oan.dev"
+        assert response.json()["effective_config"]["provider_id"] == "mh.provider.oan.dev"
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_trims_and_lowercases(self, test_client, capturing_store):
+        test_client.post("/search", json={"query": "kisan", "provider_id": " MH.Provider.oan.dev "})
+
+        assert capturing_store.captured["provider_id"] == "mh.provider.oan.dev"
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    @pytest.mark.parametrize("body", [
+        {"query": "kisan"},
+        {"query": "kisan", "provider_id": None},
+        {"query": "kisan", "provider_id": "  "},
+    ])
+    def test_absent_or_empty_means_no_filter(self, test_client, capturing_store, body):
+        response = test_client.post("/search", json=body)
+
+        assert response.status_code == 200
+        assert capturing_store.captured["provider_id"] is None
+        assert response.json()["effective_config"]["provider_id"] is None
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    @pytest.mark.parametrize("bad", [7, {"id": "x"}, ["mh.provider.oan.dev"], True])
+    def test_rejects_anything_but_a_string(self, test_client, capturing_store, bad):
+        response = test_client.post("/search", json={"query": "kisan", "provider_id": bad})
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "provider_id must be a string"
+        assert capturing_store.captured == {}
+
+    @pytest.mark.api
+    @pytest.mark.unit
+    def test_composes_with_group(self, test_client, capturing_store):
+        test_client.post("/search", json={"query": "kisan", "group": "mh", "provider_id": "mh.provider.oan.dev"})
+
+        assert capturing_store.captured["instance"] == "mh"
+        assert capturing_store.captured["provider_id"] == "mh.provider.oan.dev"
 
 
 class TestPageEndpoints:
@@ -994,7 +1049,7 @@ class TestErrorHandling:
 class TestPdfHeaders:
     @pytest.mark.unit
     def test_inline_content_disposition_unicode_filename(self):
-        from pipeline.api import _inline_content_disposition
+        from pipeline.api.api import _inline_content_disposition
 
         header = _inline_content_disposition("રબર મેટ.pdf")
         header.encode("latin-1")
@@ -1003,7 +1058,7 @@ class TestPdfHeaders:
 
     @pytest.mark.unit
     def test_inline_content_disposition_strips_crlf(self):
-        from pipeline.api import _inline_content_disposition
+        from pipeline.api.api import _inline_content_disposition
 
         header = _inline_content_disposition("evil.pdf\r\nX-Injected: yes")
         assert "\r" not in header

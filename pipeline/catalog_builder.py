@@ -2,12 +2,13 @@
 Builds the Network Catalog Envelope's catalog for a document's knowledge kind.
 
 One catalog holding exactly one OnDemand resource per kind, identical for every
-document of that kind - a seeker that matches the resource comes back to ask the
-actual question, so there is nothing per-document to put on the wire.
+document of that kind and Group - a seeker that matches the resource comes back
+to ask the actual question, so there is nothing per-document to put on the wire.
 
-Pure: no env, no I/O. Values live in network_constants.py and the transport in
-discovery_publish_service.py. See
-docs/ADR/0003-static-ondemand-network-catalog-per-knowledge-kind.md.
+Pure: no env, no I/O. Values live in network_constants.py, the provider in
+network_provider.py and the transport in discovery_publish_service.py. See
+docs/ADR/0003-static-ondemand-network-catalog-per-knowledge-kind.md and
+docs/ADR/0006-publish-to-network-under-per-group-provider.md.
 """
 
 import copy
@@ -15,23 +16,21 @@ from typing import Optional
 
 from .network_constants import (
     ADVISORY_CATALOG_ID,
-    ADVISORY_CATALOG_NAME,
     ADVISORY_RESOURCE_ID,
     ADVISORY_RESOURCE_NAME,
     ADVISORY_SUBJECT_CATEGORIES,
     ADVISORY_TOPICS,
-    CATALOG_PROVIDER,
     DEFAULT_DOCUMENT_KIND,
     INFORMATION_MODE,
     SCHEMA_CONTEXT_BASE,
     SCHEME_SUBJECT_CATEGORIES,
     SCHEME_TOPICS,
     SCHEMES_CATALOG_ID,
-    SCHEMES_CATALOG_NAME,
     SCHEMES_RESOURCE_ID,
     SCHEMES_RESOURCE_NAME,
     SERVED_LANGUAGES,
 )
+from .network_provider import Group
 
 _ADVISORY_RESOURCE_ATTRIBUTES = {
     "@context": f"{SCHEMA_CONTEXT_BASE}/KnowledgeAdvisory/v0.1/context.jsonld",
@@ -58,14 +57,12 @@ _SCHEME_RESOURCE_ATTRIBUTES = {
 _KNOWLEDGE_KIND_CATALOGS = {
     "advisory": {
         "catalog_id": ADVISORY_CATALOG_ID,
-        "catalog_name": ADVISORY_CATALOG_NAME,
         "resource_id": ADVISORY_RESOURCE_ID,
         "resource_name": ADVISORY_RESOURCE_NAME,
         "resource_attributes": _ADVISORY_RESOURCE_ATTRIBUTES,
     },
     "scheme": {
         "catalog_id": SCHEMES_CATALOG_ID,
-        "catalog_name": SCHEMES_CATALOG_NAME,
         "resource_id": SCHEMES_RESOURCE_ID,
         "resource_name": SCHEMES_RESOURCE_NAME,
         "resource_attributes": _SCHEME_RESOURCE_ATTRIBUTES,
@@ -80,7 +77,16 @@ def normalize_document_kind(kind: Optional[str]) -> str:
     return (kind or DEFAULT_DOCUMENT_KIND).strip().lower()
 
 
-def build_catalog(kind: Optional[str]) -> Optional[dict]:
+def is_publishable_kind(kind: Optional[str]) -> bool:
+    return normalize_document_kind(kind) in _KNOWLEDGE_KIND_CATALOGS
+
+
+def build_catalog(
+    kind: Optional[str],
+    provider: dict,
+    catalog_name: str,
+    group: Optional[Group] = None,
+) -> Optional[dict]:
     """Return the catalog to announce for `kind`, or None.
 
     None means this kind has nothing to announce - `document`, `video` and any
@@ -91,14 +97,22 @@ def build_catalog(kind: Optional[str]) -> Optional[dict]:
     if spec is None:
         return None
 
+    catalog_id = spec["catalog_id"]
+    resource_id = spec["resource_id"]
+    provider = copy.deepcopy(provider)
+    if group is not None:
+        prefix = f"{group.code}-"
+        catalog_id = prefix + catalog_id
+        resource_id = prefix + resource_id
+
     catalog = {
-        "id": spec["catalog_id"],
-        "descriptor": {"name": spec["catalog_name"]},
+        "id": catalog_id,
+        "descriptor": {"name": catalog_name},
         "isActive": True,
-        "provider": copy.deepcopy(CATALOG_PROVIDER),
+        "provider": provider,
         "resources": [
             {
-                "id": spec["resource_id"],
+                "id": resource_id,
                 "descriptor": {"name": spec["resource_name"]},
                 "resourceAttributes": copy.deepcopy(spec["resource_attributes"]),
             }

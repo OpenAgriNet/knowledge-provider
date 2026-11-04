@@ -21,7 +21,7 @@ Repo-wide conventions for naming, versioning, git workflow, logging, and linting
 - RBAC roles: canonical vocabulary only — `superadmin`/`master_admin` (platform-wide) > `admin` (state-scoped, via `instances`/groups) > `content_curator` (upload/review/pipeline/search) > `viewer` (search only); state-scoped variants use `state_admin` / `state_approver` / `state_contributor` / `state_view`. No new role name without updating it in `docs/architecture-pipeline-rbac.md` too.
 
 ### Provider plugins
-Each domain package (`ocr/`, `translation/`, `chunking/`, `vector_store/`) follows the same shape: a `base.py` protocol/ABC, one module per concrete provider (`chandra_vllm.py`, `gemma_vllm.py`, ...), and a `service.py` factory that dispatches on a `{DOMAIN}_PROVIDER` env var (`OCR_PROVIDER`, `TRANSLATION_PROVIDER`, `CHUNKING_PROVIDER`). A new provider implements the base contract and registers in that package's `service.py` — never branch on provider name inside `activities.py` or `api.py`.
+Each domain package (`ocr/`, `translation/`, `chunking/`, `vector_store/`) follows the same shape: a `base.py` protocol/ABC, one module per concrete provider (`chandra_vllm.py`, `gemma_vllm.py`, ...), and a `service.py` factory that dispatches on a `{DOMAIN}_PROVIDER` env var (`OCR_PROVIDER`, `TRANSLATION_PROVIDER`, `CHUNKING_PROVIDER`). A new provider implements the base contract and registers in that package's `service.py` — never branch on provider name inside `activities.py` or `api/`.
 
 ### Environment variables
 `UPPER_SNAKE_CASE`, grouped by prefix. Booleans: `true` / `false` only.

@@ -69,19 +69,16 @@ class TestDiscoveryPublishServiceConfig:
             DiscoveryPublishService()
 
     @pytest.mark.unit
-    def test_explicit_args_override_env(self, monkeypatch):
+    def test_explicit_endpoint_overrides_env(self, monkeypatch):
         from pipeline.discovery_publish_service import DiscoveryPublishService
 
-        monkeypatch.delenv("DISCOVERY_SERVICE_ENDPOINT", raising=False)
-        monkeypatch.delenv("NETWORK_SENDER_ID", raising=False)
+        monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://env.example.com")
+        monkeypatch.setenv("NETWORK_SENDER_ID", " provider.oan.dev ")
 
-        service = DiscoveryPublishService(
-            endpoint="https://explicit.example.com",
-            sender_id="explicit-sender",
-        )
+        service = DiscoveryPublishService(endpoint="https://explicit.example.com")
 
         assert service.endpoint == "https://explicit.example.com"
-        assert service.sender_id == "explicit-sender"
+        assert service.sender_id == "provider.oan.dev"
 
 
 class TestDiscoveryPublishServicePublish:
@@ -439,3 +436,145 @@ class TestDiscoveryPublishServiceLogging:
         messages = [r.getMessage() for r in caplog.records]
         assert any("network_publish_skipped=True" in m for m in messages)
         assert not any("network_publish_url=" in m for m in messages)
+
+
+def _use_group_providers(monkeypatch, tmp_path, content):
+    path = tmp_path / "network_group_providers.json"
+    path.write_text(content)
+    monkeypatch.setenv("PROVIDER_CONFIG_OVERRIDE_PATH", str(path))
+
+
+@pytest.fixture(autouse=True)
+def _default_provider_naming(monkeypatch):
+    for name in (
+        "PORTAL_INSTANCE",
+        "NETWORK_PROVIDER_ID_TEMPLATE",
+        "NETWORK_GROUP_CATALOG_NAME_TEMPLATE",
+        "NETWORK_ADVISORY_CATALOG_NAME",
+        "NETWORK_SCHEMES_CATALOG_NAME",
+        "PROVIDER_CONFIG_OVERRIDE_PATH",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def _publish(monkeypatch, kind, group, sender_id="provider.oan.dev"):
+    from pipeline.discovery_publish_service import DiscoveryPublishService
+
+    monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
+    monkeypatch.setenv("NETWORK_SENDER_ID", sender_id)
+    service = DiscoveryPublishService()
+    client = _client_returning(_on_publish_response("any", "ACCEPTED"))
+    with patch("pipeline.discovery_publish_service.httpx.Client", return_value=client):
+        result = service.publish(transaction_id="txn", kind=kind, group=group)
+    return client.post.call_args.kwargs["json"], result
+
+
+class TestDiscoveryPublishServiceGroupProvider:
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "kind,catalog_id,resource_id,catalog_name",
+        [
+            ("advisory", "mh-cat-oan-knowledge-provider-advisories", "mh-res-oan-knowledge-provider-advisories",
+             "Maharashtra Advisories from documents"),
+            ("scheme", "mh-cat-oan-knowledge-provider-schemes", "mh-res-oan-knowledge-provider-schemes",
+             "Maharashtra Schemes from documents"),
+        ],
+    )
+    def test_group_publishes_both_kinds_under_one_provider(self, monkeypatch, kind, catalog_id, resource_id, catalog_name):
+        envelope, result = _publish(monkeypatch, kind, "mh")
+
+        catalog = envelope["message"]["catalogs"][0]
+        assert catalog["id"] == catalog_id
+        assert catalog["resources"][0]["id"] == resource_id
+        assert catalog["descriptor"] == {"name": catalog_name}
+        assert catalog["provider"] == {
+            "id": "mh.provider.oan.dev",
+            "descriptor": {"code": "mh.provider.oan.dev", "name": "Maharashtra"},
+        }
+        assert envelope["message"]["publishDirectives"][0]["catalogId"] == catalog_id
+        assert envelope["context"]["networkId"] == "provider.oan.dev"
+        assert result["skipped"] is False
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "kind,catalog_id,catalog_name",
+        [
+            ("advisory", "cat-oan-knowledge-provider-advisories", "Advisories from documents"),
+            ("scheme", "cat-oan-knowledge-provider-schemes", "Schemes from documents"),
+        ],
+    )
+    def test_no_group_publishes_under_the_shared_instance(self, monkeypatch, kind, catalog_id, catalog_name):
+        envelope, _ = _publish(monkeypatch, kind, None)
+
+        catalog = envelope["message"]["catalogs"][0]
+        assert catalog["id"] == catalog_id
+        assert catalog["descriptor"] == {"name": catalog_name}
+        assert catalog["provider"] == {
+            "id": "bv.provider.oan.dev",
+            "descriptor": {"code": "bv.provider.oan.dev", "name": "Bharat Vistaar"},
+        }
+
+    @pytest.mark.unit
+    def test_provider_id_follows_the_sender_id(self, monkeypatch):
+        envelope, _ = _publish(monkeypatch, "scheme", "mh", sender_id="provider.oan.prod")
+
+        assert envelope["message"]["catalogs"][0]["provider"]["id"] == "mh.provider.oan.prod"
+
+    @pytest.mark.unit
+    def test_overridden_group_publishes_under_its_configured_provider(self, monkeypatch, tmp_path):
+        _use_group_providers(monkeypatch, tmp_path, '{"KA": "ka.example.com"}')
+
+        envelope, _ = _publish(monkeypatch, "scheme", "ka")
+
+        catalog = envelope["message"]["catalogs"][0]
+        assert catalog["id"] == "ka-cat-oan-knowledge-provider-schemes"
+        assert catalog["provider"] == {
+            "id": "ka.example.com",
+            "descriptor": {"code": "ka.example.com", "name": "Karnataka"},
+        }
+
+    @pytest.mark.unit
+    def test_catalog_names_are_read_from_the_environment(self, monkeypatch):
+        monkeypatch.setenv("NETWORK_GROUP_CATALOG_NAME_TEMPLATE", "{group_name} - {catalog_name}")
+        monkeypatch.setenv("NETWORK_SCHEMES_CATALOG_NAME", "Government schemes")
+
+        envelope, _ = _publish(monkeypatch, "scheme", "mh")
+
+        assert envelope["message"]["catalogs"][0]["descriptor"] == {"name": "Maharashtra - Government schemes"}
+
+    @pytest.mark.unit
+    def test_unmapped_kind_is_skipped_for_a_group(self, monkeypatch):
+        from pipeline.discovery_publish_service import DiscoveryPublishService
+
+        monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
+        monkeypatch.setenv("NETWORK_SENDER_ID", "provider.oan.dev")
+        service = DiscoveryPublishService()
+
+        result = service.publish(transaction_id="txn-doc", kind="document", group="ka")
+
+        assert result["skipped"] is True
+        assert result["envelope"] is None
+
+    @pytest.mark.unit
+    def test_malformed_provider_map_fails_construction(self, monkeypatch, tmp_path):
+        from pipeline.discovery_publish_service import DiscoveryPublishService
+        from pipeline.network_group import NetworkProviderConfigError
+
+        monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
+        monkeypatch.setenv("NETWORK_SENDER_ID", "provider.oan.dev")
+        _use_group_providers(monkeypatch, tmp_path, "{broken")
+
+        with pytest.raises(NetworkProviderConfigError):
+            DiscoveryPublishService()
+
+    @pytest.mark.unit
+    def test_bad_provider_id_template_fails_construction(self, monkeypatch):
+        from pipeline.discovery_publish_service import DiscoveryPublishService
+        from pipeline.network_group import NetworkProviderConfigError
+
+        monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
+        monkeypatch.setenv("NETWORK_SENDER_ID", "provider.oan.dev")
+        monkeypatch.setenv("NETWORK_PROVIDER_ID_TEMPLATE", "{state}.{network_id}")
+
+        with pytest.raises(NetworkProviderConfigError, match="NETWORK_PROVIDER_ID_TEMPLATE"):
+            DiscoveryPublishService()

@@ -28,6 +28,18 @@ def default_group() -> str:
     return (os.environ.get("DEFAULT_INSTANCE") or "default").strip().lower() or "default"
 
 
+def portal_group() -> str:
+    return (os.environ.get("PORTAL_INSTANCE") or PORTAL_GROUP).strip().lower() or PORTAL_GROUP
+
+
+def group_for_instance(group: str | None) -> str | None:
+    """The named network group of a tenant code, or None for the portal / default tenant."""
+    code = (group or "").strip().lower()
+    if not code or code in {portal_group(), default_group()}:
+        return None
+    return code
+
+
 def normalize_group(value: str | None) -> str:
     text = (value or "").strip().lower()
     return text or default_group()
@@ -78,8 +90,7 @@ def resolve_create_group(user: AuthUser, requested: str | None = None) -> str:
         if requested_norm:
             return normalize_group(requested_norm)
         # Prefer portal tag for platform operators when nothing chosen.
-        portal = (os.environ.get("PORTAL_INSTANCE") or PORTAL_GROUP).strip().lower()
-        return normalize_group(portal or default_group())
+        return normalize_group(portal_group())
 
     allowed = allowed_groups(user) or set()
     if not allowed:
