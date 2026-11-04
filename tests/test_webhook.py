@@ -30,7 +30,7 @@ def test_client(db_connection):
     """TestClient without lifespan (no Temporal/MinIO needed for /webhook)."""
     from fastapi.testclient import TestClient
 
-    from pipeline import api
+    from pipeline.api import api
 
     return TestClient(api.app)
 
@@ -120,7 +120,7 @@ class TestWebhookIngest:
         assert r.status_code == 422
 
     def test_too_many_records_413(self, test_client, db_connection, key_env):
-        from pipeline import api
+        from pipeline.api import api
 
         with patch.object(api, "WEBHOOK_MAX_RECORDS", 1):
             body = SAMPLE + [{**SAMPLE[0], "contentID": 102}]
