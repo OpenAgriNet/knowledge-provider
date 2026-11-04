@@ -29,7 +29,7 @@ from .catalog_builder import normalize_document_kind
 from .chunking import chunk_pages, load_chunking_config
 from .discovery_publish_service import DiscoveryPublishService, PublishConfigError
 from .document_repository import DocumentRepository
-from .instances import instance_display_name, publish_to_network_enabled
+from .group_names import group_display_name, publish_to_network_enabled
 from .models import PUBLISH_SKIPPED_DISABLED, PUBLISH_SKIPPED_UNMAPPED_KIND
 from .network_constants import RESULT_REJECTED
 from .network_group import load_provider_naming, named_group, provider_for
@@ -623,8 +623,8 @@ def clean_text_for_ingestion(text: str) -> str:
     return result.strip()
 
 
-def _normalize_instance(value: str | None) -> str:
-    """Ingest-side instance normalizer (mirrors auth.tenancy without importing FastAPI)."""
+def _normalize_group(value: str | None) -> str:
+    """Ingest-side group normalizer (mirrors auth.tenancy without importing FastAPI)."""
     text = (value or "").strip().lower()
     if text:
         return text
@@ -640,18 +640,18 @@ def _prepare_records(
     name_en: str | None = None,
     description: str | None = None,
     include_e5_prefix_field: bool = True,
-    instance: str | None = None,
-    document_kind: str = "document",
-    scheme_code: str | None = None,
-    scheme_name: str | None = None,
-    scheme_aliases: list[str] | None = None,
+    group: str | None = None,
+    kind: str = "document",
+    code: str | None = None,
+    name: str | None = None,
+    aliases: list[str] | None = None,
     valid_from: str | None = None,
     valid_to: str | None = None,
     provider_id: str | None = None,
     display_name: str | None = None,
 ) -> list[dict]:
     metadata = _get_doc_metadata(filename)
-    resolved_instance = _normalize_instance(instance)
+    resolved_group = _normalize_group(group)
     llm_doc_description = _get_doc_description(filename)
 
     doc_hash = hashlib.md5(document_id.encode()).hexdigest()
@@ -667,19 +667,17 @@ def _prepare_records(
     short_description = metadata.get("doc_short_description", "")
     effective_description = description or llm_doc_description or short_description
 
-    kind = (document_kind or "document").strip().lower()
-    is_scheme = kind == "scheme" and bool((scheme_code or "").strip())
-    resolved_scheme_name = scheme_name or name_en or default_name
+    kind = (kind or "document").strip().lower()
+    is_scheme = kind == "scheme" and bool((code or "").strip())
+    resolved_name = name or name_en or default_name
     # Merge curator-supplied, bootstrap and derived aliases so a scheme is never
     # indexed with an empty alias list (it would then only match its exact name).
-    aliases = (
-        scheme_catalog.resolve_scheme_aliases(
-            scheme_code, resolved_scheme_name, scheme_aliases
-        )
+    resolved_aliases = (
+        scheme_catalog.resolve_scheme_aliases(code, resolved_name, aliases)
         if is_scheme
         else []
     )
-    instance_name = instance_display_name(resolved_instance)
+    group_name = group_display_name(resolved_group)
     # One period for the whole document, resolved before the loop: every chunk
     # of a document expires together, and re-deriving it per chunk would let a
     # midnight boundary split one document across two periods.
@@ -701,10 +699,10 @@ def _prepare_records(
             "_id": point_id,
             "doc_id": document_id,
             "workflow_id": workflow_id or "",
-            "instance": resolved_instance,
-            "instance_name": instance_name,
+            "instance": resolved_group,  # vector payload key, kept for consumers
+            "instance_name": group_name,
             "provider_id": provider_id,
-            "type": "scheme" if is_scheme else "document",
+            "type": kind,
             "source": "docs-pipeline",
             "filename": external_slug,
             "name_gu": name_gu,
@@ -737,9 +735,9 @@ def _prepare_records(
             if validity.end_date is not None:
                 record["end_date"] = validity.end_date
         if is_scheme:
-            record["scheme_code"] = (scheme_code or "").strip().lower()
-            record["scheme_name"] = resolved_scheme_name
-            record["scheme_aliases"] = aliases
+            record["scheme_code"] = (code or "").strip().lower()
+            record["scheme_name"] = resolved_name
+            record["scheme_aliases"] = resolved_aliases
         if include_e5_prefix_field:
             record["text_for_embedding"] = f"passage: {text}" if text else "passage:"
         records.append(record)
@@ -748,34 +746,21 @@ def _prepare_records(
 
 
 def _scheme_fields_from_doc(doc: dict | None) -> dict:
-    """Extract scheme kwargs for _prepare_records from a documents row."""
-    import json as _json
-
+    """Extract kind/code/name/aliases kwargs for _prepare_records from a documents row."""
     doc = doc or {}
-    aliases_raw = doc.get("scheme_aliases_json")
-    aliases: list[str] = []
-    if isinstance(aliases_raw, list):
-        aliases = [str(a) for a in aliases_raw]
-    elif isinstance(aliases_raw, str) and aliases_raw.strip():
-        try:
-            parsed = _json.loads(aliases_raw)
-            if isinstance(parsed, list):
-                aliases = [str(a) for a in parsed]
-        except Exception:
-            aliases = []
     return {
-        "document_kind": (doc.get("document_kind") or "document"),
-        "scheme_code": doc.get("scheme_code"),
-        "scheme_name": doc.get("scheme_name"),
-        "scheme_aliases": aliases,
+        "kind": (doc.get("kind") or "document"),
+        "code": doc.get("code"),
+        "name": doc.get("name"),
+        "aliases": [str(a) for a in (doc.get("aliases") or [])],
     }
 
 
 def _provider_id_from_doc(doc: dict | None) -> str | None:
     doc = doc or {}
-    group = named_group(group_for_instance(doc.get("instance")))
+    group = named_group(group_for_instance(doc.get("group")))
     try:
-        provider = provider_for(load_provider_naming(), doc.get("document_kind"), group)
+        provider = provider_for(load_provider_naming(), doc.get("kind"), group)
     except InvalidProviderIdError as exc:
         raise ApplicationError(str(exc), non_retryable=True) from exc
     return provider["id"] if provider else None
@@ -806,7 +791,7 @@ def prepare_ingestion_records(
     name_gu: str | None = None,
     name_en: str | None = None,
     description: str | None = None,
-    instance: str | None = None,
+    group: str | None = None,
 ) -> list[dict]:
     """Public helper used by tests and scripts when preparing vector-index payloads."""
     return _prepare_records(
@@ -817,7 +802,7 @@ def prepare_ingestion_records(
         name_gu=name_gu,
         name_en=name_en,
         description=description,
-        instance=instance,
+        group=group,
     )
 
 
@@ -929,7 +914,7 @@ async def run_ocr(filepath: str) -> list[dict]:
 
 @activity.defn
 async def run_ocr_and_store(workflow_id: str, filepath: str) -> dict:
-    """Run OCR and persist pages to SQLite to avoid large Temporal payloads."""
+    """Run OCR and persist pages to Postgres to avoid large Temporal payloads."""
     from . import db
 
     local_path, cleanup_local = _resolve_local_path(filepath)
@@ -1111,7 +1096,7 @@ async def create_chunks_from_db(
     chunk_overlap: int = 128,
     min_tokens: int = 100,
 ) -> dict:
-    """Create chunks from persisted pages and persist chunks in SQLite."""
+    """Create chunks from persisted pages and persist chunks in Postgres."""
     from . import db
 
     pages = db.get_pages(workflow_id)
@@ -1209,7 +1194,7 @@ async def create_chunks_from_db(
             "stats": result.stats,
         },
     )
-    # Reconcile the document row immediately after chunk persistence so SQLite
+    # Reconcile the document row immediately after chunk persistence so Postgres
     # remains truthful even if the workflow fails before its final state update.
     db.reconcile_materialized_state(workflow_id)
     await _persist_chunking_progress(
@@ -1247,10 +1232,10 @@ async def prepare_for_ingestion(
         name_gu=name_gu,
         name_en=name_en,
         description=description,
-        instance=(doc or {}).get("instance"),
+        group=(doc or {}).get("group"),
         **_validity_fields_from_doc(doc),
         provider_id=_provider_id_from_doc(doc),
-        display_name=(doc or {}).get("display_name"),
+        display_name=(doc or {}).get("name"),
     )
     activity.logger.info(f"Prepared {len(records)} records")
     return records
@@ -1290,7 +1275,7 @@ async def promote_document_to_prod_qdrant(
     filename: str,
     batch_size: int = 10,
 ) -> dict:
-    """Re-upsert document chunks into the PROD Qdrant collection (from SQLite)."""
+    """Re-upsert document chunks into the PROD Qdrant collection (from Postgres)."""
     from . import db
     from .vector_store.qdrant_store import QdrantVectorStore, get_qdrant_client
 
@@ -1323,8 +1308,8 @@ async def promote_document_to_prod_qdrant(
     chunks = db.get_chunks(workflow_id, include_excluded=True)
     doc = db.get_document(workflow_id) or {}
     scheme_kwargs = _scheme_fields_from_doc(doc)
-    kind = (scheme_kwargs.get("document_kind") or "document").strip().lower()
-    is_scheme = kind == "scheme" and bool((scheme_kwargs.get("scheme_code") or "").strip())
+    kind = (scheme_kwargs.get("kind") or "document").strip().lower()
+    is_scheme = kind == "scheme" and bool((scheme_kwargs.get("code") or "").strip())
 
     if is_scheme:
         prod_url = (
@@ -1358,11 +1343,11 @@ async def promote_document_to_prod_qdrant(
         filename,
         chunks,
         workflow_id=workflow_id,
-        instance=doc.get("instance"),
+        group=doc.get("group"),
         **scheme_kwargs,
         **_validity_fields_from_doc(doc),
         provider_id=_provider_id_from_doc(doc),
-        display_name=doc.get("display_name"),
+        display_name=doc.get("name"),
     )
     activity.logger.info(
         "Promoting %s records to PROD Qdrant collection %s (kind=%s)",
@@ -1375,6 +1360,7 @@ async def promote_document_to_prod_qdrant(
         store.upsert, prod_collection, records, batch_size=max(batch_size, 8)
     )
     activity.logger.info("PROD promotion complete: %s", result.get("index_stats"))
+    await _drop_superseded_points("prod", workflow_id, doc, document_id, prod_collection, store=store)
     db.log_audit(
         workflow_id=workflow_id,
         document_id=document_id,
@@ -1384,8 +1370,8 @@ async def promote_document_to_prod_qdrant(
             "collection": prod_collection,
             "records_ingested": result.get("records_ingested", len(records)),
             "prod_qdrant_url": prod_url,
-            "document_kind": kind,
-            "scheme_code": scheme_kwargs.get("scheme_code"),
+            "kind": kind,
+            "code": scheme_kwargs.get("code"),
         },
     )
     catalog_version = None
@@ -1396,12 +1382,6 @@ async def promote_document_to_prod_qdrant(
             catalog_version = on_scheme_document_promoted(workflow_id)
         except Exception as exc:
             activity.logger.warning("Catalog update after promote failed: %s", exc)
-        try:
-            from .master_catalog_pg import sync_catalog_entry
-
-            await asyncio.to_thread(sync_catalog_entry, workflow_id, "live")
-        except Exception as exc:
-            activity.logger.warning("Master catalog (Postgres/Redis) sync after promote failed: %s", exc)
     return {
         **result,
         "collection": prod_collection,
@@ -1409,6 +1389,53 @@ async def promote_document_to_prod_qdrant(
         "document_kind": kind,
         "catalog_version": catalog_version,
     }
+
+
+async def _drop_superseded_points(
+    env: str,
+    workflow_id: str,
+    doc: dict,
+    current_doc_id: str,
+    collection: str,
+    store=None,
+) -> None:
+    """Delete points of earlier file versions (see ``metadata.superseded_doc_ids``).
+
+    Runs after the new content is indexed, so search never has a gap. A failed
+    delete keeps the key for the next run and does not fail the ingest.
+    """
+    from . import db
+
+    stale = [
+        doc_id
+        for doc_id in (doc.get("superseded_doc_ids") or {}).get(env, [])
+        if doc_id and doc_id != current_doc_id
+    ]
+    if not stale:
+        return
+    if store is None:
+        from .vector_store import get_vector_store
+
+        store = get_vector_store()
+    deleted = []
+    for doc_id in stale:
+        # Two documents holding the same file share one index key. While another
+        # live document is indexed under it the points stay, and the key stays on
+        # the list so a later ingest, disable or purge can still remove it.
+        if await asyncio.to_thread(db.doc_id_used_by_other_document, doc_id, doc.get("id"), env):
+            activity.logger.info(
+                "Keeping %s points for %s: another document is indexed under the same key", env, doc_id
+            )
+            continue
+        result = await asyncio.to_thread(store.delete_by_doc_id, collection, doc_id)
+        if result.get("error"):
+            activity.logger.warning(
+                "Could not delete superseded %s points for %s: %s", env, doc_id, result["error"]
+            )
+        else:
+            deleted.append(doc_id)
+    if deleted:
+        db.clear_superseded_doc_ids(workflow_id, env, deleted)
 
 
 @activity.defn
@@ -1419,7 +1446,7 @@ async def ingest_document_from_db(
     index_name: str = "documents-index",
     batch_size: int = 10,
 ) -> dict:
-    """Prepare and ingest chunks directly from SQLite by workflow_id."""
+    """Prepare and ingest chunks directly from Postgres by workflow_id."""
     from . import db
 
     chunks = db.get_chunks(workflow_id, include_excluded=True)
@@ -1429,11 +1456,11 @@ async def ingest_document_from_db(
         filename,
         chunks,
         workflow_id=workflow_id,
-        instance=doc.get("instance"),
+        group=doc.get("group"),
         **_scheme_fields_from_doc(doc),
         **_validity_fields_from_doc(doc),
         provider_id=_provider_id_from_doc(doc),
-        display_name=doc.get("display_name"),
+        display_name=doc.get("name"),
     )
     payload_path = _write_json_temp(records)
     try:
@@ -1467,12 +1494,7 @@ async def ingest_document_from_db(
         status="indexed",
         details=result.get("index_stats"),
     )
-    try:
-        from .master_catalog_pg import sync_catalog_entry
-
-        await asyncio.to_thread(sync_catalog_entry, workflow_id, "dev")
-    except Exception as exc:
-        activity.logger.warning("Master catalog (Postgres/Redis) sync after DEV ingest failed: %s", exc)
+    await _drop_superseded_points("dev", workflow_id, doc, document_id, index_name)
     return result
 
 
@@ -1578,7 +1600,7 @@ async def update_document_state(
     chunk_count: int = 0,
     error_message: str = None,
 ) -> dict:
-    """Update document state in SQLite."""
+    """Update document state in Postgres."""
     from . import db
 
     activity.logger.info(f"Updating state for {workflow_id}: stage={stage}")
@@ -1615,7 +1637,7 @@ async def update_document_state(
 
 @activity.defn
 async def persist_document_content(workflow_id: str, pages: list[dict], chunks: list[dict]) -> dict:
-    """Persist pages and chunks to SQLite."""
+    """Persist pages and chunks to Postgres."""
     from . import db
 
     activity.logger.info(f"Persisting content for {workflow_id}: {len(pages)} pages, {len(chunks)} chunks")
@@ -1648,7 +1670,7 @@ async def detect_and_translate_pages_from_db(
     target_language: str = "en",
     source_language: str = None,
 ) -> dict:
-    """Detect and translate pages loaded from SQLite; persist updated pages back to SQLite."""
+    """Detect and translate pages loaded from Postgres; persist updated pages back to Postgres."""
     from . import db
 
     pages = db.get_pages(workflow_id)
@@ -1684,3 +1706,51 @@ async def detect_and_translate_pages_from_db(
         },
     )
     return {"page_count": len(translated), "translated_count": translated_count}
+
+
+async def _run_advisory_activity(record_id: str, promote: bool) -> dict:
+    """Index (dev) or promote (PROD) one webhook advisory record; shared by both activities."""
+    from . import advisory_index
+    from .vector_store import get_default_index_name, get_vector_store
+    from .vector_store.embeddings import count_tokens
+
+    also_delete_from = None
+    if promote:
+        target = advisory_index.prod_target()
+        if target is None:
+            raise RuntimeError("PROD_VECTOR_DB_URL is required to promote advisory to prod")
+        store, collection = target
+        mark = "promoted"
+    else:
+        store, collection = get_vector_store(), get_default_index_name()
+        mark = "indexed"
+        try:
+            # An unpublished record must also disappear from PROD (deletion only).
+            also_delete_from = advisory_index.prod_target()
+        except Exception as exc:
+            activity.logger.warning("PROD target unavailable for advisory cleanup: %s", exc)
+
+    # Embedding is CPU-bound and synchronous: keep it off the event loop.
+    result = await asyncio.to_thread(
+        advisory_index.index_advisory_record,
+        record_id,
+        store,
+        collection,
+        count_tokens,
+        mark,
+        also_delete_from,
+    )
+    advisory_index.log_advisory_audit(record_id, mark, collection, result)
+    return result
+
+
+@activity.defn
+async def index_webhook_advisory(record_id: str) -> dict:
+    """Write one webhook advisory record's chunks to the dev collection (or delete if unpublished)."""
+    return await _run_advisory_activity(record_id, promote=False)
+
+
+@activity.defn
+async def promote_webhook_advisory(record_id: str) -> dict:
+    """Copy one webhook advisory record's chunks to the PROD collection (or delete if unpublished)."""
+    return await _run_advisory_activity(record_id, promote=True)

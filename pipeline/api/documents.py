@@ -9,8 +9,8 @@ from fastapi import APIRouter, Header, HTTPException, Query, Request
 
 from .. import db, document_validity
 from ..auth.deps import CurrentUser, RequireUpload
-from ..auth.tenancy import assert_document_instance_access, normalize_instance
-from ..instances import prod_stage_disabled
+from ..auth.tenancy import assert_document_group_access, normalize_group
+from ..group_names import prod_stage_disabled
 from ..models import (
     DocumentCohortsResponse,
     DocumentStage,
@@ -36,7 +36,9 @@ async def start_document_workflow(
     min_tokens: int = 100,
     index_name: str = "documents-index",
     stop_after_ocr: bool = False,
-    instance: str = "",
+    group: str = "",
+    kind: str = Query(..., description="scheme or advisory"),
+    code: str = "",
 ):
     """
     Start a new document processing workflow.
@@ -52,22 +54,25 @@ async def start_document_workflow(
     Rate limited to 10 requests/minute per IP.
     Requires permission: upload (no-op while AUTH_DISABLED=true).
     """
-    create_instance = _api._resolve_create_instance(user, instance)
+    create_group = _api._resolve_create_group(user, group)
     # Validate file path to prevent path traversal attacks
     filepath = _api.validate_file_path(data.filepath)
     source_filename = _api.get_filename_from_path(filepath)
+    doc_kind, doc_code, replace_doc = _api._resolve_document_identity(
+        user, create_group, kind, code, source_filename
+    )
     source_file_fingerprint = _api._compute_file_fingerprint(filepath)
     canonical_document_id = source_file_fingerprint
 
     workflow_id = _api.get_workflow_id(str(filepath))
     document_id = canonical_document_id
 
-    # Reuse only when SQLite still tracks this workflow.
-    # If SQLite was purged, avoid returning stale Temporal state and create a fresh run ID.
+    # Reuse only when Postgres still tracks this workflow.
+    # If Postgres was purged, avoid returning stale Temporal state and create a fresh run ID.
     existing_doc = db.get_document(workflow_id)
     if existing_doc:
         # Same fingerprint/path must not leak or restart another tenant's doc.
-        existing_doc = assert_document_instance_access(user, existing_doc)
+        existing_doc = assert_document_group_access(user, existing_doc)
         try:
             handle = _api.temporal_client.get_workflow_handle(workflow_id)
             state = await handle.query("get_state")
@@ -80,7 +85,7 @@ async def start_document_workflow(
                     source_filename=source_filename,
                     source_file_fingerprint=source_file_fingerprint,
                     authoritative=bool(existing_doc.get("source_manifest_name")) if existing_doc else False,
-                    instance=normalize_instance(existing_doc.get("instance")),
+                    group=normalize_group(existing_doc.get("group")),
                     stage=DocumentStage(state.get("stage", "registered")),
                     page_count=state.get("page_count", 0),
                     chunk_count=state.get("chunk_count", 0),
@@ -112,32 +117,48 @@ async def start_document_workflow(
         task_queue=_api.TASK_QUEUE,
     )
 
-    # Save to SQLite for visibility during processing
+    # Save to Postgres for visibility during processing
     actor = _api._actor_from_user(user)
     # The period this document is searchable in starts here, at the one moment
     # that knows the upload day. A reviewer confirms or moves it later, on the
     # form that sets the document type.
     validity = document_validity.default_period()
-    db.upsert_document(
-        workflow_id=workflow_id,
-        document_id=document_id,
-        canonical_document_id=canonical_document_id,
-        filename=source_filename,
-        source_filename=source_filename,
-        source_file_fingerprint=source_file_fingerprint,
-        filepath=str(filepath),
-        stage="registered",
-        stop_after_ocr=stop_after_ocr,
-        instance=create_instance,
-        uploaded_by_user_id=actor.get("user_id") or None,
-        uploaded_by_username=actor.get("username") or None,
-        uploaded_by_email=actor.get("email") or None,
-        uploaded_by_roles=actor.get("roles_csv") or None,
-        valid_from=validity.start_date,
-        valid_to=validity.end_date,
-    )
-    job_id = db.create_document_job(
-        workflow_id=workflow_id,
+    if replace_doc:
+        document_uuid = replace_doc["id"]
+        db.reset_document_for_reupload(
+            document_uuid,
+            filename=source_filename,
+            filepath=str(filepath),
+            fingerprint=source_file_fingerprint,
+        )
+    else:
+        try:
+            document_uuid = db.upsert_document(
+                workflow_id=workflow_id,
+                document_id=document_id,
+                canonical_document_id=canonical_document_id,
+                filename=source_filename,
+                source_filename=source_filename,
+                source_file_fingerprint=source_file_fingerprint,
+                filepath=str(filepath),
+                stage="registered",
+                stop_after_ocr=stop_after_ocr,
+                group=create_group,
+                uploaded_by_user_id=actor.get("user_id") or None,
+                uploaded_by_username=actor.get("username") or None,
+                uploaded_by_email=actor.get("email") or None,
+                uploaded_by_roles=actor.get("roles_csv") or None,
+                valid_from=validity.start_date,
+                valid_to=validity.end_date,
+                with_workflow=False,
+                kind=doc_kind,
+                code=doc_code,
+                name=_api._document_title(source_filename),
+            )
+        except db.DuplicateDocumentCode as exc:
+            raise HTTPException(409, str(exc)) from exc
+    db.create_document_job(
+        workflow_id=document_uuid,
         job_type="ocr_only" if stop_after_ocr else "pipeline",
         temporal_workflow_id=workflow_id,
         status="running",
@@ -151,15 +172,21 @@ async def start_document_workflow(
             "stop_after_ocr": stop_after_ocr,
             "uploaded_by": actor,
         },
+        actor=actor,
     )
-    db.update_document_fields(workflow_id, latest_job_id=job_id)
     _api._log_audit(
         workflow_id=workflow_id,
         action_type="document_upload",
         entity_type="document",
         field_name="registered",
         new_value=source_filename,
-        metadata={"source": "register_endpoint", "instance": create_instance},
+        metadata={
+            "source": "register_endpoint",
+            "group": create_group,
+            "kind": doc_kind,
+            "code": doc_code,
+            "replaced_existing": bool(replace_doc),
+        },
         user=user,
     )
 
@@ -171,7 +198,7 @@ async def start_document_workflow(
         source_filename=source_filename,
         source_file_fingerprint=source_file_fingerprint,
         authoritative=False,
-        instance=create_instance,
+        group=create_group,
         stage=DocumentStage.REGISTERED,
         page_count=0,
         chunk_count=0,
@@ -193,10 +220,11 @@ async def start_batch_workflows(
     chunk_overlap: int = 128,
     min_tokens: int = 100,
     stop_after_ocr: bool = False,
-    instance: str = "",
+    group: str = "",
+    kind: str = Query(..., description="scheme or advisory"),
 ):
     """Start workflows for all supported documents in a directory."""
-    create_instance = _api._resolve_create_instance(user, instance)
+    create_group = _api._resolve_create_group(user, group)
     directory = Path(data.directory)
     if not directory.exists():
         raise HTTPException(404, f"Directory not found: {data.directory}")
@@ -217,7 +245,9 @@ async def start_batch_workflows(
                 chunk_overlap=chunk_overlap,
                 min_tokens=min_tokens,
                 stop_after_ocr=stop_after_ocr,
-                instance=create_instance,
+                group=create_group,
+                kind=kind,
+                code="",
             )
             results.append(result)
         except Exception as e:
@@ -243,33 +273,29 @@ async def list_documents(
     stage: Optional[DocumentStage] = None,
     limit: int = Query(100, le=500),
     offset: int = Query(0, ge=0),
-    x_include_demo: Optional[str] = Header(None, alias="X-Include-Demo"),
     x_include_disabled: Optional[str] = Header(None, alias="X-Include-Disabled")
 ):
     """
     List all document workflows.
 
-    Uses SQLite for fast listing (no Temporal queries for performance).
-    Demo documents are excluded by default - use X-Include-Demo: true header to show them.
+    Uses Postgres for fast listing (no Temporal queries for performance).
     Disabled (soft-deleted) documents are excluded by default - use X-Include-Disabled: true to show them.
-    Results are limited to instances the caller can access.
+    Results are limited to groups the caller can access.
 
     Pagination:
     - limit: Max documents to return (default 100, max 500)
     - offset: Skip first N documents (default 0)
     """
     stage_filter = stage.value if stage else None
-    include_demo = x_include_demo and x_include_demo.lower() == "true"
-    include_disabled = x_include_disabled and x_include_disabled.lower() == "true"
+    include_disabled = bool(x_include_disabled and x_include_disabled.lower() == "true")
 
-    # Use SQLite only for fast listing - no Temporal queries
+    # Use Postgres only for fast listing - no Temporal queries
     docs = db.list_documents(
         stage=stage_filter,
         limit=limit,
         offset=offset,
-        include_demo=include_demo,
         include_disabled=include_disabled,
-        instances=_api._instance_scope_for_user(user),
+        groups=_api._group_scope_for_user(user),
     )
 
     return [_api._document_summary_from_row(doc) for doc in docs]
@@ -278,44 +304,36 @@ async def list_documents(
 @router.get("/summary", response_model=DocumentCohortsResponse)
 async def get_documents_summary(
     user: CurrentUser,
-    x_include_demo: Optional[str] = Header(None, alias="X-Include-Demo"),
     x_include_disabled: Optional[str] = Header(None, alias="X-Include-Disabled")
 ):
-    """Return aggregate SQLite counts for dashboard totals and migration planning."""
-    include_demo = x_include_demo and x_include_demo.lower() == "true"
-    include_disabled = x_include_disabled and x_include_disabled.lower() == "true"
-    instance_scope = _api._instance_scope_for_user(user)
+    """Return aggregate Postgres counts for dashboard totals and migration planning."""
+    include_disabled = bool(x_include_disabled and x_include_disabled.lower() == "true")
+    group_scope = _api._group_scope_for_user(user)
     summary = db.get_document_summary_counts(
-        include_demo=include_demo,
         include_disabled=include_disabled,
-        instances=instance_scope,
+        groups=group_scope,
     )
-    by_instance = db.get_document_counts_by_instance(
-        include_demo=include_demo,
+    by_group = db.get_document_counts_by_group(
         include_disabled=include_disabled,
-        instances=instance_scope,
+        groups=group_scope,
     )
-    return _api._document_cohorts_payload(summary, by_instance)
+    return _api._document_cohorts_payload(summary, by_group)
 
 
 @router.get("/cohorts", response_model=DocumentCohortsResponse)
 async def get_document_cohorts(
     user: CurrentUser,
-    x_include_demo: Optional[str] = Header(None, alias="X-Include-Demo"),
     x_include_disabled: Optional[str] = Header(None, alias="X-Include-Disabled")
 ):
     """Return machine-friendly cohort counts for queueing and orchestration."""
-    include_demo = x_include_demo and x_include_demo.lower() == "true"
-    include_disabled = x_include_disabled and x_include_disabled.lower() == "true"
-    instance_scope = _api._instance_scope_for_user(user)
+    include_disabled = bool(x_include_disabled and x_include_disabled.lower() == "true")
+    group_scope = _api._group_scope_for_user(user)
     summary = db.get_document_summary_counts(
-        include_demo=include_demo,
         include_disabled=include_disabled,
-        instances=instance_scope,
+        groups=group_scope,
     )
-    by_instance = db.get_document_counts_by_instance(
-        include_demo=include_demo,
+    by_group = db.get_document_counts_by_group(
         include_disabled=include_disabled,
-        instances=instance_scope,
+        groups=group_scope,
     )
-    return _api._document_cohorts_payload(summary, by_instance)
+    return _api._document_cohorts_payload(summary, by_group)

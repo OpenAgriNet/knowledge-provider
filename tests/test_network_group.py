@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from pipeline.instances import INSTANCE_NAMES
+from pipeline.group_names import GROUP_NAMES
 from pipeline.network_group import (
     DEFAULT_PROVIDER_CONFIG_OVERRIDE_PATH,
     PROVIDER_CONFIG_OVERRIDE_PATH_ENV,
@@ -212,7 +212,7 @@ class TestLoadProviderNaming:
 
     @pytest.mark.unit
     def test_every_known_instance_is_checked_at_boot(self, monkeypatch):
-        monkeypatch.setitem(INSTANCE_NAMES, "ladakh_ut", "Ladakh")
+        monkeypatch.setitem(GROUP_NAMES, "ladakh_ut", "Ladakh")
 
         with pytest.raises(NetworkProviderConfigError, match="provider id"):
             load_provider_naming()

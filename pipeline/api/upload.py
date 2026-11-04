@@ -5,13 +5,13 @@ from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 
 from .. import db, document_validity
 from .. import display_name as display_name_rules
 from ..auth.deps import RequireUpload
-from ..auth.tenancy import assert_document_instance_access, normalize_instance
-from ..instances import prod_stage_disabled
+from ..auth.tenancy import assert_document_group_access, normalize_group
+from ..group_names import prod_stage_disabled
 from ..models import DocumentStage, DocumentSummary
 from ..workflows import DocumentPipelineWorkflow
 from . import api as _api
@@ -31,7 +31,9 @@ async def upload_and_process(
     min_tokens: int = 100,
     index_name: str = "documents-index",
     stop_after_ocr: bool = False,
-    instance: str = "",
+    group: str = "",
+    kind: str = Query(..., description="scheme or advisory"),
+    code: str = "",
     display_name: Optional[str] = Form(None),
 ):
     """
@@ -42,7 +44,10 @@ async def upload_and_process(
     Rate limited to 10 requests/minute per IP.
     Requires permission: upload (no-op while AUTH_DISABLED=true).
     """
-    create_instance = _api._resolve_create_instance(user, instance)
+    create_group = _api._resolve_create_group(user, group)
+    doc_kind, doc_code, replace_doc = _api._resolve_document_identity(
+        user, create_group, kind, code, file.filename or ""
+    )
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in _api.ALLOWED_EXTENSIONS:
         raise HTTPException(400, f"Unsupported file type: {suffix}")
@@ -82,11 +87,11 @@ async def upload_and_process(
     document_id = file_hash
     canonical_document_id = file_hash
 
-    # Reuse only when SQLite still tracks this workflow.
-    # If SQLite was purged, avoid returning stale Temporal state and create a fresh run ID.
+    # Reuse only when Postgres still tracks this workflow.
+    # If Postgres was purged, avoid returning stale Temporal state and create a fresh run ID.
     existing_doc = db.get_document(workflow_id)
     if existing_doc:
-        existing_doc = assert_document_instance_access(user, existing_doc)
+        existing_doc = assert_document_group_access(user, existing_doc)
         try:
             handle = _api.temporal_client.get_workflow_handle(workflow_id)
             state = await handle.query("get_state")
@@ -99,7 +104,7 @@ async def upload_and_process(
                     source_filename=file.filename,
                     source_file_fingerprint=file_hash,
                     authoritative=bool(existing_doc.get("source_manifest_name")) if existing_doc else False,
-                    instance=normalize_instance(existing_doc.get("instance")),
+                    group=normalize_group(existing_doc.get("group")),
                     stage=DocumentStage(state.get("stage", "registered")),
                     page_count=state.get("page_count", 0),
                     chunk_count=state.get("chunk_count", 0),
@@ -131,31 +136,47 @@ async def upload_and_process(
         task_queue=_api.TASK_QUEUE,
     )
 
-    # Save to SQLite for visibility during processing
+    # Save to Postgres for visibility during processing
     actor = _api._actor_from_user(user)
     # See the manifest upload path above: the period starts at the upload.
     validity = document_validity.default_period()
-    db.upsert_document(
-        workflow_id=workflow_id,
-        document_id=document_id,
-        canonical_document_id=canonical_document_id,
-        filename=file.filename,
-        source_filename=file.filename,
-        source_file_fingerprint=file_hash,
-        filepath=minio_path,
-        display_name=display_name,
-        stage="registered",
-        stop_after_ocr=stop_after_ocr,
-        instance=create_instance,
-        uploaded_by_user_id=actor.get("user_id") or None,
-        uploaded_by_username=actor.get("username") or None,
-        uploaded_by_email=actor.get("email") or None,
-        uploaded_by_roles=actor.get("roles_csv") or None,
-        valid_from=validity.start_date,
-        valid_to=validity.end_date,
-    )
+    if replace_doc:
+        document_uuid = replace_doc["id"]
+        db.reset_document_for_reupload(
+            document_uuid,
+            filename=file.filename,
+            filepath=minio_path,
+            fingerprint=file_hash,
+        )
+    else:
+        try:
+            document_uuid = db.upsert_document(
+                workflow_id=workflow_id,
+                document_id=document_id,
+                canonical_document_id=canonical_document_id,
+                filename=file.filename,
+                source_filename=file.filename,
+                source_file_fingerprint=file_hash,
+                filepath=minio_path,
+                stage="registered",
+                stop_after_ocr=stop_after_ocr,
+                group=create_group,
+                uploaded_by_user_id=actor.get("user_id") or None,
+                uploaded_by_username=actor.get("username") or None,
+                uploaded_by_email=actor.get("email") or None,
+                uploaded_by_roles=actor.get("roles_csv") or None,
+                valid_from=validity.start_date,
+                valid_to=validity.end_date,
+                with_workflow=False,
+                kind=doc_kind,
+                code=doc_code,
+                # v2: the contributor's Display Name is documents.name.
+                name=display_name or _api._document_title(file.filename or ""),
+            )
+        except db.DuplicateDocumentCode as exc:
+            raise HTTPException(409, str(exc)) from exc
     job_id = db.create_document_job(
-        workflow_id=workflow_id,
+        workflow_id=document_uuid,
         job_type="ocr_only" if stop_after_ocr else "pipeline",
         temporal_workflow_id=workflow_id,
         status="running",
@@ -169,8 +190,9 @@ async def upload_and_process(
             "stop_after_ocr": stop_after_ocr,
             "uploaded_by": actor,
         },
+        actor=actor,
     )
-    original_artifact_id = db.add_document_artifact(
+    db.add_document_artifact(
         workflow_id=workflow_id,
         job_id=job_id,
         artifact_type="original_upload",
@@ -189,7 +211,10 @@ async def upload_and_process(
         new_value=file.filename,
         metadata={
             "source": "upload_endpoint",
-            "instance": create_instance,
+            "group": create_group,
+            "kind": doc_kind,
+            "code": doc_code,
+            "replaced_existing": bool(replace_doc),
             "size_bytes": file_size,
             "auto_approve": auto_approve,
         },
@@ -199,8 +224,6 @@ async def upload_and_process(
     canonical_input_type = "spreadsheet" if suffix in {".csv", ".xlsx"} else "pdf"
     db.update_document_fields(
         workflow_id,
-        latest_job_id=job_id,
-        original_artifact_id=original_artifact_id,
         source_type=source_type,
         canonical_input_type=canonical_input_type,
         stop_after_ocr=1 if stop_after_ocr else 0,
@@ -214,7 +237,7 @@ async def upload_and_process(
         source_filename=file.filename,
         source_file_fingerprint=file_hash,
         authoritative=False,
-        instance=create_instance,
+        group=create_group,
         stage=DocumentStage.REGISTERED,
         page_count=0,
         chunk_count=0,

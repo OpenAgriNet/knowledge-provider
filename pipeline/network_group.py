@@ -6,9 +6,9 @@ import string
 from pathlib import Path
 from typing import Optional
 
-from .auth.tenancy import portal_instance
+from .auth.tenancy import portal_group
 from .catalog_builder import normalize_document_kind
-from .instances import INSTANCE_NAMES, instance_display_name
+from .group_names import GROUP_NAMES, group_display_name
 from .network_constants import (
     ADVISORY_CATALOG_NAME,
     GROUP_CATALOG_NAME_TEMPLATE,
@@ -117,7 +117,7 @@ def _checked_id_template(shared_instance: str, network_id: Optional[str]) -> str
         instance=shared_instance,
         network_id=sample_network_id,
     )
-    for instance in dict.fromkeys((shared_instance, *INSTANCE_NAMES)):
+    for instance in dict.fromkeys((shared_instance, *GROUP_NAMES)):
         _check_provider_id(
             template.format(instance=instance, network_id=sample_network_id),
             f"{PROVIDER_ID_TEMPLATE_ENV}={template!r} with {NETWORK_ID_ENV}={sample_network_id!r}",
@@ -126,11 +126,11 @@ def _checked_id_template(shared_instance: str, network_id: Optional[str]) -> str
 
 
 def load_provider_naming(network_id: Optional[str] = None) -> ProviderNaming:
-    shared_instance = portal_instance()
+    shared_instance = portal_group()
     network_id = (network_id or os.environ.get(NETWORK_ID_ENV) or "").strip() or None
     return ProviderNaming(
         shared_instance=shared_instance,
-        shared_name=instance_display_name(shared_instance),
+        shared_name=group_display_name(shared_instance),
         network_id=network_id,
         id_template=_checked_id_template(shared_instance, network_id),
         group_catalog_name_template=_checked_template(
@@ -155,7 +155,7 @@ def validate_network_provider_config() -> None:
 def named_group(code: Optional[str]) -> Optional[Group]:
     if code is None:
         return None
-    return Group(code=code, name=instance_display_name(code))
+    return Group(code=code, name=group_display_name(code))
 
 
 def provider_for(naming: ProviderNaming, document_kind: Optional[str], group: Optional[Group]) -> Optional[dict]:

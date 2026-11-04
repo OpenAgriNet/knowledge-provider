@@ -4,13 +4,15 @@
 import argparse
 import hashlib
 import json
-import os
-import sqlite3
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from pipeline import db  # noqa: E402
 
 ALLOWED_EXTENSIONS = {
     ".pdf", ".doc", ".docx", ".ppt", ".pptx",
@@ -31,35 +33,23 @@ def get_workflow_id(filepath: str) -> str:
     return f"doc-{hashlib.md5(filepath.encode()).hexdigest()[:12]}"
 
 
-def already_has_ocr(conn: sqlite3.Connection, filepath: str, fingerprint: str) -> bool:
-    workflow_id = get_workflow_id(filepath)
-    row = conn.execute(
-        """
-        SELECT workflow_id, canonical_document_id, ocr_completed_at, stage
-        FROM documents
-        WHERE workflow_id = ?
-           OR canonical_document_id = ?
-        ORDER BY updated_at DESC, created_at DESC
-        LIMIT 1
-        """,
-        (workflow_id, fingerprint),
-    ).fetchone()
-    if not row:
+def already_has_ocr(filepath: str, fingerprint: str) -> bool:
+    doc = db.get_document(get_workflow_id(filepath)) or db.find_document_by_doc_identifier(fingerprint)
+    if not doc:
         return False
-    if row["ocr_completed_at"]:
+    if doc["ocr_completed_at"]:
         return True
-    if row["stage"] in {"ocr_review", "translation_processing", "translation_review", "chunking",
+    if doc["stage"] in {"ocr_review", "translation_processing", "translation_review", "chunking",
                         "chunk_review", "ready_for_ingestion", "ingesting", "completed"}:
         return True
-    page_row = conn.execute(
-        "SELECT COUNT(*) AS cnt FROM pages WHERE workflow_id = ?",
-        (row["workflow_id"],),
-    ).fetchone()
-    return bool(page_row and page_row["cnt"] > 0)
+    return bool(db.get_saved_page_numbers(doc["workflow_id"]))
 
 
-def post_document(api_base: str, filepath: str) -> dict:
-    query = urllib.parse.urlencode({"stop_after_ocr": "true"})
+def post_document(api_base: str, filepath: str, kind: str, group: str = "") -> dict:
+    params = {"stop_after_ocr": "true", "kind": kind}
+    if group:
+        params["group"] = group
+    query = urllib.parse.urlencode(params)
     url = f"{api_base.rstrip('/')}/documents?{query}"
     payload = json.dumps({"filepath": filepath}).encode("utf-8")
     req = urllib.request.Request(
@@ -76,17 +66,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", help="Directory containing source docs")
     parser.add_argument("--api-base", default="http://localhost:8001", help="Docs-pipeline API base URL")
-    parser.add_argument("--db-path", default=os.environ.get("DOCUMENT_DB_PATH", "/data/documents.db"))
     parser.add_argument("--limit", type=int, default=0, help="Optional max files to submit")
+    parser.add_argument("--kind", choices=["scheme", "advisory"], default="scheme", help="Document kind (catalog)")
+    parser.add_argument("--group", default="", help="Tenant group code (optional; defaults to your group)")
     args = parser.parse_args()
 
     directory = Path(args.directory)
     if not directory.exists():
         print(f"Directory not found: {directory}", file=sys.stderr)
         return 1
-
-    conn = sqlite3.connect(args.db_path)
-    conn.row_factory = sqlite3.Row
 
     files = sorted(
         p for p in directory.iterdir()
@@ -101,12 +89,12 @@ def main() -> int:
 
     for path in files:
         fingerprint = compute_fingerprint(path)
-        if already_has_ocr(conn, str(path), fingerprint):
+        if already_has_ocr(str(path), fingerprint):
             skipped += 1
             print(f"SKIP {path.name}: OCR already present")
             continue
         try:
-            result = post_document(args.api_base, str(path))
+            result = post_document(args.api_base, str(path), args.kind, args.group)
             submitted += 1
             print(f"SUBMIT {path.name}: {result.get('workflow_id')}")
         except urllib.error.HTTPError as exc:

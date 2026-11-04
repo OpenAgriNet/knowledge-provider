@@ -1,7 +1,7 @@
 """Unit tests for DocumentRepository.
 
 Two styles on purpose: the `db_connection` fixture exercises the repository
-against real SQLite (so a drifted db.py signature fails here), and the fake-db
+against real the database (so a drifted db.py signature fails here), and the fake-db
 tests pin the None guards that are the repository's own behaviour.
 """
 
@@ -24,7 +24,7 @@ class FakeDb:
 class TestGetDocumentKind:
     @pytest.mark.unit
     def test_returns_the_stored_kind(self):
-        repo = DocumentRepository(FakeDb(document={"document_kind": "advisory"}))
+        repo = DocumentRepository(FakeDb(document={"kind": "advisory"}))
 
         assert repo.get_document_kind("wf-1") == "advisory"
 
@@ -35,42 +35,64 @@ class TestGetDocumentKind:
         assert repo.get_document_kind("wf-nope") is None
 
     @pytest.mark.unit
-    def test_returns_none_when_the_column_is_null(self):
-        # Old rows predate the column default, so it can be NULL.
-        repo = DocumentRepository(FakeDb(document={"document_kind": None}))
+    def test_returns_none_when_the_kind_is_missing(self):
+        # A catalog type the pipeline has no kind for reads as None.
+        repo = DocumentRepository(FakeDb(document={"kind": None}))
 
         assert repo.get_document_kind("wf-1") is None
 
     @pytest.mark.unit
     def test_does_not_normalise_the_value(self):
-        repo = DocumentRepository(FakeDb(document={"document_kind": "  Advisory "}))
+        repo = DocumentRepository(FakeDb(document={"kind": "  Advisory "}))
 
         assert repo.get_document_kind("wf-1") == "  Advisory "
 
     @pytest.mark.unit
     def test_passes_the_workflow_id_through(self):
-        fake = FakeDb(document={"document_kind": "scheme"})
+        fake = FakeDb(document={"kind": "scheme"})
 
         DocumentRepository(fake).get_document_kind("wf-42")
 
         assert fake.get_document_called_with == "wf-42"
 
 
-class TestAgainstRealSqlite:
+@pytest.fixture
+def scheme_document(db_connection):
+    """A document registered the v2 way (it needs a kind and a code)."""
+    db_connection.upsert_document(
+        workflow_id="repo-wf-1",
+        document_id="repo-doc-1",
+        filename="repo.pdf",
+        filepath="/app/books/repo.pdf",
+        stage="registered",
+        kind="scheme",
+        code="repo-scheme",
+    )
+    return "repo-wf-1"
+
+
+class TestAgainstRealPostgres:
     """Guards against db.py drifting out from under the repository."""
 
     @pytest.mark.unit
     @pytest.mark.db
-    def test_reads_a_kind_written_through_the_db_layer(self, db_connection, sample_document):
-        workflow_id = sample_document["workflow_id"]
-        db_connection.update_document_fields(workflow_id, document_kind="advisory")
-
-        assert DocumentRepository().get_document_kind(workflow_id) == "advisory"
+    def test_reads_the_kind_of_the_documents_catalog(self, db_connection, scheme_document):
+        assert DocumentRepository().get_document_kind(scheme_document) == "scheme"
 
     @pytest.mark.unit
     @pytest.mark.db
-    def test_unclassified_document_reads_as_the_column_default(self, db_connection, sample_document):
-        assert DocumentRepository().get_document_kind(sample_document["workflow_id"]) == "document"
+    def test_reads_a_kind_written_through_the_db_layer(self, db_connection):
+        db_connection.upsert_document(
+            workflow_id="repo-wf-adv",
+            document_id="repo-doc-adv",
+            filename="adv.pdf",
+            filepath="/app/books/adv.pdf",
+            stage="registered",
+            kind="advisory",
+            code="repo-advisory",
+        )
+
+        assert DocumentRepository().get_document_kind("repo-wf-adv") == "advisory"
 
     @pytest.mark.unit
     @pytest.mark.db
@@ -90,7 +112,7 @@ class TestGetDocumentGroup:
         [("mh", "mh"), ("MH", "mh"), ("bv", None), ("default", None), (None, None)],
     )
     def test_group_comes_from_the_documents_instance(self, instance, group):
-        repo = DocumentRepository(FakeDb(document={"instance": instance}))
+        repo = DocumentRepository(FakeDb(document={"group": instance}))
 
         assert repo.get_document_group("wf-1") == group
 
