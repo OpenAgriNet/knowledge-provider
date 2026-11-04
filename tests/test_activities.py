@@ -859,7 +859,7 @@ class TestPublishCatalogToNetworkGroups:
         seen = {}
         self._wire(
             monkeypatch,
-            {"document_kind": "advisory", "instance": instance},
+            {"kind": "advisory", "group": instance},
             self._PUBLISHED,
             seen,
         )
@@ -883,7 +883,7 @@ class TestPublishCatalogToNetworkGroups:
         }
         recorded = self._wire(
             monkeypatch,
-            {"document_kind": "document", "instance": "mh"},
+            {"kind": "document", "group": "mh"},
             skipped,
             {},
         )
@@ -908,7 +908,7 @@ class TestPublishCatalogToNetworkGroups:
                 raise InvalidProviderIdError("Provider id 'advisory.ladakh_ut.provider.oan.dev' is invalid")
 
         monkeypatch.setattr(activities, "DiscoveryPublishService", FakeService)
-        monkeypatch.setattr(db, "get_document", lambda workflow_id: {"kind": "advisory", "instance": "ladakh_ut"})
+        monkeypatch.setattr(db, "get_document", lambda workflow_id: {"kind": "advisory", "group": "ladakh_ut"})
         recorded = {}
         monkeypatch.setattr(db, "add_document_artifact", lambda **kwargs: recorded.update(kwargs))
 

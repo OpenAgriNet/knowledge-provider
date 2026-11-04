@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -1712,7 +1713,6 @@ async def patch_scheme_metadata(
         "network_visible": bool(int(doc["network_visible"])) if doc.get("network_visible") is not None else True,
         "valid_from": doc.get("valid_from"),
         "valid_to": doc.get("valid_to"),
-        "display_name": doc.get("display_name"),
         "catalog_version": result.get("catalog_version"),
         "requires_reindex": result.get("requires_reindex"),
         "pending_reindex": result.get("pending_reindex"),

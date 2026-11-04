@@ -1235,7 +1235,7 @@ async def prepare_for_ingestion(
         group=(doc or {}).get("group"),
         **_validity_fields_from_doc(doc),
         provider_id=_provider_id_from_doc(doc),
-        display_name=(doc or {}).get("display_name"),
+        display_name=(doc or {}).get("name"),
     )
     activity.logger.info(f"Prepared {len(records)} records")
     return records
@@ -1347,7 +1347,7 @@ async def promote_document_to_prod_qdrant(
         **scheme_kwargs,
         **_validity_fields_from_doc(doc),
         provider_id=_provider_id_from_doc(doc),
-        display_name=doc.get("display_name"),
+        display_name=doc.get("name"),
     )
     activity.logger.info(
         "Promoting %s records to PROD Qdrant collection %s (kind=%s)",
@@ -1460,7 +1460,7 @@ async def ingest_document_from_db(
         **_scheme_fields_from_doc(doc),
         **_validity_fields_from_doc(doc),
         provider_id=_provider_id_from_doc(doc),
-        display_name=doc.get("display_name"),
+        display_name=doc.get("name"),
     )
     payload_path = _write_json_temp(records)
     try:

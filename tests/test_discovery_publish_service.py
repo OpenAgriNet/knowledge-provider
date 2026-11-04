@@ -465,7 +465,7 @@ def _publish(monkeypatch, kind, group, sender_id="provider.oan.dev"):
     service = DiscoveryPublishService()
     client = _client_returning(_on_publish_response("any", "ACCEPTED"))
     with patch("pipeline.discovery_publish_service.httpx.Client", return_value=client):
-        result = service.publish(transaction_id="txn", document_kind=kind, group=group)
+        result = service.publish(transaction_id="txn", kind=kind, group=group)
     return client.post.call_args.kwargs["json"], result
 
 
@@ -550,7 +550,7 @@ class TestDiscoveryPublishServiceGroupProvider:
         monkeypatch.setenv("NETWORK_SENDER_ID", "provider.oan.dev")
         service = DiscoveryPublishService()
 
-        result = service.publish(transaction_id="txn-doc", document_kind="document", group="ka")
+        result = service.publish(transaction_id="txn-doc", kind="document", group="ka")
 
         assert result["skipped"] is True
         assert result["envelope"] is None

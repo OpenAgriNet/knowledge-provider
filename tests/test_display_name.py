@@ -127,7 +127,7 @@ class TestIngestPathsCarryTheDisplayName:
         monkeypatch.setattr(activities, "_prepare_records", capture)
         monkeypatch.setattr(db, "get_chunks", lambda *a, **k: [CHUNK])
         monkeypatch.setattr(
-            db, "get_document", lambda workflow_id: {"display_name": "PM Kisan Guidelines", "instance": "mh"}
+            db, "get_document", lambda workflow_id: {"name": "PM Kisan Guidelines", "group": "mh"}
         )
         return seen
 
@@ -174,7 +174,7 @@ class TestUploadEndpoint:
         response = test_client.post(
             "/upload",
             files={"file": ("scan_0042.pdf", sample_pdf_content, "application/pdf")},
-            data={"display_name": "  PM Kisan Guidelines "},
+            data={"name": "  PM Kisan Guidelines "},
         )
 
         assert response.status_code == 200
@@ -200,7 +200,7 @@ class TestUploadEndpoint:
         response = test_client.post(
             "/upload",
             files={"file": ("bad-name.pdf", sample_pdf_content, "application/pdf")},
-            data={"display_name": value},
+            data={"name": value},
         )
 
         assert response.status_code == 400
@@ -223,7 +223,7 @@ class TestMetadataEndpoint:
 
         response = test_client.patch(
             "/documents/display-001/scheme-metadata",
-            json={"display_name": " Cotton Pest Advisory "},
+            json={"name": " Cotton Pest Advisory "},
         )
 
         assert response.status_code == 200
@@ -235,7 +235,7 @@ class TestMetadataEndpoint:
     def test_rejects_a_blank_display_name(self, test_client, db_connection):
         self._document(db_connection, "display-002")
 
-        response = test_client.patch("/documents/display-002/scheme-metadata", json={"display_name": " "})
+        response = test_client.patch("/documents/display-002/scheme-metadata", json={"name": " "})
 
         assert response.status_code == 400
 
@@ -246,7 +246,7 @@ class TestMetadataEndpoint:
 
         response = test_client.patch(
             "/documents/display-003/scheme-metadata",
-            json={"display_name": "Too Late"},
+            json={"name": "Too Late"},
         )
 
         assert response.status_code == 409
@@ -259,7 +259,7 @@ class TestMetadataEndpoint:
 
         response = test_client.patch(
             "/documents/display-004/scheme-metadata",
-            json={"document_kind": "advisory"},
+            json={"kind": "advisory"},
         )
 
         assert response.status_code == 200
@@ -272,7 +272,7 @@ class TestMetadataEndpoint:
 
         response = test_client.patch(
             "/documents/display-005/scheme-metadata",
-            json={"document_kind": "advisory", "display_name": " Cotton Pest Advisory "},
+            json={"kind": "advisory", "name": " Cotton Pest Advisory "},
         )
 
         assert response.status_code == 200
@@ -283,6 +283,6 @@ class TestMetadataEndpoint:
     def test_a_locked_document_reports_the_lock_before_validation(self, test_client, db_connection):
         self._document(db_connection, "display-006", stage="completed")
 
-        response = test_client.patch("/documents/display-006/scheme-metadata", json={"display_name": " "})
+        response = test_client.patch("/documents/display-006/scheme-metadata", json={"name": " "})
 
         assert response.status_code == 409

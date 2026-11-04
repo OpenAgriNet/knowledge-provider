@@ -58,6 +58,9 @@ async def start_document_workflow(
     # Validate file path to prevent path traversal attacks
     filepath = _api.validate_file_path(data.filepath)
     source_filename = _api.get_filename_from_path(filepath)
+    doc_kind, doc_code, replace_doc = _api._resolve_document_identity(
+        user, create_group, kind, code, source_filename
+    )
     source_file_fingerprint = _api._compute_file_fingerprint(filepath)
     canonical_document_id = source_file_fingerprint
 
@@ -284,7 +287,7 @@ async def list_documents(
     - offset: Skip first N documents (default 0)
     """
     stage_filter = stage.value if stage else None
-    include_disabled = x_include_disabled and x_include_disabled.lower() == "true"
+    include_disabled = bool(x_include_disabled and x_include_disabled.lower() == "true")
 
     # Use Postgres only for fast listing - no Temporal queries
     docs = db.list_documents(
@@ -304,7 +307,7 @@ async def get_documents_summary(
     x_include_disabled: Optional[str] = Header(None, alias="X-Include-Disabled")
 ):
     """Return aggregate Postgres counts for dashboard totals and migration planning."""
-    include_disabled = x_include_disabled and x_include_disabled.lower() == "true"
+    include_disabled = bool(x_include_disabled and x_include_disabled.lower() == "true")
     group_scope = _api._group_scope_for_user(user)
     summary = db.get_document_summary_counts(
         include_disabled=include_disabled,
@@ -323,7 +326,7 @@ async def get_document_cohorts(
     x_include_disabled: Optional[str] = Header(None, alias="X-Include-Disabled")
 ):
     """Return machine-friendly cohort counts for queueing and orchestration."""
-    include_disabled = x_include_disabled and x_include_disabled.lower() == "true"
+    include_disabled = bool(x_include_disabled and x_include_disabled.lower() == "true")
     group_scope = _api._group_scope_for_user(user)
     summary = db.get_document_summary_counts(
         include_disabled=include_disabled,
