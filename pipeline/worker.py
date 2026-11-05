@@ -26,9 +26,9 @@ from .activities import (
     run_ocr_and_store,
     update_document_state,
 )
+from .activity_logging import TemporalLogging
 from .network_group import validate_network_provider_config
 from .observability import configure_logs, reset_logs
-from .temporal_logging import TemporalLogging
 from .workflows import (
     ChunkingOnlyWorkflow,
     DocumentPipelineWorkflow,

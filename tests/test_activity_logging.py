@@ -10,15 +10,15 @@ from temporalio.exceptions import ApplicationError
 from temporalio.testing import ActivityEnvironment, WorkflowEnvironment
 from temporalio.worker import Worker
 
-from pipeline import temporal_logging
+from pipeline import activity_logging
 
-LOGGER = "pipeline.temporal_logging"
+LOGGER = "pipeline.activity_logging"
 
 
 def _interceptor(next_result=None, error=None):
     following = MagicMock()
     following.execute_activity = AsyncMock(return_value=next_result, side_effect=error)
-    return temporal_logging.TemporalLogging().intercept_activity(following)
+    return activity_logging.TemporalLogging().intercept_activity(following)
 
 
 def _messages(caplog, name=LOGGER):
@@ -93,7 +93,7 @@ async def _run_workflow(workflow_cls):
             task_queue="logging-test",
             workflows=[workflow_cls],
             activities=[_echo],
-            interceptors=[temporal_logging.TemporalLogging()],
+            interceptors=[activity_logging.TemporalLogging()],
         ):
             return await env.client.execute_workflow(
                 workflow_cls.run, id=f"wf-{uuid.uuid4()}", task_queue="logging-test"
