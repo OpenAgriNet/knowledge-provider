@@ -26,6 +26,7 @@ from .activities import (
     run_ocr_and_store,
     update_document_state,
 )
+from .activity_logging import ActivityLogging
 from .network_group import validate_network_provider_config
 from .observability import configure_logs, reset_logs
 from .workflows import (
@@ -51,6 +52,7 @@ logging.basicConfig(
 logging.getLogger("temporalio").setLevel(logging.INFO)
 
 TASK_QUEUE = "ocr-pipeline"
+INTERCEPTORS = [ActivityLogging()]
 
 
 async def main():
@@ -68,17 +70,16 @@ async def _run():
     translation_provider = os.environ.get("TRANSLATION_PROVIDER", "gemma_vllm").strip().lower()
     if translation_provider in {"gemma_vllm", "gemma4", "gemma"}:
         if not os.environ.get("TRANSLATION_VLLM_BASE_URL", "").strip():
-            print("Error: TRANSLATION_VLLM_BASE_URL not set")
+            logging.error("worker startup: TRANSLATION_VLLM_BASE_URL not set, exiting")
             return
 
     # Initialize SQLite database
-    print("Initializing SQLite database...")
+    logging.info("worker startup: initializing SQLite database")
     db.init_db()
 
     temporal_host = os.environ.get("TEMPORAL_HOST", "localhost:7233")
     max_concurrent_activities = int(os.environ.get("TEMPORAL_MAX_CONCURRENT_ACTIVITIES", "4"))
-    print(f"Connecting to Temporal at {temporal_host}")
-    print(f"Worker activity concurrency: {max_concurrent_activities}")
+    logging.info("worker startup: connecting to Temporal at %s", temporal_host)
 
     client = await Client.connect(temporal_host)
 
@@ -86,6 +87,7 @@ async def _run():
         client,
         task_queue=TASK_QUEUE,
         max_concurrent_activities=max_concurrent_activities,
+        interceptors=INTERCEPTORS,
         workflows=[
             DocumentPipelineWorkflow,
             ReingestionWorkflow,
@@ -112,8 +114,12 @@ async def _run():
         ],
     )
 
-    print(f"Worker started on queue: {TASK_QUEUE}")
-    print("Waiting for workflows...")
+    logging.info(
+        "worker started queue=%s temporal=%s activity_concurrency=%s",
+        TASK_QUEUE,
+        temporal_host,
+        max_concurrent_activities,
+    )
     await worker.run()
 
 

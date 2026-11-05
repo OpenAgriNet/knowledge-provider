@@ -110,6 +110,7 @@ from ..workflows import (
     ReingestionWorkflow,
     TranslationOnlyWorkflow,
 )
+from . import request_logging
 
 LOG_LEVEL = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").strip().upper(), logging.INFO)
 # uvicorn only configures its own "uvicorn"/"uvicorn.access" loggers, so plain
@@ -156,12 +157,12 @@ async def lifespan(app: FastAPI):
         )
 
     # Initialize SQLite database
-    print("Initializing SQLite database...")
+    logging.info("api startup: initializing SQLite database")
     db.init_db()
 
     # Temporal
     temporal_host = os.environ.get("TEMPORAL_HOST", "localhost:7233")
-    print(f"Connecting to Temporal at {temporal_host}")
+    logging.info("api startup: connecting to Temporal at %s", temporal_host)
     temporal_client = await Client.connect(temporal_host)
 
     # MinIO - credentials required via environment variables
@@ -173,7 +174,7 @@ async def lifespan(app: FastAPI):
     if not minio_access_key or not minio_secret_key:
         raise RuntimeError("MINIO_ACCESS_KEY and MINIO_SECRET_KEY environment variables are required")
 
-    print(f"Connecting to MinIO at {minio_endpoint}")
+    logging.info("api startup: connecting to MinIO at %s", minio_endpoint)
     minio_client = Minio(
         minio_endpoint,
         access_key=minio_access_key,
@@ -184,9 +185,17 @@ async def lifespan(app: FastAPI):
     # Ensure bucket exists
     if not minio_client.bucket_exists(MINIO_BUCKET):
         minio_client.make_bucket(MINIO_BUCKET)
-        print(f"Created MinIO bucket: {MINIO_BUCKET}")
+        logging.info("api startup: created MinIO bucket %s", MINIO_BUCKET)
 
+    logging.info(
+        "api started auth=%s temporal=%s minio=%s bucket=%s",
+        "disabled" if auth_cfg.disabled else "enabled",
+        temporal_host,
+        minio_endpoint,
+        MINIO_BUCKET,
+    )
     yield
+    logging.info("api stopping")
     reset_logs()
 
 
@@ -242,6 +251,7 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+request_logging.install(app)
 
 # Rate limiting configuration
 # Default: 100 requests/minute for general endpoints, 10/minute for uploads

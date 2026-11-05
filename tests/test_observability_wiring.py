@@ -34,7 +34,7 @@ def test_worker_resets_logs_when_it_fails(monkeypatch, calls):
     assert calls == ["configure", "reset"]
 
 
-def test_api_lifespan_configures_logs_first_and_resets_them_on_shutdown(monkeypatch, calls):
+def test_api_lifespan_configures_logs_first_and_resets_them_on_shutdown(monkeypatch, calls, caplog):
     monkeypatch.setattr(api, "configure_logs", lambda: calls.append("configure"))
     monkeypatch.setattr(api, "reset_logs", lambda: calls.append("reset"))
     monkeypatch.setattr(api, "validate_network_provider_config", lambda: calls.append("validate"))
@@ -48,6 +48,11 @@ def test_api_lifespan_configures_logs_first_and_resets_them_on_shutdown(monkeypa
         async with api.lifespan(api.app):
             calls.append("serving")
 
-    asyncio.run(run())
+    monkeypatch.setenv("MINIO_ACCESS_KEY", "key")
+    monkeypatch.setenv("MINIO_SECRET_KEY", "secret")
+
+    with caplog.at_level("INFO"):
+        asyncio.run(run())
 
     assert calls == ["configure", "validate", "serving", "reset"]
+    assert any(r.getMessage().startswith("api started auth=disabled") for r in caplog.records)

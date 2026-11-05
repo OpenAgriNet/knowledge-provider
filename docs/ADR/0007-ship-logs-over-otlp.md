@@ -18,7 +18,8 @@ Decision:
 
 Consequences:
 - Logs only. Traces and metrics are not emitted.
-- uvicorn access lines don't propagate to root, so they are not shipped.
-- `print(...)` output, used for some worker and API startup messages, stays on stdout and is not shipped.
+- Every API request logs one line on `pipeline.api.requests`: method, path with query string, status and duration, never a body. Non-2xx responses log at WARNING with the error detail, and unhandled exceptions log at ERROR with the traceback. uvicorn's own access log doesn't reach the root logger, so it is not shipped and is not needed.
+- Every activity logs start, completion or failure with name, workflow id, attempt and duration, through a worker interceptor (`pipeline/activity_logging.py`), so new activities are covered without per-activity code.
+- API and worker startup messages are log lines, not `print`s, so they are shipped.
 - `/search` lines don't carry transaction or message ids yet. That comes with the next story, once callers send them.
 - The shared-environment Helm values (endpoint, ingestion key) are set in the helmcharts repo, not here.
