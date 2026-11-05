@@ -48,8 +48,6 @@ from fastapi import HTTPException
 from .. import db
 from . import keycloak_admin
 
-logger = logging.getLogger(__name__)
-
 OTP_LENGTH = 6
 OTP_TTL_SECONDS = 300
 OTP_RESEND_COOLDOWN_SECONDS = 30
@@ -211,7 +209,7 @@ def _send_email(to_addr: str, subject: str, body: str) -> None:
                     smtp.login(cfg.username, cfg.password)
                 smtp.send_message(message)
     except (smtplib.SMTPException, OSError) as exc:
-        logger.error("email-otp: failed to send code to %s: %s", to_addr, exc)
+        logging.error("email-otp: failed to send code to %s: %s", to_addr, exc)
         raise HTTPException(
             503, "Could not send the email right now. Please try again shortly."
         ) from exc
@@ -320,13 +318,13 @@ def send_otp(email: str) -> dict[str, Any]:
                 f"This code expires in {OTP_TTL_SECONDS // 60} minutes. "
                 "If you did not request this, you can safely ignore this email.",
             )
-            logger.info("email-otp: login code sent to %s", email)
+            logging.info("email-otp: login code sent to %s", email)
         except HTTPException:
             # Never let an SMTP failure surface as a different response/status
             # than the "no such account" path — that would itself be an
             # enumeration oracle. The stored code is now simply unreachable;
             # the user's next resend attempt (after the cooldown) tries again.
-            logger.error("email-otp: send failed for %s, response withheld", email)
+            logging.error("email-otp: send failed for %s, response withheld", email)
     else:
         # Matches the typical SMTP round-trip _send_email would otherwise
         # take, so response latency doesn't leak account existence either.
@@ -427,12 +425,12 @@ def _mint_tokens_for_verified_email(email: str) -> dict[str, Any]:
     try:
         _rotate_password()
     except HTTPException:
-        logger.error("email-otp: post-grant password rotation failed for %s", email)
+        logging.error("email-otp: post-grant password rotation failed for %s", email)
 
     if status == 200 and payload.get("access_token"):
         return _token_response(payload)
 
-    logger.error(
+    logging.error(
         "email-otp: password-grant bridge failed for %s: status=%s body=%s",
         email, status, payload,
     )

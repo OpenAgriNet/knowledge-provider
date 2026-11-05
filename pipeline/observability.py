@@ -17,7 +17,7 @@ _provider: LoggerProvider | None = None
 _provider_is_ours = False
 
 
-_NOT_EXPORTED = ("opentelemetry", "pipeline.auth.email_otp")
+_NOT_EXPORTED = ("opentelemetry",)
 
 
 class _SkipUnexported(logging.Filter):

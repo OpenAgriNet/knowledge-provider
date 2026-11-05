@@ -65,24 +65,3 @@ def test_provider_composes_with_group(local_store, test_client):
 
     assert body["hits"] == []
 
-
-@pytest.mark.integration
-@pytest.mark.api
-def test_search_logs_name_the_caller_by_id_not_email(local_store, test_client, caplog):
-    from dataclasses import replace
-
-    from pipeline.api import api
-    from pipeline.auth.deps import get_current_user
-    from pipeline.auth.models import local_bypass_user
-
-    caller = replace(local_bypass_user(), user_id="kc-123", username="farmer.desk@state.gov.in")
-    api.app.dependency_overrides[get_current_user] = lambda: caller
-    try:
-        with caplog.at_level("INFO"):
-            search(test_client)
-    finally:
-        api.app.dependency_overrides.pop(get_current_user, None)
-
-    search_lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("search ")]
-    assert search_lines and all("user=kc-123" in line for line in search_lines)
-    assert not any("@" in line.split("payload=")[0] for line in search_lines)

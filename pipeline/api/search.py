@@ -196,7 +196,7 @@ async def run_search(payload: dict, user: RequireSearch):
 
     logging.info(
         "search payload user=%s payload=%s",
-        user.user_id,
+        user.username or user.email or user.user_id,
         json.dumps(payload, ensure_ascii=False, default=str),
     )
 
@@ -208,7 +208,7 @@ async def run_search(payload: dict, user: RequireSearch):
 
     logging.info(
         "search request user=%s index=%s query=%r top_k=%s",
-        user.user_id,
+        user.username or user.email or user.user_id,
         index_name,
         query,
         payload.get("top_k"),
@@ -291,7 +291,7 @@ async def run_search(payload: dict, user: RequireSearch):
 
     logging.info(
         "search response user=%s index=%s query=%r candidate_count=%s final_count=%s",
-        user.user_id,
+        user.username or user.email or user.user_id,
         index_name,
         query,
         len(hits),
