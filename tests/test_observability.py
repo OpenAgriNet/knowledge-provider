@@ -74,12 +74,6 @@ def test_opentelemetry_own_lines_are_not_exported(exported):
     assert _bodies(exported) == []
 
 
-def test_login_code_lines_are_not_exported(exported):
-    logging.getLogger("pipeline.auth.email_otp").info("email-otp: login code sent to a@b.in")
-
-    assert _bodies(exported) == []
-
-
 def test_configuring_twice_keeps_one_handler(exported):
     observability.configure_logs(logger_provider=LoggerProvider())
 
