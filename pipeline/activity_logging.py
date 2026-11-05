@@ -18,7 +18,7 @@ from temporalio.worker import (
 logger = logging.getLogger(__name__)
 
 
-class TemporalLogging(Interceptor):
+class ActivityLogging(Interceptor):
     def intercept_activity(self, next: ActivityInboundInterceptor) -> ActivityInboundInterceptor:
         return _LogActivity(next)
 

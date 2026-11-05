@@ -26,7 +26,7 @@ from .activities import (
     run_ocr_and_store,
     update_document_state,
 )
-from .activity_logging import TemporalLogging
+from .activity_logging import ActivityLogging
 from .network_group import validate_network_provider_config
 from .observability import configure_logs, reset_logs
 from .workflows import (
@@ -52,7 +52,7 @@ logging.basicConfig(
 logging.getLogger("temporalio").setLevel(logging.INFO)
 
 TASK_QUEUE = "ocr-pipeline"
-INTERCEPTORS = [TemporalLogging()]
+INTERCEPTORS = [ActivityLogging()]
 
 
 async def main():
