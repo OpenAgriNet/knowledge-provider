@@ -74,7 +74,8 @@ Off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set. When it is set, API and worker 
 |----------|---------|---------|
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | *(unset — off)* | Collector base URL. Local: `http://otel-collector:4318` with `docker compose --profile observability`. Shared env: the ClickStack collector, e.g. `http://clickstack-otel-collector.observability.svc.cluster.local:4318` |
 | `OTEL_EXPORTER_OTLP_HEADERS` | *(unset)* | Headers sent with each export, e.g. `authorization=<HyperDX ingestion API key>`; ClickStack rejects unauthenticated telemetry |
-| `OTEL_SERVICE_NAME` | set by compose | `knowledge-provider-api` / `knowledge-provider-worker`; separates our lines from other services in the shared store |
+| `OTEL_SERVICE_NAME` | `knowledge-provider` | Labels our lines in the shared store. Compose sets `knowledge-provider-api` / `knowledge-provider-worker`; set the same per process in other deployments |
+| `OTEL_EXPORTER_OTLP_TIMEOUT` | `5` (seconds) | How long one export may take before it is dropped; kept under Docker's 10s stop grace so shutdown with the collector down stays clean |
 
 ### API HTTP surface
 

@@ -258,7 +258,6 @@ services:
       HF_HOME: ${HF_HOME:-/opt/hf-cache}
       HF_HUB_CACHE: ${HF_HOME:-/opt/hf-cache}
       OTEL_SERVICE_NAME: knowledge-provider-api
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     ports:
       - "127.0.0.1:${API_HOST_PORT:-8011}:8001"
     depends_on:
@@ -301,7 +300,6 @@ services:
       HF_HOME: ${HF_HOME:-/opt/hf-cache}
       HF_HUB_CACHE: ${HF_HOME:-/opt/hf-cache}
       OTEL_SERVICE_NAME: knowledge-provider-worker
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     depends_on:
       temporal:
         condition: service_healthy
