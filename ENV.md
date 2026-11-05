@@ -66,6 +66,16 @@ Root `.env` (see `.env.example`). Required by FastAPI (`pipeline/api/`), Tempora
 | `MINIO_BUCKET` | `documents` | Object storage bucket |
 | `DOCUMENT_DB_PATH` | `/data/documents.db` | SQLite path (use `./data/documents.db` for local non-Docker) |
 
+### Logs to ClickHouse (OTLP)
+
+Off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set. When it is set, API and worker log lines at `INFO` and above (root logger, including `/search` query text) also go over OTLP/HTTP to a collector, which writes them to ClickHouse for HyperDX. See `docs/ADR/0007-ship-logs-over-otlp.md`.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | *(unset — off)* | Collector base URL. Local: `http://otel-collector:4318` with `docker compose --profile observability`. Shared env: the ClickStack collector, e.g. `http://clickstack-otel-collector.observability.svc.cluster.local:4318` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | *(unset)* | Headers sent with each export, e.g. `authorization=<HyperDX ingestion API key>`; ClickStack rejects unauthenticated telemetry |
+| `OTEL_SERVICE_NAME` | set by compose | `knowledge-provider-api` / `knowledge-provider-worker`; separates our lines from other services in the shared store |
+
 ### API HTTP surface
 
 | Variable | Default | Purpose |
