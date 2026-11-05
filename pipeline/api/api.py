@@ -134,9 +134,21 @@ MINIO_BUCKET = "documents"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize Temporal and MinIO clients on startup."""
+    configure_logs()
+    try:
+        await _start_services()
+    except Exception:
+        logging.exception("api startup failed")
+        reset_logs()
+        raise
+    yield
+    logging.info("api stopping")
+    reset_logs()
+
+
+async def _start_services():
     global temporal_client, minio_client, MINIO_BUCKET
 
-    configure_logs()
     validate_network_provider_config()
 
     auth_cfg = load_auth_config()
@@ -194,9 +206,6 @@ async def lifespan(app: FastAPI):
         minio_endpoint,
         MINIO_BUCKET,
     )
-    yield
-    logging.info("api stopping")
-    reset_logs()
 
 
 app = FastAPI(
@@ -263,7 +272,7 @@ RATE_LIMIT_OTP = os.environ.get("RATE_LIMIT_OTP", "10/minute")
 
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_exception_handler(RateLimitExceeded, request_logging.recording(_rate_limit_exceeded_handler))
 
 # Routers split out of this module, one per resource. Register them here.
 from .documents import router as documents_router  # noqa: E402
@@ -569,6 +578,7 @@ def delete_single_chunk_from_index(document_id: str, chunk_num: int, index_name:
         resolved_index = index_name or get_default_index_name()
         return store.delete_chunk(resolved_index, document_id, chunk_num)
     except Exception as e:
+        logging.exception("vector chunk delete failed doc_id=%s chunk=%s", document_id, chunk_num)
         return {"deleted": False, "error": str(e)}
 
 
@@ -584,6 +594,7 @@ def delete_chunks_from_index(document_id: str, index_name: str = "documents-inde
             result["doc_id"] = document_id
         return result
     except Exception as e:
+        logging.exception("vector document delete failed doc_id=%s", document_id)
         return {"deleted": 0, "doc_id": document_id, "error": str(e)}
 
 
@@ -1019,6 +1030,7 @@ def _delete_document_points_from_prod(doc: dict) -> dict:
         store = QdrantVectorStore(client=client)
         return store.delete_by_doc_id(collection, doc_id)
     except Exception as exc:
+        logging.exception("prod vector delete failed doc_id=%s collection=%s", doc_id, collection)
         return {"deleted": False, "error": str(exc), "collection": collection}
 
 
@@ -1048,6 +1060,7 @@ def _delete_scheme_points_from_prod(doc: dict) -> dict:
         store = QdrantVectorStore(client=client)
         return store.delete_by_doc_id(collection, doc_id)
     except Exception as exc:
+        logging.exception("prod vector delete failed doc_id=%s collection=%s", doc_id, collection)
         return {"deleted": False, "error": str(exc), "collection": collection}
 
 

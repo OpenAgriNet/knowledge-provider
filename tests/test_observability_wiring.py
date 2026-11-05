@@ -56,3 +56,56 @@ def test_api_lifespan_configures_logs_first_and_resets_them_on_shutdown(monkeypa
 
     assert calls == ["configure", "validate", "serving", "reset"]
     assert any(r.getMessage().startswith("api started auth=disabled") for r in caplog.records)
+
+
+def test_worker_crash_is_logged_with_its_traceback(monkeypatch, calls, caplog):
+    monkeypatch.setattr(worker, "configure_logs", lambda: None)
+    monkeypatch.setattr(worker, "reset_logs", lambda: calls.append("reset"))
+    monkeypatch.setattr(worker, "_run", AsyncMock(side_effect=ConnectionError("temporal down")))
+
+    with caplog.at_level("INFO"), pytest.raises(ConnectionError):
+        asyncio.run(worker.main())
+
+    [crash] = [r for r in caplog.records if r.getMessage() == "worker crashed"]
+    assert crash.levelname == "ERROR" and isinstance(crash.exc_info[1], ConnectionError)
+    assert calls == ["reset"]
+
+
+def test_worker_logs_startup_and_hands_its_interceptors_to_temporal(monkeypatch, caplog):
+    built = {}
+
+    class FakeWorker:
+        def __init__(self, *args, **kwargs):
+            built.update(kwargs)
+
+        async def run(self):
+            return None
+
+    monkeypatch.setenv("TRANSLATION_PROVIDER", "none")
+    monkeypatch.setattr(worker, "validate_network_provider_config", lambda: None)
+    monkeypatch.setattr(worker.db, "init_db", lambda: None)
+    monkeypatch.setattr(worker.Client, "connect", AsyncMock(return_value=MagicMock()))
+    monkeypatch.setattr(worker, "Worker", FakeWorker)
+
+    with caplog.at_level("INFO"):
+        asyncio.run(worker._run())
+
+    assert built["interceptors"] is worker.INTERCEPTORS
+    assert any(r.getMessage().startswith("worker started queue=ocr-pipeline") for r in caplog.records)
+
+
+def test_api_startup_failure_is_logged_and_flushed(monkeypatch, calls, caplog):
+    monkeypatch.setattr(api, "configure_logs", lambda: None)
+    monkeypatch.setattr(api, "reset_logs", lambda: calls.append("reset"))
+    monkeypatch.setattr(api, "_start_services", AsyncMock(side_effect=RuntimeError("MINIO keys missing")))
+
+    async def run():
+        async with api.lifespan(api.app):
+            calls.append("serving")
+
+    with caplog.at_level("INFO"), pytest.raises(RuntimeError):
+        asyncio.run(run())
+
+    [failed] = [r for r in caplog.records if r.getMessage() == "api startup failed"]
+    assert failed.levelname == "ERROR" and isinstance(failed.exc_info[1], RuntimeError)
+    assert calls == ["reset"]

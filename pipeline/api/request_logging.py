@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import inspect
 import logging
 import time
+from http import HTTPStatus
+from typing import Any, Callable
 
 from fastapi import FastAPI, Request
 from fastapi.exception_handlers import (
@@ -10,66 +13,101 @@ from fastapi.exception_handlers import (
 )
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 logger = logging.getLogger("pipeline.api.requests")
 
+QUIET_PATHS = frozenset({"/health"})
+
 
 def install(app: FastAPI) -> None:
-    app.add_exception_handler(StarletteHTTPException, _record_http_error)
-    app.add_exception_handler(RequestValidationError, _record_validation_error)
-    app.middleware("http")(_log_request)
+    app.add_exception_handler(StarletteHTTPException, recording(http_exception_handler))
+    app.add_exception_handler(RequestValidationError, recording(request_validation_exception_handler))
+    app.add_middleware(RequestLogging)
 
 
-async def _record_http_error(request: Request, exc: StarletteHTTPException):
-    request.state.error = exc.detail
-    return await http_exception_handler(request, exc)
+def recording(handler: Callable) -> Callable:
+    async def record_then_handle(request: Request, exc: Exception):
+        request.state.error = _detail(exc)
+        request.state.error_cause = exc.__cause__
+        result = handler(request, exc)
+        return await result if inspect.isawaitable(result) else result
+
+    return record_then_handle
 
 
-async def _record_validation_error(request: Request, exc: RequestValidationError):
-    request.state.error = [
-        {"type": e.get("type"), "loc": e.get("loc"), "msg": e.get("msg")} for e in exc.errors()
-    ]
-    return await request_validation_exception_handler(request, exc)
+def _detail(exc: Exception) -> Any:
+    if isinstance(exc, RequestValidationError):
+        return [{"type": e.get("type"), "loc": e.get("loc"), "msg": e.get("msg")} for e in exc.errors()]
+    return getattr(exc, "detail", None)
 
 
-def _uri(request: Request) -> str:
-    query = request.url.query
-    return f"{request.url.path}?{query}" if query else request.url.path
+class RequestLogging:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        started = time.perf_counter()
+        status: dict[str, int] = {}
+
+        async def send_and_watch(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                status["code"] = message["status"]
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_and_watch)
+        except Exception as exc:
+            logger.error(
+                "request method=%s uri=%s status=%s duration_ms=%d error=%r",
+                scope["method"],
+                _uri(scope),
+                status.get("code", 500),
+                _elapsed_ms(started),
+                exc,
+                exc_info=True,
+            )
+            raise
+
+        _log_response(scope, status.get("code", 500), _elapsed_ms(started))
 
 
-async def _log_request(request: Request, call_next):
-    started = time.perf_counter()
+def _log_response(scope: Scope, code: int, duration_ms: int) -> None:
+    method, uri = scope["method"], _uri(scope)
+    if code < 400:
+        level = logging.DEBUG if scope["path"] in QUIET_PATHS else logging.INFO
+        logger.log(level, "request method=%s uri=%s status=%s duration_ms=%d", method, uri, code, duration_ms)
+        return
+
+    state = scope.get("state") or {}
+    error = state.get("error") or _reason(code)
+    cause = state.get("error_cause")
+    logger.log(
+        logging.ERROR if code >= 500 else logging.WARNING,
+        "request method=%s uri=%s status=%s duration_ms=%d error=%r",
+        method,
+        uri,
+        code,
+        duration_ms,
+        error,
+        exc_info=(type(cause), cause, cause.__traceback__) if code >= 500 and cause else None,
+    )
+
+
+def _uri(scope: Scope) -> str:
+    query = scope.get("query_string", b"").decode("latin-1")
+    return f"{scope['path']}?{query}" if query else scope["path"]
+
+
+def _reason(code: int) -> str:
     try:
-        response = await call_next(request)
-    except Exception as exc:
-        logger.exception(
-            "request method=%s uri=%s status=500 duration_ms=%d error=%r",
-            request.method,
-            _uri(request),
-            _elapsed_ms(started),
-            exc,
-        )
-        raise
-
-    status = response.status_code
-    if status < 400:
-        logger.info(
-            "request method=%s uri=%s status=%s duration_ms=%d",
-            request.method,
-            _uri(request),
-            status,
-            _elapsed_ms(started),
-        )
-    else:
-        logger.warning(
-            "request method=%s uri=%s status=%s duration_ms=%d error=%r",
-            request.method,
-            _uri(request),
-            status,
-            _elapsed_ms(started),
-            getattr(request.state, "error", None),
-        )
-    return response
+        return HTTPStatus(code).phrase
+    except ValueError:
+        return str(code)
 
 
 def _elapsed_ms(started: float) -> int:
