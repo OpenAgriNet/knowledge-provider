@@ -14,6 +14,8 @@
 # Profiles:
 #   (default) — all core services
 #   ops       — also starts temporal-ui and keycloak-ui (already included in keycloak)
+#   observability — also starts otel-collector and clickhouse; set
+#                   OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318 in .env
 #
 # Host ports (all bound to 127.0.0.1 for nginx reverse-proxy; override in .env):
 #   API          127.0.0.1:${API_HOST_PORT:-8011}:8001
@@ -23,6 +25,7 @@
 #   MinIO API    127.0.0.1:9000:9000
 #   MinIO UI     127.0.0.1:9001:9001
 #   Temporal UI  127.0.0.1:${TEMPORAL_UI_PORT:-8090}:8080  (profile: ops)
+#   ClickHouse   127.0.0.1:${CLICKHOUSE_HTTP_PORT:-18123}:8123  (profile: observability)
 
 services:
 
@@ -254,6 +257,8 @@ services:
       # HF cache path propagated into the container
       HF_HOME: ${HF_HOME:-/opt/hf-cache}
       HF_HUB_CACHE: ${HF_HOME:-/opt/hf-cache}
+      OTEL_SERVICE_NAME: knowledge-provider-api
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     ports:
       - "127.0.0.1:${API_HOST_PORT:-8011}:8001"
     depends_on:
@@ -295,6 +300,8 @@ services:
       ALLOWED_FILE_PATHS: /app/books,/data/documents
       HF_HOME: ${HF_HOME:-/opt/hf-cache}
       HF_HUB_CACHE: ${HF_HOME:-/opt/hf-cache}
+      OTEL_SERVICE_NAME: knowledge-provider-worker
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     depends_on:
       temporal:
         condition: service_healthy
@@ -343,6 +350,39 @@ services:
       - api
     restart: unless-stopped
 
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:${OTEL_COLLECTOR_TAG:-0.161.0}
+    profiles: [observability]
+    command:
+      - --config=/etc/otel/collector.yaml
+    volumes:
+      - ./otel/collector.local.yaml:/etc/otel/collector.yaml:ro
+    environment:
+      CLICKHOUSE_USER: knowledge
+      CLICKHOUSE_PASSWORD: knowledge
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    restart: unless-stopped
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:${CLICKHOUSE_TAG:-25.12}
+    profiles: [observability]
+    environment:
+      CLICKHOUSE_DB: otel
+      CLICKHOUSE_USER: knowledge
+      CLICKHOUSE_PASSWORD: knowledge
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    ports:
+      - "127.0.0.1:${CLICKHOUSE_HTTP_PORT:-18123}:8123"
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
 volumes:
   temporal-db-data:
   qdrant-data:
@@ -351,3 +391,4 @@ volumes:
   minio-data:
   sqlite-data:
   documents-data:
+  clickhouse-data:

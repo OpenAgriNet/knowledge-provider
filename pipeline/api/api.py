@@ -101,6 +101,7 @@ from ..models import (
 )
 from ..network_constants import RESULT_REJECTED
 from ..network_group import validate_network_provider_config
+from ..observability import configure_logs, reset_logs
 from ..workflows import (
     ChunkingOnlyWorkflow,
     DocumentPipelineWorkflow,
@@ -134,6 +135,7 @@ async def lifespan(app: FastAPI):
     """Initialize Temporal and MinIO clients on startup."""
     global temporal_client, minio_client, MINIO_BUCKET
 
+    configure_logs()
     validate_network_provider_config()
 
     auth_cfg = load_auth_config()
@@ -185,7 +187,7 @@ async def lifespan(app: FastAPI):
         print(f"Created MinIO bucket: {MINIO_BUCKET}")
 
     yield
-    # Cleanup if needed
+    reset_logs()
 
 
 app = FastAPI(
