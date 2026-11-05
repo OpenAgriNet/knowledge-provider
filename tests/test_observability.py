@@ -74,6 +74,12 @@ def test_opentelemetry_own_lines_are_not_exported(exported):
     assert _bodies(exported) == []
 
 
+def test_login_code_lines_are_not_exported(exported):
+    logging.getLogger("pipeline.auth.email_otp").info("email-otp: login code sent to a@b.in")
+
+    assert _bodies(exported) == []
+
+
 def test_configuring_twice_keeps_one_handler(exported):
     observability.configure_logs(logger_provider=LoggerProvider())
 
@@ -84,3 +90,63 @@ def test_reset_removes_the_handler(exported):
     observability.reset_logs()
 
     assert _our_handlers() == []
+
+
+@pytest.fixture
+def built_provider(monkeypatch):
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
+    yield lambda: observability._provider
+    observability.reset_logs()
+
+
+def test_lines_are_labelled_knowledge_provider_without_a_service_name(monkeypatch, built_provider):
+    monkeypatch.delenv("OTEL_SERVICE_NAME", raising=False)
+
+    observability.configure_logs()
+
+    assert built_provider().resource.attributes["service.name"] == "knowledge-provider"
+
+
+def test_service_name_from_env_wins(monkeypatch, built_provider):
+    monkeypatch.setenv("OTEL_SERVICE_NAME", "knowledge-provider-worker")
+
+    observability.configure_logs()
+
+    assert built_provider().resource.attributes["service.name"] == "knowledge-provider-worker"
+
+
+def test_export_gives_up_within_five_seconds_by_default(monkeypatch):
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_TIMEOUT", raising=False)
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_LOGS_TIMEOUT", raising=False)
+
+    assert observability._export_timeout() == 5.0
+
+
+def test_export_timeout_from_env_is_left_to_the_sdk(monkeypatch):
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_TIMEOUT", "2")
+
+    assert observability._export_timeout() is None
+
+
+def test_reset_leaves_an_injected_provider_running(monkeypatch):
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
+    exporter = InMemoryLogRecordExporter()
+    provider = LoggerProvider()
+    provider.add_log_record_processor(SimpleLogRecordProcessor(exporter))
+    observability.configure_logs(logger_provider=provider)
+
+    observability.reset_logs()
+    provider.get_logger("caller").emit(body="still mine")
+
+    assert [item.log_record.body for item in exporter.get_finished_logs()] == ["still mine"]
+
+
+def test_reset_shuts_down_a_provider_it_built(built_provider):
+    observability.configure_logs()
+    provider = built_provider()
+    shutdowns = []
+    provider.shutdown = lambda: shutdowns.append(True)
+
+    observability.reset_logs()
+
+    assert shutdowns == [True]

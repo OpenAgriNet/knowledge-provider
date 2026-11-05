@@ -58,6 +58,9 @@ from ..auth.email_otp import (
     send_otp,
     verify_otp,
 )
+from ..auth.email_otp import (
+    logger as email_otp_logger,
+)
 from ..auth.keycloak_admin import (
     list_access_options,
     list_realm_users,
@@ -611,7 +614,7 @@ async def auth_otp_request(request: Request, body: OtpRequestBody):
     """
     email = normalize_email(body.email)
     result = await asyncio.to_thread(send_otp, email)
-    logging.info("email-otp: login code requested for %s", email)
+    email_otp_logger.info("email-otp: login code requested for %s", email)
     return result
 
 
@@ -625,7 +628,7 @@ async def auth_otp_verify(request: Request, body: OtpVerifyBody):
     """
     email = normalize_email(body.email)
     tokens = await asyncio.to_thread(verify_otp, email, body.code)
-    logging.info("email-otp: login succeeded for %s", email)
+    email_otp_logger.info("email-otp: login succeeded for %s", email)
     return tokens
 
 
