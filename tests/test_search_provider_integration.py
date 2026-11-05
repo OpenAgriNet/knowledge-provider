@@ -64,3 +64,4 @@ def test_provider_composes_with_group(local_store, test_client):
     body = search(test_client, provider_id="bv.provider.oan.dev", group="mh")
 
     assert body["hits"] == []
+

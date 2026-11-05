@@ -101,6 +101,7 @@ from ..models import (
 )
 from ..network_constants import RESULT_REJECTED
 from ..network_group import validate_network_provider_config
+from ..observability import configure_logs, reset_logs
 from ..workflows import (
     ChunkingOnlyWorkflow,
     DocumentPipelineWorkflow,
@@ -109,6 +110,7 @@ from ..workflows import (
     ReingestionWorkflow,
     TranslationOnlyWorkflow,
 )
+from . import request_logging
 
 LOG_LEVEL = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").strip().upper(), logging.INFO)
 # uvicorn only configures its own "uvicorn"/"uvicorn.access" loggers, so plain
@@ -132,6 +134,19 @@ MINIO_BUCKET = "documents"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize Temporal and MinIO clients on startup."""
+    configure_logs()
+    try:
+        await _start_services()
+    except Exception:
+        logging.exception("api startup failed")
+        reset_logs()
+        raise
+    yield
+    logging.info("api stopping")
+    reset_logs()
+
+
+async def _start_services():
     global temporal_client, minio_client, MINIO_BUCKET
 
     validate_network_provider_config()
@@ -154,12 +169,12 @@ async def lifespan(app: FastAPI):
         )
 
     # Initialize SQLite database
-    print("Initializing SQLite database...")
+    logging.info("api startup: initializing SQLite database")
     db.init_db()
 
     # Temporal
     temporal_host = os.environ.get("TEMPORAL_HOST", "localhost:7233")
-    print(f"Connecting to Temporal at {temporal_host}")
+    logging.info("api startup: connecting to Temporal at %s", temporal_host)
     temporal_client = await Client.connect(temporal_host)
 
     # MinIO - credentials required via environment variables
@@ -171,7 +186,7 @@ async def lifespan(app: FastAPI):
     if not minio_access_key or not minio_secret_key:
         raise RuntimeError("MINIO_ACCESS_KEY and MINIO_SECRET_KEY environment variables are required")
 
-    print(f"Connecting to MinIO at {minio_endpoint}")
+    logging.info("api startup: connecting to MinIO at %s", minio_endpoint)
     minio_client = Minio(
         minio_endpoint,
         access_key=minio_access_key,
@@ -182,10 +197,15 @@ async def lifespan(app: FastAPI):
     # Ensure bucket exists
     if not minio_client.bucket_exists(MINIO_BUCKET):
         minio_client.make_bucket(MINIO_BUCKET)
-        print(f"Created MinIO bucket: {MINIO_BUCKET}")
+        logging.info("api startup: created MinIO bucket %s", MINIO_BUCKET)
 
-    yield
-    # Cleanup if needed
+    logging.info(
+        "api started auth=%s temporal=%s minio=%s bucket=%s",
+        "disabled" if auth_cfg.disabled else "enabled",
+        temporal_host,
+        minio_endpoint,
+        MINIO_BUCKET,
+    )
 
 
 app = FastAPI(
@@ -240,6 +260,7 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+request_logging.install(app)
 
 # Rate limiting configuration
 # Default: 100 requests/minute for general endpoints, 10/minute for uploads
@@ -251,7 +272,7 @@ RATE_LIMIT_OTP = os.environ.get("RATE_LIMIT_OTP", "10/minute")
 
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_exception_handler(RateLimitExceeded, request_logging.recording(_rate_limit_exceeded_handler))
 
 # Routers split out of this module, one per resource. Register them here.
 from .documents import router as documents_router  # noqa: E402
@@ -557,6 +578,7 @@ def delete_single_chunk_from_index(document_id: str, chunk_num: int, index_name:
         resolved_index = index_name or get_default_index_name()
         return store.delete_chunk(resolved_index, document_id, chunk_num)
     except Exception as e:
+        logging.exception("vector chunk delete failed doc_id=%s chunk=%s", document_id, chunk_num)
         return {"deleted": False, "error": str(e)}
 
 
@@ -572,6 +594,7 @@ def delete_chunks_from_index(document_id: str, index_name: str = "documents-inde
             result["doc_id"] = document_id
         return result
     except Exception as e:
+        logging.exception("vector document delete failed doc_id=%s", document_id)
         return {"deleted": 0, "doc_id": document_id, "error": str(e)}
 
 
@@ -1007,6 +1030,7 @@ def _delete_document_points_from_prod(doc: dict) -> dict:
         store = QdrantVectorStore(client=client)
         return store.delete_by_doc_id(collection, doc_id)
     except Exception as exc:
+        logging.exception("prod vector delete failed doc_id=%s collection=%s", doc_id, collection)
         return {"deleted": False, "error": str(exc), "collection": collection}
 
 
@@ -1036,6 +1060,7 @@ def _delete_scheme_points_from_prod(doc: dict) -> dict:
         store = QdrantVectorStore(client=client)
         return store.delete_by_doc_id(collection, doc_id)
     except Exception as exc:
+        logging.exception("prod vector delete failed doc_id=%s collection=%s", doc_id, collection)
         return {"deleted": False, "error": str(exc), "collection": collection}
 
 
