@@ -111,7 +111,7 @@ OCR is a **separate process** (not in `docker-compose`). The worker calls
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `OCR_PROVIDER` | `chandra` | OCR provider (`chandra`, `mock`, `pypdf`) |
+| `OCR_PROVIDER` | `chandra` | OCR provider (`chandra`, `mistral`, `paddleocr`, `mock`, `pypdf`) |
 | `OCR_MODEL` | `chandra` | Model name |
 | `CHANDRA_VLLM_BASE_URL` | `''` | Base URL; local HF default `http://localhost:8010/v1` |
 | `CHANDRA_OCR_API_URL` | `''` | Alternate full OCR API URL (overrides base path build) |
@@ -123,6 +123,29 @@ OCR is a **separate process** (not in `docker-compose`). The worker calls
 | `OCR_MAX_SPLIT_PAGES` | `40` | Max split pages |
 | `OCR_SEGMENT_PAGES` | `20` | Segment size for long docs |
 | `CHANDRA_HF_HOME` / `HF_HOME` | — | Hugging Face cache (HF server / scripts) |
+
+**Baidu PaddleOCR (local CPU lane):**
+
+`OCR_PROVIDER=paddleocr` runs PP-OCR in-process — no GPU, no remote inference server.
+The checkpoint is downloaded on first use into `PADDLE_PDX_CACHE_HOME` (set by
+`docker-compose.yml` to a directory on the mounted `HF_HOME` volume, so it survives a
+rebuild). Available on the **linux/amd64** image only: `paddlepaddle` publishes no
+aarch64 wheels.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `PADDLEOCR_MODEL` | `medium` | PP-OCRv6 tier (`medium` \| `small` \| `tiny`), or an explicit `"<det>,<rec>"` model-name pair |
+| `PADDLEOCR_OCR_VERSION` | `PP-OCRv6` | `PP-OCRv6` \| `PP-OCRv5` \| `PP-OCRv4` |
+| `PADDLEOCR_LANG` | `''` | Checkpoint language hint (`en`, `ch`, `dev`, …); empty = the checkpoint default |
+| `PADDLEOCR_DET_MODEL` | `''` | Explicit detector model name (wins over `PADDLEOCR_MODEL`) |
+| `PADDLEOCR_REC_MODEL` | `''` | Explicit recogniser model name (wins over `PADDLEOCR_MODEL`) |
+| `PADDLEOCR_DEVICE` | `cpu` | `cpu` or `gpu` / `gpu:0` |
+| `PADDLEOCR_MIN_SCORE` | `0` | Drop recognised lines below this confidence |
+| `PADDLEOCR_IMAGE_DPI` | `192` | Page render DPI |
+| `PADDLEOCR_MAX_WORKERS` | `1` | Parallel OCR workers |
+| `PADDLEOCR_ENABLE_MKLDNN` | `false` | Intel oneDNN acceleration. Leave `false`: PaddlePaddle 3.3 crashes on CPU in the PIR → oneDNN conversion (`ConvertPirAttribute2RuntimeAttribute not support`) and the `FLAGS_*` env vars do not work around it |
+| `PADDLE_PDX_CACHE_HOME` | — | Where the checkpoint is cached (`/opt/hf-cache/paddlex` in compose) |
+| `PADDLE_PDX_MODEL_SOURCE` | `huggingface` | PaddleX model host; `modelscope` is the alternative |
 
 **Local start (real model, GPU + torch + model download):**
 

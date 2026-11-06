@@ -32,6 +32,19 @@ class OcrConfig:
     image_dpi: int = 192
     request_timeout_seconds: float = 300.0
 
+    # Baidu PaddleOCR (local, CPU) lane. These are separate fields rather than
+    # reusing ``model``/``image_dpi`` because the PaddleOCR knobs are spelled
+    # differently from the Chandra/Mistral ones, and one deployment may want both
+    # lanes configured at once (switch with OCR_PROVIDER).
+    paddleocr_version: str = "PP-OCRv6"
+    paddleocr_lang: str = ""
+    paddleocr_device: str = "cpu"
+    paddleocr_det_model: str = ""
+    paddleocr_rec_model: str = ""
+    paddleocr_min_score: float = 0.0
+    paddleocr_image_dpi: int = 192
+    paddleocr_enable_mkldnn: bool = False
+
 
 PageDict = dict
 
