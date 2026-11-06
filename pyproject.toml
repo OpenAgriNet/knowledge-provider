@@ -14,6 +14,17 @@ dependencies = [
     # Chandra OCR 2 (remote vLLM/HF client; no local GPU/torch required in worker image)
     "chandra-ocr>=0.2.0",
 
+    # Baidu PaddleOCR (PP-OCR) — the local CPU lane. Runs in-process in the worker
+    # image: PP-OCRv6 is a 34.5M-param det+rec pair that reads 50 languages with no
+    # GPU and no remote inference server. The weights are NOT baked into the image;
+    # PaddleX downloads the selected checkpoint on first use into PADDLE_PDX_CACHE_HOME.
+    #
+    # linux/amd64 ONLY: paddlepaddle publishes no aarch64 wheels, so the arm64 image
+    # cannot carry this lane. Gate the marker rather than the import, so `uv sync`
+    # still resolves on both architectures.
+    "paddleocr==3.7.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "paddlepaddle==3.3.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
+
     # pdf-inspector: fast local PDF classification + Markdown extraction for
     # text-based PDFs, so we can skip the OCR provider entirely for those pages.
     "pdf-inspector>=1.14.0",

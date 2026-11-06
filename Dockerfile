@@ -4,11 +4,16 @@ FROM python:3.10-slim
 WORKDIR /app
 
 # Install system dependencies
-# apt-get is skipped — curl is not needed at runtime.
-# Uncomment below only if you need libreoffice (office→PDF) or curl:
-# RUN apt-get update && apt-get install -y --no-install-recommends \
-#     curl \
-#     && rm -rf /var/lib/apt/lists/*
+# libgomp1  — OpenMP runtime; paddlepaddle's core library links against it and
+#              refuses to import without it ("Can not import paddle core ...").
+# libgl1 + libglib2.0-0 — the runtime shared libraries opencv-contrib-python
+#              (a PaddleX dependency) loads at import time.
+# curl is not needed at runtime; add it only if you add a healthcheck that uses it.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:0.12.5 /uv /uvx /usr/local/bin/
 

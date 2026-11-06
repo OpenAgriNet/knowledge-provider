@@ -12,6 +12,7 @@ from .base import OcrConfig, OcrProvider, PageDict
 from .chandra_vllm import ChandraVllmOcrProvider
 from .mistral_ocr import MistralOcrProvider
 from .mock import MockOcrProvider
+from .paddleocr_local import PaddleOcrProvider
 from .text_layer import group_contiguous_ranges, split_pdf_range
 
 PROVIDERS: dict[str, type[OcrProvider]] = {
@@ -19,6 +20,10 @@ PROVIDERS: dict[str, type[OcrProvider]] = {
     "mistral_ocr": MistralOcrProvider,
     "chandra": ChandraVllmOcrProvider,
     "chandra_vllm": ChandraVllmOcrProvider,
+    # Baidu PaddleOCR (PP-OCR) — local CPU inference, weights fetched on first use.
+    "paddleocr": PaddleOcrProvider,
+    "paddle": PaddleOcrProvider,
+    "baidu": PaddleOcrProvider,
     # Local dev: embedded PDF text only (no external OCR).
     "mock": MockOcrProvider,
     "pypdf": MockOcrProvider,
@@ -43,6 +48,18 @@ def load_ocr_config() -> OcrConfig:
         max_workers = int(os.environ.get("OCR_MAX_WORKERS", "2"))
         image_dpi = int(os.environ.get("OCR_IMAGE_DPI", "192"))
         request_timeout_seconds = float(os.environ.get("OCR_REQUEST_TIMEOUT_SECONDS", "300"))
+    elif provider in {"paddleocr", "paddle", "baidu"}:
+        # Baidu PaddleOCR: local CPU inference. OCR_MODEL selects the tier
+        # (medium | small | tiny) or an explicit "<det>,<rec>" model-name pair.
+        model = (os.environ.get("PADDLEOCR_MODEL") or os.environ.get("OCR_MODEL") or "").strip()
+        api_key = ""
+        endpoint = ""
+        api_url = ""
+        inference_mode = "local"
+        max_output_tokens = 0
+        max_workers = int(os.environ.get("PADDLEOCR_MAX_WORKERS", "1"))
+        image_dpi = int(os.environ.get("PADDLEOCR_IMAGE_DPI", "192"))
+        request_timeout_seconds = float(os.environ.get("PADDLEOCR_REQUEST_TIMEOUT_SECONDS", "600"))
     else:
         model = (os.environ.get("OCR_MODEL") or "chandra").strip() or "chandra"
         api_key = ""
@@ -69,6 +86,17 @@ def load_ocr_config() -> OcrConfig:
         max_workers=max_workers,
         image_dpi=image_dpi,
         request_timeout_seconds=request_timeout_seconds,
+        paddleocr_version=os.environ.get("PADDLEOCR_OCR_VERSION", "PP-OCRv6").strip(),
+        paddleocr_lang=os.environ.get("PADDLEOCR_LANG", "").strip(),
+        paddleocr_device=os.environ.get("PADDLEOCR_DEVICE", "cpu").strip(),
+        paddleocr_det_model=os.environ.get("PADDLEOCR_DET_MODEL", "").strip(),
+        paddleocr_rec_model=os.environ.get("PADDLEOCR_REC_MODEL", "").strip(),
+        paddleocr_min_score=float(os.environ.get("PADDLEOCR_MIN_SCORE", "0") or 0),
+        paddleocr_image_dpi=int(os.environ.get("PADDLEOCR_IMAGE_DPI", "192")),
+        paddleocr_enable_mkldnn=(
+            os.environ.get("PADDLEOCR_ENABLE_MKLDNN", "false").strip().lower()
+            in {"1", "true", "yes"}
+        ),
     )
 
 

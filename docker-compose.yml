@@ -254,6 +254,9 @@ services:
       # HF cache path propagated into the container
       HF_HOME: ${HF_HOME:-/opt/hf-cache}
       HF_HUB_CACHE: ${HF_HOME:-/opt/hf-cache}
+      # PaddleX (Baidu PaddleOCR) weight cache — kept on the same mounted volume so
+      # the on-demand checkpoint download survives a container rebuild.
+      PADDLE_PDX_CACHE_HOME: ${HF_HOME:-/opt/hf-cache}/paddlex
     ports:
       - "127.0.0.1:${API_HOST_PORT:-8011}:8001"
     depends_on:
@@ -295,6 +298,9 @@ services:
       ALLOWED_FILE_PATHS: /app/books,/data/documents
       HF_HOME: ${HF_HOME:-/opt/hf-cache}
       HF_HUB_CACHE: ${HF_HOME:-/opt/hf-cache}
+      # PaddleX (Baidu PaddleOCR) weight cache — the worker is the process that
+      # actually runs OCR, so the checkpoint is downloaded and cached here.
+      PADDLE_PDX_CACHE_HOME: ${HF_HOME:-/opt/hf-cache}/paddlex
     depends_on:
       temporal:
         condition: service_healthy

@@ -4,6 +4,7 @@ from .base import OcrConfig, OcrProvider
 from .chandra_vllm import ChandraVllmOcrProvider
 from .mistral_ocr import MistralOcrProvider
 from .mock import MockOcrProvider
+from .paddleocr_local import PaddleOcrProvider
 from .service import get_ocr_provider, load_ocr_config, ocr_pdf, ocr_pdf_in_segments
 from .text_layer import split_pdf_range
 
@@ -13,6 +14,7 @@ __all__ = [
     "MockOcrProvider",
     "OcrConfig",
     "OcrProvider",
+    "PaddleOcrProvider",
     "get_ocr_provider",
     "load_ocr_config",
     "ocr_pdf",
