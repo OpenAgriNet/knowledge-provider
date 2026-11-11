@@ -109,7 +109,7 @@ def resolve_create_group(user: AuthUser, requested: str | None = None) -> str:
 
     raise HTTPException(
         400,
-        "group is required when you have multiple states; "
+        "instance is required when you have multiple states; "
         f"choose one of: {', '.join(sorted(allowed))}",
     )
 

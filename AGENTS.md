@@ -19,6 +19,7 @@ Full narrative docs (read these before deep architectural changes, don't re-deri
 # Run the full stack (api, worker, temporal, minio, qdrant, ui)
 docker compose up -d --build
 docker compose down
+docker compose --profile observability up -d   # + otel-collector & ClickHouse (needs OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318)
 
 # Tests (pytest.ini: testpaths=tests, markers unit/integration/slow/api/db/workflow)
 uv run pytest
@@ -77,7 +78,8 @@ Core modules (all under `pipeline/`):
 - `discovery_publish_service.py` — `DiscoveryPublishService`: owns the Publish to Network env vars and the HTTP call. Deliberately Temporal-free
 - `models.py` — Pydantic models, including `DocumentStage` enum and `PIPELINE_STAGES` (the stepper-UI stage list)
 - `config.py` — `Config` dataclass reading env vars, with defaults
-- `group_names.py` — tenant (group) code ↔ human name mapping; `bv` = Bharat Vistaar platform-wide, others are state codes matching Keycloak group paths (`/states/MH/...` → `mh`). A tenant code is a `groups` row (name = code); a document's `group` is derived through `documents.catalog_id → catalogs.group_id`, there is no `documents.instance` column
+- `observability.py` — bridges root-logger `INFO`+ lines to OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set (ClickHouse/HyperDX); no-op otherwise. See ADR 0007
+- `group_names.py` — tenant (group) code ↔ human name mapping; `bv` = Bharat Vistaar platform-wide, others are state codes matching Keycloak group paths (`/states/MH/...` → `mh`). A tenant code is a `groups` row (name = code); a document's `instance` is derived through `documents.catalog_id → catalogs.group_id`, there is no `documents.instance` column
 - `scheme_catalog.py` — scheme catalog behind the pull-based `/catalog/v1/*` API, served from the computed `catalog_status` view (one row per document; `catalogs` rows are `(group, type)`, `documents` carry `code`/`name`/`aliases`)
 - `ocr/`, `translation/`, `chunking/`, `vector_store/` — pluggable provider packages, each with a `base.py` protocol/ABC and a `service.py` (or equivalent) that dispatches to the configured provider
 - `auth/` — Keycloak JWT validation, group-based tenancy/permissions, email-OTP flow, admin user management

@@ -70,6 +70,17 @@ Root `.env` (see `.env.example`). Required by FastAPI (`pipeline/api/`), Tempora
 | `DB_POOL_TIMEOUT_SECONDS` | `30` | Seconds to wait for a free pooled connection |
 | `DOCUMENT_DB_PATH` | `/data/documents.db` | Only read by `scripts/migrate_sqlite_to_postgres.py`: the legacy SQLite file to import |
 
+### Logs to ClickHouse (OTLP)
+
+Off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set. When it is set, API and worker log lines at `INFO` and above (root logger, including `/search` query text) also go over OTLP/HTTP to a collector, which writes them to ClickHouse for HyperDX. See `docs/ADR/0007-ship-logs-over-otlp.md`.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | *(unset — off)* | Collector base URL. Local: `http://otel-collector:4318` with `docker compose --profile observability`. Shared env: the ClickStack collector, e.g. `http://clickstack-otel-collector.observability.svc.cluster.local:4318` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | *(unset)* | Headers sent with each export, e.g. `authorization=<HyperDX ingestion API key>`; ClickStack rejects unauthenticated telemetry |
+| `OTEL_SERVICE_NAME` | `knowledge-provider` | Labels our lines in the shared store. Compose sets `knowledge-provider-api` / `knowledge-provider-worker`; set the same per process in other deployments |
+| `OTEL_EXPORTER_OTLP_TIMEOUT` | `5` (seconds) | How long one export may take before it is dropped; kept under Docker's 10s stop grace so shutdown with the collector down stays clean |
+
 ### API HTTP surface
 
 | Variable | Default | Purpose |

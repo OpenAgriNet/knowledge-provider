@@ -334,6 +334,18 @@ docker compose up -d --build
 docker compose down
 ```
 
+### Logs in ClickHouse (optional)
+
+Set `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318` in `.env`, then:
+
+```bash
+docker compose --profile observability up -d --build
+curl 'http://127.0.0.1:18123/?user=knowledge&password=knowledge' \
+  --data-binary 'SELECT ServiceName, Body FROM otel.otel_logs ORDER BY Timestamp DESC LIMIT 20'
+```
+
+API and worker lines land in `otel.otel_logs`. Shared environments send to the ClickStack collector instead; see `ENV.md` and `docs/ADR/0007-ship-logs-over-otlp.md`.
+
 ### Health Checks
 
 Useful endpoints after startup:
