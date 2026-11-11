@@ -34,4 +34,4 @@ class DocumentRepository:
         doc = self._db.get_document(workflow_id)
         if not doc:
             return None
-        return group_for_instance(doc.get("group"))
+        return group_for_instance(doc.get("instance"))

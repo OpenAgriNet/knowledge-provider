@@ -5,7 +5,7 @@ import { Skeleton } from '../components/ui/skeleton'
 import { StatCard } from '../components/StatCard'
 import { StageBadge } from '../components/StageBadge'
 import { fetchJson, formatCount, getDocumentListLabel, summarizeQueueReason } from '../lib/pipelineUi'
-import { formatGroupLabel } from '../lib/groupLabels'
+import { formatInstanceLabel } from '../lib/instanceLabels'
 import { useAuth } from '../auth/AuthProvider'
 import { AlertTriangle, CheckCircle, FileText, Globe2, ListTodo } from 'lucide-react'
 
@@ -66,8 +66,8 @@ export default function DashboardView() {
   const reindexCount = summary?.needs_reindex || 0
   const displayedQueueItems = queue.slice(0, QUEUE_ROWS_SHOWN)
 
-  const byGroup = useMemo(() => (Array.isArray(summary?.by_instance) ? summary.by_instance : []), [summary])
-  const stateRows = byGroup
+  const byInstance = useMemo(() => (Array.isArray(summary?.by_instance) ? summary.by_instance : []), [summary])
+  const stateRows = byInstance
 
   const maxStateCount = useMemo(
     () => stateRows.reduce((max, item) => Math.max(max, item.count || 0), 0),
@@ -113,7 +113,7 @@ export default function DashboardView() {
         />
         <StatCard
           label="Total States"
-          value={formatCount(byGroup.length)}
+          value={formatCount(byInstance.length)}
           icon={<Globe2 className="h-4 w-4" />}
         />
         <StatCard
@@ -172,7 +172,7 @@ export default function DashboardView() {
               {stateRows.map((row) => {
                 const label = row.otherStateCount
                   ? `Others (${row.otherStateCount} states)`
-                  : formatGroupLabel(row.instance) || 'No state tag'
+                  : formatInstanceLabel(row.instance) || 'No state tag'
                 const pct = (value) => (maxStateCount ? (value / maxStateCount) * 100 : 0)
                 return (
                   <div key={row.instance}>

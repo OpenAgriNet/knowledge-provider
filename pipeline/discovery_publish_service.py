@@ -50,12 +50,12 @@ class DiscoveryPublishService:
     def publish(
         self,
         transaction_id: str,
-        kind: Optional[str],
+        document_kind: Optional[str],
         workflow_id: Optional[str] = None,
         group: Optional[str] = None,
     ) -> dict:
         """
-        POST a catalog/publish envelope for `kind`.
+        POST a catalog/publish envelope for `document_kind`.
 
         `transaction_id` is supplied by the caller (generated once per publish,
         reused across retries) - only `messageId` is generated fresh here, per
@@ -65,18 +65,18 @@ class DiscoveryPublishService:
         with `skipped=True`: the spec declares `message.catalogs` as
         `minItems: 1`, so there is no valid "publish nothing" request to send.
         """
-        if not is_publishable_kind(kind):
+        if not is_publishable_kind(document_kind):
             logger.info(
-                "workflow_id=%s kind=%s network_publish_skipped=True",
+                "workflow_id=%s document_kind=%s network_publish_skipped=True",
                 workflow_id,
-                kind,
+                document_kind,
             )
             return self._skipped()
 
         catalog_group = named_group(group)
-        provider = provider_for(self.provider_naming, kind, catalog_group)
-        catalog_name = self.provider_naming.catalog_name(normalize_document_kind(kind), catalog_group)
-        catalog = build_catalog(kind, provider, catalog_name, catalog_group)
+        provider = provider_for(self.provider_naming, document_kind, catalog_group)
+        catalog_name = self.provider_naming.catalog_name(normalize_document_kind(document_kind), catalog_group)
+        catalog = build_catalog(document_kind, provider, catalog_name, catalog_group)
 
         envelope = {
             "context": {

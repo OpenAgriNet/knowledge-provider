@@ -10,8 +10,8 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Upload
 from .. import db, document_validity
 from .. import display_name as display_name_rules
 from ..auth.deps import RequireUpload
-from ..auth.tenancy import assert_document_group_access, normalize_group
-from ..group_names import prod_stage_disabled
+from ..auth.tenancy import assert_document_instance_access, normalize_instance
+from ..instances import prod_stage_disabled
 from ..models import DocumentStage, DocumentSummary
 from ..workflows import DocumentPipelineWorkflow
 from . import api as _api
@@ -44,9 +44,9 @@ async def upload_and_process(
     Rate limited to 10 requests/minute per IP.
     Requires permission: upload (no-op while AUTH_DISABLED=true).
     """
-    create_group = _api._resolve_upload_instance(user, instance)
+    create_instance = _api._resolve_create_instance(user, instance)
     doc_kind, doc_code, replace_doc = _api._resolve_document_identity(
-        user, create_group, kind, code, file.filename or ""
+        user, create_instance, kind, code, file.filename or ""
     )
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in _api.ALLOWED_EXTENSIONS:
@@ -91,7 +91,7 @@ async def upload_and_process(
     # If Postgres was purged, avoid returning stale Temporal state and create a fresh run ID.
     existing_doc = db.get_document(workflow_id)
     if existing_doc:
-        existing_doc = assert_document_group_access(user, existing_doc)
+        existing_doc = assert_document_instance_access(user, existing_doc)
         try:
             handle = _api.temporal_client.get_workflow_handle(workflow_id)
             state = await handle.query("get_state")
@@ -104,7 +104,7 @@ async def upload_and_process(
                     source_filename=file.filename,
                     source_file_fingerprint=file_hash,
                     authoritative=bool(existing_doc.get("source_manifest_name")) if existing_doc else False,
-                    instance=normalize_group(existing_doc.get("group")),
+                    instance=normalize_instance(existing_doc.get("instance")),
                     stage=DocumentStage(state.get("stage", "registered")),
                     page_count=state.get("page_count", 0),
                     chunk_count=state.get("chunk_count", 0),
@@ -160,7 +160,7 @@ async def upload_and_process(
                 filepath=minio_path,
                 stage="registered",
                 stop_after_ocr=stop_after_ocr,
-                group=create_group,
+                instance=create_instance,
                 uploaded_by_user_id=actor.get("user_id") or None,
                 uploaded_by_username=actor.get("username") or None,
                 uploaded_by_email=actor.get("email") or None,
@@ -211,7 +211,7 @@ async def upload_and_process(
         new_value=file.filename,
         metadata={
             "source": "upload_endpoint",
-            "instance": create_group,
+            "instance": create_instance,
             "kind": doc_kind,
             "code": doc_code,
             "replaced_existing": bool(replace_doc),
@@ -237,7 +237,7 @@ async def upload_and_process(
         source_filename=file.filename,
         source_file_fingerprint=file_hash,
         authoritative=False,
-        instance=create_group,
+        instance=create_instance,
         stage=DocumentStage.REGISTERED,
         page_count=0,
         chunk_count=0,

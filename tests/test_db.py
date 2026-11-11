@@ -617,7 +617,7 @@ class TestSchemaConstraints:
     @staticmethod
     def _catalog_id(db):
         with db.get_connection() as conn:
-            return db.get_or_create_catalog(db.get_or_create_group("mh", conn=conn), "scheme", conn=conn)["id"]
+            return db.get_or_create_catalog(db.get_or_create_instance("mh", conn=conn), "scheme", conn=conn)["id"]
 
     @pytest.mark.db
     @pytest.mark.unit
@@ -903,14 +903,14 @@ class TestChunkRuns:
     @pytest.mark.db
     @pytest.mark.unit
     def test_search_chunks_matches_edited_text_first(self, db_connection):
-        _new_doc(db_connection, "wf-search", group="mh")
+        _new_doc(db_connection, "wf-search", instance="mh")
         db_connection.save_chunks("wf-search", [
             {"chunk_number": 1, "original_text": "alpha beta", "edited_text": "gamma delta"},
         ])
         hits, total = db_connection.search_chunks(query="gamma")
         assert total == 1 and hits[0]["workflow_id"] == "wf-search"
         assert db_connection.search_chunks(query="alpha")[1] == 0
-        assert db_connection.search_chunks(query="gamma", groups=["up"])[1] == 0
+        assert db_connection.search_chunks(query="gamma", instances=["up"])[1] == 0
 
 
 class TestIndexStatus:
@@ -966,7 +966,7 @@ class TestAuditTrail:
     @pytest.mark.db
     @pytest.mark.unit
     def test_audit_outlives_the_document_and_keeps_tenant_scope(self, db_connection):
-        _new_doc(db_connection, "wf-aud", group="mh")
+        _new_doc(db_connection, "wf-aud", instance="mh")
         db_connection.log_audit(
             workflow_id="wf-aud", document_id="x", action_type="purge_document",
             entity_type="document", actor_user_id="kc-9", actor_username="boss",
@@ -978,8 +978,8 @@ class TestAuditTrail:
         assert [entry["action_type"] for entry in logs] == ["purge_document"]
         assert logs[0]["actor"] == "b@x.in (superadmin)"
         assert logs[0]["actor_user_id"] == "kc-9"
-        assert db_connection.get_all_audit_log_count(groups=["mh"]) == 1
-        assert db_connection.get_all_audit_log_count(groups=["up"]) == 0
+        assert db_connection.get_all_audit_log_count(instances=["mh"]) == 1
+        assert db_connection.get_all_audit_log_count(instances=["up"]) == 0
 
     @pytest.mark.db
     @pytest.mark.unit
@@ -993,7 +993,7 @@ class TestAuditTrail:
 
     @pytest.mark.db
     @pytest.mark.unit
-    def test_settings_changes_are_logged_per_key_with_group_names(self, db_connection):
+    def test_settings_changes_are_logged_per_key_with_instance_names(self, db_connection):
         db_connection.update_search_settings({"alpha": 0.2, "limit": 3})
         fields = {entry["field_name"] for entry in db_connection.get_settings_audit_logs()}
         assert fields == {"retrieval.alpha", "results.limit"}
@@ -1022,7 +1022,7 @@ class TestSearchSettings:
 
     @pytest.mark.db
     @pytest.mark.unit
-    def test_a_partial_update_keeps_the_rest_of_its_group(self, db_connection):
+    def test_a_partial_update_keeps_the_rest_of_its_instance(self, db_connection):
         db_connection.update_search_settings({"alpha": 0.3})
         db_connection.update_search_settings({"hybridRrfK": 10})
         settings = db_connection.get_search_settings()
@@ -1063,8 +1063,8 @@ class TestCatalogView:
     def test_computed_columns(self, db_connection, monkeypatch):
         monkeypatch.setenv("PROD_VECTOR_DB_COLLECTION_NAME", "prod-docs")
         db = db_connection
-        self._scheme_doc(db, "wf-a", "scheme-a", "completed", group="mh")
-        self._scheme_doc(db, "wf-b", "scheme-b", "completed", group="up")
+        self._scheme_doc(db, "wf-a", "scheme-a", "completed", instance="mh")
+        self._scheme_doc(db, "wf-b", "scheme-b", "completed", instance="up")
         db.save_chunks("wf-a", [{"chunk_number": 1, "original_text": "x"}])
         db.save_chunks("wf-b", [{"chunk_number": 1, "original_text": "y"},
                                 {"chunk_number": 2, "original_text": "z"}])
@@ -1074,8 +1074,8 @@ class TestCatalogView:
 
         a = db.get_catalog_entry("scheme-a")
         b = db.get_catalog_entry("scheme-b")
-        assert (a["groups"], a["workflow_ids"], a["chunk_count"]) == (["mh"], ["wf-a"], 1)
-        assert (b["groups"], b["workflow_ids"], b["chunk_count"]) == (["up"], ["wf-b"], 2)
+        assert (a["instances"], a["workflow_ids"], a["chunk_count"]) == (["mh"], ["wf-a"], 1)
+        assert (b["instances"], b["workflow_ids"], b["chunk_count"]) == (["up"], ["wf-b"], 2)
         assert a["network_visible"] is True and b["network_visible"] is False
         assert a["promoted_at"].startswith("2026-05-01T00:00:00")
         assert b["promoted_at"] is None
@@ -1085,7 +1085,7 @@ class TestCatalogView:
     def test_catalogs_without_documents_are_not_listed(self, db_connection):
         db = db_connection
         with db.get_connection() as conn:
-            db.get_or_create_catalog(db.get_or_create_group("mh", conn=conn), "scheme", conn=conn)
+            db.get_or_create_catalog(db.get_or_create_instance("mh", conn=conn), "scheme", conn=conn)
         assert db.list_catalog_entries() == []
         assert db.get_catalog_entry("anything") is None
 
@@ -1174,24 +1174,24 @@ class TestOperationsViews:
     @pytest.mark.db
     @pytest.mark.unit
     def test_summary_counts_and_queue_use_the_current_workflow(self, db_connection):
-        _new_doc(db_connection, "wf-q1", stage="ocr_review", group="mh")
-        _new_doc(db_connection, "wf-q2", stage="completed", group="up")
+        _new_doc(db_connection, "wf-q1", stage="ocr_review", instance="mh")
+        _new_doc(db_connection, "wf-q2", stage="completed", instance="up")
         db_connection.create_document_job("wf-q2", "reingest", current_stage="ingesting")
         counts = db_connection.get_document_summary_counts()
         assert counts["total_documents"] == 2
         assert counts["ocr_review_documents"] == 1
         assert counts["completed_documents"] == 0
         assert counts["running_jobs"] == 3
-        assert db_connection.get_document_summary_counts(groups=[])["total_documents"] == 0
-        by_group = {r["group"]: r for r in db_connection.get_document_counts_by_group()}
-        assert by_group["mh"]["dev_approval"] == 1
+        assert db_connection.get_document_summary_counts(instances=[])["total_documents"] == 0
+        by_instance = {r["instance"]: r for r in db_connection.get_document_counts_by_instance()}
+        assert by_instance["mh"]["dev_approval"] == 1
 
         rows, total = db_connection.list_operations_queue()
         assert total == 2
         assert {r["workflow_id"]: r["job_type"] for r in rows} == {
             "wf-q1": "pipeline", "wf-q2": "reingest",
         }
-        assert db_connection.list_operations_queue(groups=["up"])[1] == 1
+        assert db_connection.list_operations_queue(instances=["up"])[1] == 1
 
     @pytest.mark.db
     @pytest.mark.unit

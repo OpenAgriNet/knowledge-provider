@@ -29,7 +29,7 @@ from .catalog_builder import normalize_document_kind
 from .chunking import chunk_pages, load_chunking_config
 from .discovery_publish_service import DiscoveryPublishService, PublishConfigError
 from .document_repository import DocumentRepository
-from .group_names import group_display_name, publish_to_network_enabled
+from .instances import instance_display_name, publish_to_network_enabled
 from .models import PUBLISH_SKIPPED_DISABLED, PUBLISH_SKIPPED_UNMAPPED_KIND
 from .network_constants import RESULT_REJECTED
 from .network_group import load_provider_naming, named_group, provider_for
@@ -623,8 +623,8 @@ def clean_text_for_ingestion(text: str) -> str:
     return result.strip()
 
 
-def _normalize_group(value: str | None) -> str:
-    """Ingest-side group normalizer (mirrors auth.tenancy without importing FastAPI)."""
+def _normalize_instance(value: str | None) -> str:
+    """Ingest-side instance normalizer (mirrors auth.tenancy without importing FastAPI)."""
     text = (value or "").strip().lower()
     if text:
         return text
@@ -640,7 +640,7 @@ def _prepare_records(
     name_en: str | None = None,
     description: str | None = None,
     include_e5_prefix_field: bool = True,
-    group: str | None = None,
+    instance: str | None = None,
     kind: str = "document",
     code: str | None = None,
     name: str | None = None,
@@ -651,7 +651,7 @@ def _prepare_records(
     display_name: str | None = None,
 ) -> list[dict]:
     metadata = _get_doc_metadata(filename)
-    resolved_group = _normalize_group(group)
+    resolved_instance = _normalize_instance(instance)
     llm_doc_description = _get_doc_description(filename)
 
     doc_hash = hashlib.md5(document_id.encode()).hexdigest()
@@ -677,7 +677,7 @@ def _prepare_records(
         if is_scheme
         else []
     )
-    group_name = group_display_name(resolved_group)
+    instance_name = instance_display_name(resolved_instance)
     # One period for the whole document, resolved before the loop: every chunk
     # of a document expires together, and re-deriving it per chunk would let a
     # midnight boundary split one document across two periods.
@@ -699,8 +699,8 @@ def _prepare_records(
             "_id": point_id,
             "doc_id": document_id,
             "workflow_id": workflow_id or "",
-            "instance": resolved_group,  # vector payload key, kept for consumers
-            "instance_name": group_name,
+            "instance": resolved_instance,  # vector payload key, kept for consumers
+            "instance_name": instance_name,
             "provider_id": provider_id,
             "type": kind,
             "source": "docs-pipeline",
@@ -758,7 +758,7 @@ def _scheme_fields_from_doc(doc: dict | None) -> dict:
 
 def _provider_id_from_doc(doc: dict | None) -> str | None:
     doc = doc or {}
-    group = named_group(group_for_instance(doc.get("group")))
+    group = named_group(group_for_instance(doc.get("instance")))
     try:
         provider = provider_for(load_provider_naming(), doc.get("kind"), group)
     except InvalidProviderIdError as exc:
@@ -791,7 +791,7 @@ def prepare_ingestion_records(
     name_gu: str | None = None,
     name_en: str | None = None,
     description: str | None = None,
-    group: str | None = None,
+    instance: str | None = None,
 ) -> list[dict]:
     """Public helper used by tests and scripts when preparing vector-index payloads."""
     return _prepare_records(
@@ -802,7 +802,7 @@ def prepare_ingestion_records(
         name_gu=name_gu,
         name_en=name_en,
         description=description,
-        group=group,
+        instance=instance,
     )
 
 
@@ -1232,7 +1232,7 @@ async def prepare_for_ingestion(
         name_gu=name_gu,
         name_en=name_en,
         description=description,
-        group=(doc or {}).get("group"),
+        instance=(doc or {}).get("instance"),
         **_validity_fields_from_doc(doc),
         provider_id=_provider_id_from_doc(doc),
         display_name=(doc or {}).get("name"),
@@ -1343,7 +1343,7 @@ async def promote_document_to_prod_qdrant(
         filename,
         chunks,
         workflow_id=workflow_id,
-        group=doc.get("group"),
+        instance=doc.get("instance"),
         **scheme_kwargs,
         **_validity_fields_from_doc(doc),
         provider_id=_provider_id_from_doc(doc),
@@ -1456,7 +1456,7 @@ async def ingest_document_from_db(
         filename,
         chunks,
         workflow_id=workflow_id,
-        group=doc.get("group"),
+        instance=doc.get("instance"),
         **_scheme_fields_from_doc(doc),
         **_validity_fields_from_doc(doc),
         provider_id=_provider_id_from_doc(doc),

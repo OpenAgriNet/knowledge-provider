@@ -1,14 +1,14 @@
-"""Group (tenant / state) access helpers — Keycloak groups + document groups.
+"""Instance (tenant / state) access helpers — Keycloak groups + document instances.
 
 Who-sees-what-state comes from the JWT (Keycloak groups). The database only
-stores which group a *document* belongs to (``groups`` via
-``documents.catalog_id -> catalogs.group_id``); the document dict carries its
-tenant code as ``group``.
+stores which instance a *document* belongs to (``instances`` via
+``documents.catalog_id -> catalogs.instance_id``); the document dict carries its
+tenant code as ``instance``.
 
 Conventions:
   - State codes: lowercase (``mh``, ``up``, …) matching Keycloak ``/states/MH/...``
   - Portal / BV platform docs: ``bv`` (Bharat Vistaar)
-  - Super admin (``/global/super-admin``): unrestricted groups
+  - Super admin (``/global/super-admin``): unrestricted instances
 """
 
 from __future__ import annotations
@@ -20,64 +20,64 @@ from fastapi import HTTPException
 from .models import AuthUser
 
 # Bharat Vistaar portal / platform-wide documents (not a state).
-PORTAL_GROUP = "bv"
+PORTAL_INSTANCE = "bv"
 
 
-def default_group() -> str:
-    """Fallback group code for new docs and legacy rows without a value."""
+def default_instance() -> str:
+    """Fallback instance code for new docs and legacy rows without a value."""
     return (os.environ.get("DEFAULT_INSTANCE") or "default").strip().lower() or "default"
 
 
-def portal_group() -> str:
-    return (os.environ.get("PORTAL_INSTANCE") or PORTAL_GROUP).strip().lower() or PORTAL_GROUP
+def portal_instance() -> str:
+    return (os.environ.get("PORTAL_INSTANCE") or PORTAL_INSTANCE).strip().lower() or PORTAL_INSTANCE
 
 
-def group_for_instance(group: str | None) -> str | None:
-    """The named network group of a tenant code, or None for the portal / default tenant."""
-    code = (group or "").strip().lower()
-    if not code or code in {portal_group(), default_group()}:
+def group_for_instance(instance: str | None) -> str | None:
+    """The named network instance of a tenant code, or None for the portal / default tenant."""
+    code = (instance or "").strip().lower()
+    if not code or code in {portal_instance(), default_instance()}:
         return None
     return code
 
 
-def normalize_group(value: str | None) -> str:
+def normalize_instance(value: str | None) -> str:
     text = (value or "").strip().lower()
-    return text or default_group()
+    return text or default_instance()
 
 
 def unrestricted(user: AuthUser) -> bool:
-    """True when the caller may see all groups (super admin / local bypass)."""
-    return user.is_group_unrestricted()
+    """True when the caller may see all instances (super admin / local bypass)."""
+    return user.is_instance_unrestricted()
 
 
-def allowed_groups(user: AuthUser) -> set[str] | None:
+def allowed_instances(user: AuthUser) -> set[str] | None:
     """
-    Return the set of group codes the user may access, or None if unrestricted.
+    Return the set of instance codes the user may access, or None if unrestricted.
     """
     if unrestricted(user):
         return None
-    return {normalize_group(i) for i in user.instances if str(i).strip()}
+    return {normalize_instance(i) for i in user.instances if str(i).strip()}
 
 
-def user_can_access_group(user: AuthUser, group: str | None) -> bool:
-    allowed = allowed_groups(user)
+def user_can_access_instance(user: AuthUser, instance: str | None) -> bool:
+    allowed = allowed_instances(user)
     if allowed is None:
         return True
     if not allowed:
         return False
-    return normalize_group(group) in allowed
+    return normalize_instance(instance) in allowed
 
 
-def assert_group_access(user: AuthUser, group: str | None) -> str:
-    """Raise 403 if user cannot access group; return normalized group code."""
-    normalized = normalize_group(group)
-    if not user_can_access_group(user, normalized):
-        raise HTTPException(403, f"No access to group: {normalized}")
+def assert_instance_access(user: AuthUser, instance: str | None) -> str:
+    """Raise 403 if user cannot access instance; return normalized instance code."""
+    normalized = normalize_instance(instance)
+    if not user_can_access_instance(user, normalized):
+        raise HTTPException(403, f"No access to instance: {normalized}")
     return normalized
 
 
-def resolve_create_group(user: AuthUser, requested: str | None = None) -> str:
-    """Pick the document's ``group`` at create/upload time.
+def resolve_create_instance(user: AuthUser, requested: str | None = None) -> str:
+    """Pick the document's ``instance`` at create/upload time.
 
     - Super admin / bypass: use requested, else portal ``bv``, else DEFAULT_INSTANCE.
     - Single-state user: that state (requested must match if provided).
@@ -88,11 +88,11 @@ def resolve_create_group(user: AuthUser, requested: str | None = None) -> str:
 
     if unrestricted(user):
         if requested_norm:
-            return normalize_group(requested_norm)
+            return normalize_instance(requested_norm)
         # Prefer portal tag for platform operators when nothing chosen.
-        return normalize_group(portal_group())
+        return normalize_instance(portal_instance())
 
-    allowed = allowed_groups(user) or set()
+    allowed = allowed_instances(user) or set()
     if not allowed:
         raise HTTPException(
             403,
@@ -101,7 +101,7 @@ def resolve_create_group(user: AuthUser, requested: str | None = None) -> str:
 
     if requested_norm:
         if requested_norm not in allowed:
-            raise HTTPException(403, f"No access to group: {requested_norm}")
+            raise HTTPException(403, f"No access to instance: {requested_norm}")
         return requested_norm
 
     if len(allowed) == 1:
@@ -114,13 +114,13 @@ def resolve_create_group(user: AuthUser, requested: str | None = None) -> str:
     )
 
 
-def assert_document_group_access(user: AuthUser, doc: dict | None) -> dict:
+def assert_document_instance_access(user: AuthUser, doc: dict | None) -> dict:
     """
-    Ensure the document exists and the user may access its group.
+    Ensure the document exists and the user may access its instance.
     Missing / forbidden both return 404 to avoid leaking other tenants' ids.
     """
     if not doc:
         raise HTTPException(404, "Document not found")
-    if not user_can_access_group(user, doc.get("group")):
+    if not user_can_access_instance(user, doc.get("instance")):
         raise HTTPException(404, "Document not found")
     return doc

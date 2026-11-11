@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { ArrowLeft, Info } from 'lucide-react'
-import { formatGroupLabel, groupBadgeTitle } from '../lib/groupLabels'
+import { formatInstanceLabel, instanceBadgeTitle } from '../lib/instanceLabels'
 import {
   formatCompactDateTime,
   getDocumentFileLabel,
@@ -74,7 +74,7 @@ export function DocumentHeaderSummary({
   const pages = pageCount ?? doc?.page_count ?? 0
   const chunks = chunkCount ?? doc?.chunk_count ?? 0
   const uploader = uploaderName(doc)
-  const stateLabel = formatGroupLabel(doc?.instance)
+  const stateLabel = formatInstanceLabel(doc?.instance)
   const roleLabels = useMemo(
     () => productRoleLabels(doc?.uploaded_by_roles || []),
     [doc?.uploaded_by_roles],
@@ -126,7 +126,7 @@ export function DocumentHeaderSummary({
             </DetailRow>
             <DetailRow label="State">
               {stateLabel ? (
-                <span title={groupBadgeTitle(doc?.instance)}>{stateLabel}</span>
+                <span title={instanceBadgeTitle(doc?.instance)}>{stateLabel}</span>
               ) : (
                 '—'
               )}

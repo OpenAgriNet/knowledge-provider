@@ -1,9 +1,9 @@
-"""Group (state / tenant) code → human-readable name.
+"""Instance (state / tenant) code → human-readable name.
 
-A group code is a short lowercase ``groups.name`` — ``bv`` for the Bharat
+An instance code is a short lowercase ``instances.name`` — ``bv`` for the Bharat
 Vistaar portal, otherwise the state code matching the Keycloak group path
-(``/states/MH/...`` → ``mh``). A document's group is derived through its
-catalog (``documents.catalog_id`` → ``catalogs.group_id``). That code is what
+(``/states/MH/...`` → ``mh``). A document's instance is derived through its
+catalog (``documents.catalog_id`` → ``catalogs.instance_id``). That code is what
 the pipeline filters on, but it is not what a reader wants to see: consumers of
 the vector payload and the master catalog get ``instance_name`` (their field
 name, unchanged) alongside the code so they can show "Maharashtra" without
@@ -19,7 +19,7 @@ from __future__ import annotations
 import os
 
 # Portal / platform-wide documents (not a state).
-PORTAL_GROUP = "bv"
+PORTAL_INSTANCE = "bv"
 
 
 def publish_to_network_enabled() -> bool:
@@ -42,7 +42,7 @@ def prod_stage_disabled() -> bool:
     return (os.environ.get("DISABLE_PROD_SETTING", "false").strip().lower()
             in {"true", "1", "yes"})
 
-GROUP_NAMES: dict[str, str] = {
+INSTANCE_NAMES: dict[str, str] = {
     # Platform
     "bv": "Bharat Vistaar",
     "default": "Default",
@@ -90,15 +90,15 @@ GROUP_NAMES: dict[str, str] = {
 }
 
 
-def group_display_name(code: str | None) -> str:
-    """Human-readable name for a group code (``mh`` → ``Maharashtra``).
+def instance_display_name(code: str | None) -> str:
+    """Human-readable name for an instance code (``mh`` → ``Maharashtra``).
 
     Unknown codes are title-cased so the field is never empty.
     """
     normalized = (code or "").strip().lower()
     if not normalized:
-        return GROUP_NAMES["default"]
-    known = GROUP_NAMES.get(normalized)
+        return INSTANCE_NAMES["default"]
+    known = INSTANCE_NAMES.get(normalized)
     if known:
         return known
     # Unknown code: make it presentable rather than failing the ingest.

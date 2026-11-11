@@ -15,8 +15,8 @@ migrated in one transaction. ``--dry-run`` runs everything and rolls it back.
 Mapping (Schema v2): one legacy ``documents`` row becomes one document plus
 its main workflow (``temporal_workflow_id`` = the legacy ``workflow_id``); each
 ``document_jobs`` row becomes a workflow. The legacy ``instance`` becomes a
-``groups`` row (``bv`` is ``/global``, others ``/states/<CODE>``, Keycloak id
-filled in by the first login sync) and the group's ``catalogs`` row for the
+``instances`` row (``bv`` is ``/global``, others ``/states/<CODE>``, Keycloak id
+filled in by the first login sync) and the instance's ``catalogs`` row for the
 document's kind. ``scheme_code`` / ``scheme_name`` / ``scheme_aliases_json``
 (or the ``scheme_catalog_entries`` registry entry for the code) become the
 document's ``code`` / ``name`` / ``aliases``; the validity period, uploader and
@@ -289,29 +289,29 @@ def _instance_of(doc: sqlite3.Row) -> str:
     return (_get(doc, "instance") or _default_instance()).strip().lower() or _default_instance()
 
 
-def _group_for(conn, instance: str) -> str:
-    """The ``groups`` row of a tenant code, created with a deterministic id."""
+def _instance_for(conn, instance: str) -> str:
+    """The ``instances`` row of a tenant code, created with a deterministic id."""
     path = db._tenant_path(instance)
     row = conn.execute(
         """
-        INSERT INTO groups (id, name, path) VALUES (%s::uuid, %s, %s)
-        ON CONFLICT (path) DO UPDATE SET name = groups.name RETURNING id
+        INSERT INTO instances (id, name, path) VALUES (%s::uuid, %s, %s)
+        ON CONFLICT (path) DO UPDATE SET name = instances.name RETURNING id
         """,
-        (det_id("group", path), db._tenant_code_from_path(path), path),
+        (det_id("instance", path), db._tenant_code_from_path(path), path),
     ).fetchone()
     return str(row["id"])
 
 
-def _catalog_for(conn, group_id: str, kind: str) -> str:
-    """The ``(group, kind)`` catalog, created with a deterministic id."""
+def _catalog_for(conn, instance_id: str, kind: str) -> str:
+    """The ``(instance, kind)`` catalog, created with a deterministic id."""
     catalog_type = catalog_type_for_kind(kind)
     row = conn.execute(
         """
-        INSERT INTO catalogs (id, group_id, type, name)
-        SELECT %s::uuid, g.id, %s, g.name || ' ' || %s FROM groups g WHERE g.id = %s::uuid
-        ON CONFLICT (group_id, type) DO UPDATE SET type = EXCLUDED.type RETURNING id
+        INSERT INTO catalogs (id, instance_id, type, name)
+        SELECT %s::uuid, g.id, %s, g.name || ' ' || %s FROM instances g WHERE g.id = %s::uuid
+        ON CONFLICT (instance_id, type) DO UPDATE SET type = EXCLUDED.type RETURNING id
         """,
-        (det_id("catalog", f"{group_id}:{catalog_type}"), catalog_type, kind, group_id),
+        (det_id("catalog", f"{instance_id}:{catalog_type}"), catalog_type, kind, instance_id),
     ).fetchone()
     return str(row["id"])
 
@@ -442,7 +442,7 @@ def _build_workflows(
 
 def _skip_document(sq, conn, doc: sqlite3.Row, report: Report, audit_by_workflow: dict[str, list], reason: str) -> None:
     """Leave a document behind. Its history rows are counted as skipped; its audit
-    entries are kept, tied to the tenant's group but to no document."""
+    entries are kept, tied to the tenant's instance but to no document."""
     workflow_id = doc["workflow_id"]
     report.skip("documents", workflow_id, reason)
     for table in ("document_jobs", "document_artifacts", "pages", "chunks"):
@@ -532,7 +532,7 @@ def migrate_document(
         canonical_input_type=_get(doc, "canonical_input_type"),
     ).model_dump(exclude_none=True)
 
-    catalog_id = _catalog_for(conn, _group_for(conn, _instance_of(doc)), kind)
+    catalog_id = _catalog_for(conn, _instance_for(conn, _instance_of(doc)), kind)
     code = (_get(doc, "scheme_code") or "").strip().lower()
     entry = registry.get(code) if kind == "scheme" and code else None
     if entry is not None:
@@ -709,7 +709,7 @@ def insert_audit(conn, audit: sqlite3.Row, doc_uuid: Optional[str], source_insta
     )
     inserted = conn.execute(
         """
-        INSERT INTO audit_logs (id, document_id, workflow_id, group_id, action_type, entity_type,
+        INSERT INTO audit_logs (id, document_id, workflow_id, instance_id, action_type, entity_type,
                                 entity_number, field_name, old_value, new_value, metadata,
                                 actor_user_id, actor, created_at)
         VALUES (%s::uuid, %s::uuid, %s, %s::uuid, %s, %s, %s, %s, %s, %s, %s,
@@ -718,7 +718,7 @@ def insert_audit(conn, audit: sqlite3.Row, doc_uuid: Optional[str], source_insta
         """,
         (
             det_id("audit", str(audit["id"])), doc_uuid, workflow_id,
-            _group_for(conn, source_instance.strip().lower()) if (source_instance or "").strip() else None,
+            _instance_for(conn, source_instance.strip().lower()) if (source_instance or "").strip() else None,
             audit["action_type"], entity, audit["entity_id"],
             _legacy_audit_field(audit["field_name"], entity), audit["old_value"], audit["new_value"],
             Jsonb(metadata), actor_uuid,

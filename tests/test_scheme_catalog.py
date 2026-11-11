@@ -13,7 +13,7 @@ def catalog_db(db_connection):
 
 
 def _doc(db, workflow_id, *, code, kind="scheme", name=None, stage="completed",
-         group="default", filename=None, **extra):
+         instance="default", filename=None, **extra):
     """Register a document the v2 way: it needs a kind (catalog) and a code."""
     return db.upsert_document(
         workflow_id=workflow_id,
@@ -21,7 +21,7 @@ def _doc(db, workflow_id, *, code, kind="scheme", name=None, stage="completed",
         filename=filename or f"{workflow_id}.pdf",
         filepath=f"/tmp/{workflow_id}.pdf",
         stage=stage,
-        group=group,
+        instance=instance,
         kind=kind,
         code=code,
         name=name,
@@ -47,8 +47,8 @@ def test_catalog_has_no_bootstrap_entries(catalog_db):
 
 def test_snapshot_has_one_entry_per_live_scheme_document(catalog_db):
     db, scheme_catalog = catalog_db
-    _doc(db, "wf-a", code="pkvy", name="Paramparagat Krishi Vikas Yojana", group="mh")
-    _doc(db, "wf-b", code="mif", name="Micro Irrigation Fund", group="gj")
+    _doc(db, "wf-a", code="pkvy", name="Paramparagat Krishi Vikas Yojana", instance="mh")
+    _doc(db, "wf-b", code="mif", name="Micro Irrigation Fund", instance="gj")
     _doc(db, "wf-adv", code="rain-advice", kind="advisory", name="Rain advisory")
     _doc(db, "wf-draft", code="draft", stage="chunk_review")
     snap = scheme_catalog.build_snapshot()
@@ -132,10 +132,10 @@ def test_derive_scheme_code_collision_appends_suffix(catalog_db):
 def test_collision_domain_spans_tenants(catalog_db):
     """Codes are unique per catalog in SQL, but derivation avoids every tenant's codes."""
     db, scheme_catalog = catalog_db
-    _doc(db, "wf-mh", code="nmnf", group="mh")
+    _doc(db, "wf-mh", code="nmnf", instance="mh")
     assert scheme_catalog.derive_scheme_code("National Mission on Natural Farming") == "nmnf-2"
     # The same explicit code in another tenant's catalog is still allowed by the schema.
-    _doc(db, "wf-gj", code="nmnf", group="gj")
+    _doc(db, "wf-gj", code="nmnf", instance="gj")
 
 
 def test_apply_scheme_metadata_keeps_the_code_when_only_the_name_changes(catalog_db):
@@ -179,7 +179,7 @@ def test_prepare_records_scheme_payload():
         "pkvy.pdf",
         chunks,
         workflow_id="wf1",
-        group="default",
+        instance="default",
         kind="scheme",
         code="pkvy",
         name="Paramparagat Krishi Vikas Yojana",

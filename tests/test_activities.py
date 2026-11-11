@@ -167,7 +167,7 @@ class TestPrepareIngestionRecords:
                 document_id="test-doc",
                 filename="test.pdf",
                 chunks=chunks,
-                group=code,
+                instance=code,
             )
             assert records[0]["instance"] == code
             assert records[0]["instance_name"] == expected
@@ -213,7 +213,7 @@ class TestPrepareIngestionRecords:
             document_id="test-doc",
             filename="NMEO-OPGUIEDELINES.pdf",
             chunks=chunks,
-            group="bv",
+            instance="bv",
             kind="scheme",
             code="nmeoop",
             name="National Mission on Edible Oils - Oil Palm",
@@ -239,7 +239,7 @@ class TestPrepareIngestionRecords:
             document_id="test-doc",
             filename="test.pdf",
             chunks=chunks,
-            group="mh",
+            instance="mh",
             kind="document",
         )
 
@@ -859,7 +859,7 @@ class TestPublishCatalogToNetworkGroups:
         seen = {}
         self._wire(
             monkeypatch,
-            {"kind": "advisory", "group": instance},
+            {"kind": "advisory", "instance": instance},
             self._PUBLISHED,
             seen,
         )
@@ -883,7 +883,7 @@ class TestPublishCatalogToNetworkGroups:
         }
         recorded = self._wire(
             monkeypatch,
-            {"kind": "document", "group": "mh"},
+            {"kind": "document", "instance": "mh"},
             skipped,
             {},
         )
@@ -908,7 +908,7 @@ class TestPublishCatalogToNetworkGroups:
                 raise InvalidProviderIdError("Provider id 'advisory.ladakh_ut.provider.oan.dev' is invalid")
 
         monkeypatch.setattr(activities, "DiscoveryPublishService", FakeService)
-        monkeypatch.setattr(db, "get_document", lambda workflow_id: {"kind": "advisory", "group": "ladakh_ut"})
+        monkeypatch.setattr(db, "get_document", lambda workflow_id: {"kind": "advisory", "instance": "ladakh_ut"})
         recorded = {}
         monkeypatch.setattr(db, "add_document_artifact", lambda **kwargs: recorded.update(kwargs))
 
@@ -1020,7 +1020,7 @@ class TestSupersededPoints:
         # A second document is indexed under the very key the first one replaced.
         db_connection.upsert_document(
             workflow_id="wf-twin", document_id="a" * 32, filename="a.pdf",
-            filepath="minio://documents/a.pdf", group="gj", kind="scheme", code="twin",
+            filepath="minio://documents/a.pdf", instance="gj", kind="scheme", code="twin",
         )
         db_connection.upsert_document_index_status(
             "wf-twin", "documents-index", doc_id="a" * 32, status="indexed"

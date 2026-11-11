@@ -254,7 +254,7 @@ def _counts(db):
             table: conn.execute(f"SELECT count(*) AS n FROM {table}").fetchone()["n"]
             for table in (
                 "documents", "workflows", "workflow_artifacts", "pages", "chunks", "audit_logs",
-                "users", "groups", "catalogs", "email_otps", "webhook_records",
+                "users", "instances", "catalogs", "email_otps", "webhook_records",
             )
         }
 
@@ -294,7 +294,7 @@ class TestSqliteToPostgresMigration:
 
         doc = db.get_document(WF1)
         assert doc["stage"] == "completed"
-        assert doc["group"] == "mh"
+        assert doc["instance"] == "mh"
         assert doc["document_id"] == FP1
         assert doc["name"] == "Registry name"  # one name per document in v2
         assert (doc["valid_from"], doc["valid_to"]) == ("2026-03-01", "2027-03-01")
@@ -344,9 +344,9 @@ class TestSqliteToPostgresMigration:
         assert db.get_catalog_meta()["version"] == 6
 
         with db.get_connection() as conn:
-            groups = {g["path"]: g for g in conn.execute("SELECT * FROM groups").fetchall()}
+            groups = {g["path"]: g for g in conn.execute("SELECT * FROM instances").fetchall()}
             catalogs = conn.execute(
-                "SELECT g.path, c.type FROM catalogs c JOIN groups g ON g.id = c.group_id ORDER BY 1, 2"
+                "SELECT g.path, c.type FROM catalogs c JOIN instances g ON g.id = c.instance_id ORDER BY 1, 2"
             ).fetchall()
             meta = conn.execute(
                 "SELECT metadata FROM documents WHERE id = %s::uuid", (doc["id"],)
@@ -400,7 +400,7 @@ class TestSqliteToPostgresMigration:
         assert doc["kind"] == "advisory" and doc["code"] == "inflight"
         assert doc["prod_ready_requested_at"] == "2026-04-02T09:00:00"
         assert doc["prod_ready_requested_by_username"] == "rita"
-        assert doc["group"] == "up"
+        assert doc["instance"] == "up"
         assert doc["ocr_completed_at"] == "2026-04-01T11:00:00"
         types = sorted(j["job_type"] for j in db.list_document_jobs(WF2))
         assert types == ["pipeline", "promote_prod"]
@@ -415,7 +415,7 @@ class TestSqliteToPostgresMigration:
         doc = db.get_document(WF3)
         assert doc["stage"] == "failed" and doc["error_message"] == "OCR blew up"
         assert doc["document_id"] == hashlib.md5(b"not-a-hash").hexdigest()
-        assert doc["group"] == "default"
+        assert doc["instance"] == "default"
         assert doc["kind"] == "advisory" and doc["code"] == "broken"
         assert doc["valid_from"] == "2026-06-01" and doc["valid_to"] is None
         notes = " ".join(report.notes)

@@ -112,7 +112,7 @@ class TestGetDocumentGroup:
         [("mh", "mh"), ("MH", "mh"), ("bv", None), ("default", None), (None, None)],
     )
     def test_group_comes_from_the_documents_instance(self, instance, group):
-        repo = DocumentRepository(FakeDb(document={"group": instance}))
+        repo = DocumentRepository(FakeDb(document={"instance": instance}))
 
         assert repo.get_document_group("wf-1") == group
 

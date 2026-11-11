@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Ingest all PDFs from ~/test-docs via H100 pipeline API.
-# DOC_KIND: scheme (default) or advisory. PIPELINE_GROUP: tenant group code (optional).
+# DOC_KIND: scheme (default) or advisory. PIPELINE_INSTANCE: tenant instance code (optional).
 set -euo pipefail
 
 DOCS_DIR="${1:-$HOME/test-docs}"
 API="${PIPELINE_API:-http://127.0.0.1:8001}"
 DOC_KIND="${DOC_KIND:-scheme}"
 QUERY="auto_approve=true&kind=${DOC_KIND}"
-if [[ -n "${PIPELINE_GROUP:-}" ]]; then
-  QUERY="${QUERY}&group=${PIPELINE_GROUP}"
+if [[ -n "${PIPELINE_INSTANCE:-}" ]]; then
+  QUERY="${QUERY}&instance=${PIPELINE_INSTANCE}"
 fi
 
 if [[ ! -d "$DOCS_DIR" ]]; then

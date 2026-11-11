@@ -36,7 +36,7 @@ gate before **PROD**.
 |---|---|
 | Multilingual document → searchable chunks | OCR → translate → chunk → embed → index |
 | Human quality control | Temporal **signals** pause at OCR / translation / chunk / pre-ingest |
-| Multi-state tenancy | `documents.instance` + JWT groups; lists/search scoped |
+| Multi-state tenancy | Catalog-owned instance + JWT groups; document access scoped |
 | DEV before PROD | Stage 9 writes DEV index; stage 10 waits; Super Admin promotes to PROD |
 | Operability | Runs, queue, audit, reconcile, artifacts UI |
 | Durable long work | Temporal retries + Postgres state mirror |
@@ -255,12 +255,12 @@ Supporting workflows: `OcrOnly`, `TranslationOnly`, `ChunkingOnly`,
 
 ```text
 documents (id UUID PK)
-  ├── instance              # tenant / state code
+  ├── catalog_id            # → catalogs.instance_id → instances.name
   ├── source (JSONB)        # fingerprint, filename, storage_uri, page_count
   ├── index_status (JSONB)  # dev / prod vector index state
   ├── metadata (JSONB)      # chunk_count, reindex_required, is_demo, ...
   ├── uploaded_by_user_id   # → users
-  └── is_disabled / catalog_entry_id
+  └── is_disabled
 
 workflows (one per processing run; the latest gives the document's stage)
   └── workflow_type, status, current_stage, temporal_workflow_id  → Runs UI
@@ -276,6 +276,8 @@ chunks (document_id, chunk_number)
 audit_logs
   └── approvals, edits, promote_to_prod (outlives the document)
 ```
+
+The [legacy SQLite schema](SQLITE_SCHEMA.md) describes the importer’s source database.
 
 ### 7.3 Tenant rule
 - `instance` set **once** at create (not reassigned on upsert).  
@@ -399,7 +401,7 @@ Routes: Dashboard, Documents, New Document, Document Ops, Runs, Search, Users (S
 
 ### Runtime properties
 - API + worker: **same image**, different entrypoint  
-- Shared Postgres database (pooled connections per process; schema applied from `migrations/` at startup)  
+- Shared Postgres database (pooled connections per process; schema applied from `migrations/` at startup)
 - Horizontal scale: Temporal workers and API replicas scale out against the same database
 
 ---
@@ -450,7 +452,7 @@ Routes: Dashboard, Documents, New Document, Document Ops, Runs, Search, Users (S
 ## 17. Evolution / extension points
 
 1. Explicit **“Request PROD approval”** action (today: auto-enter queue after DEV).  
-2. Moving `chunk_count` / `is_demo` out of `documents.metadata` into columns if list queries slow down.  
+2. Moving `chunk_count` / `is_demo` out of `documents.metadata` into columns if list queries slow down.
 3. Stricter per-state role on every mutation (not only global permission).  
 4. Automated quality checks before Super Admin sees queue.  
 

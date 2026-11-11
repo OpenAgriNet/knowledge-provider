@@ -26,88 +26,88 @@ def _doc(db, workflow_id, **kwargs):
     return db.upsert_document(workflow_id=workflow_id, **kwargs)
 
 
-def _group(db, group="mh"):
-    return db.get_or_create_group(group)
+def _instance(db, instance="mh"):
+    return db.get_or_create_instance(instance)
 
 
 class TestGroups:
     @pytest.mark.db
     @pytest.mark.unit
-    def test_get_or_create_group_is_idempotent_and_maps_tenant_codes_to_paths(self, db_connection):
+    def test_get_or_create_instance_is_idempotent_and_maps_tenant_codes_to_paths(self, db_connection):
         db = db_connection
-        mh = _group(db, "mh")
-        assert _group(db, "MH") == mh
-        assert _group(db, "up") != mh
-        bv = _group(db, "bv")
+        mh = _instance(db, "mh")
+        assert _instance(db, "MH") == mh
+        assert _instance(db, "up") != mh
+        bv = _instance(db, "bv")
         with db.get_connection() as conn:
-            rows = {r["name"]: r["path"] for r in conn.execute("SELECT name, path FROM groups").fetchall()}
+            rows = {r["name"]: r["path"] for r in conn.execute("SELECT name, path FROM instances").fetchall()}
         assert rows == {"mh": "/states/MH", "up": "/states/UP", "bv": "/global"}
-        assert _group(db, "bv") == bv
+        assert _instance(db, "bv") == bv
 
     @pytest.mark.db
     @pytest.mark.unit
-    def test_upsert_group_fills_the_keycloak_id_of_an_existing_path(self, db_connection):
+    def test_upsert_instance_fills_the_keycloak_id_of_an_existing_path(self, db_connection):
         db = db_connection
-        first = db.upsert_group("/states/MH")  # as created by the SQLite move: no Keycloak id yet
-        again = db.upsert_group("/states/MH", keycloak_group_id="kc-group-1")
+        first = db.upsert_instance("/states/MH")  # as created by the SQLite move: no Keycloak id yet
+        again = db.upsert_instance("/states/MH", keycloak_group_id="kc-group-1")
         assert again == first
         with db.get_connection() as conn:
-            row = conn.execute("SELECT keycloak_group_id, name FROM groups WHERE id = %s::uuid", (first,)).fetchone()
+            row = conn.execute("SELECT keycloak_group_id, name FROM instances WHERE id = %s::uuid", (first,)).fetchone()
         assert (row["keycloak_group_id"], row["name"]) == ("kc-group-1", "mh")
         # A later sync that does not know the id must not erase it.
-        db.upsert_group("/states/MH")
+        db.upsert_instance("/states/MH")
         with db.get_connection() as conn:
-            row = conn.execute("SELECT keycloak_group_id FROM groups WHERE id = %s::uuid", (first,)).fetchone()
+            row = conn.execute("SELECT keycloak_group_id FROM instances WHERE id = %s::uuid", (first,)).fetchone()
         assert row["keycloak_group_id"] == "kc-group-1"
 
     @pytest.mark.db
     @pytest.mark.unit
     def test_keycloak_group_id_is_unique_but_nullable(self, db_connection):
         with db_connection.get_connection() as conn:
-            conn.execute("INSERT INTO groups (name, path) VALUES ('a', '/states/A')")
-            conn.execute("INSERT INTO groups (name, path) VALUES ('b', '/states/B')")  # two NULLs are fine
-            conn.execute("INSERT INTO groups (keycloak_group_id, name, path) VALUES ('k', 'c', '/states/C')")
+            conn.execute("INSERT INTO instances (name, path) VALUES ('a', '/states/A')")
+            conn.execute("INSERT INTO instances (name, path) VALUES ('b', '/states/B')")  # two NULLs are fine
+            conn.execute("INSERT INTO instances (keycloak_group_id, name, path) VALUES ('k', 'c', '/states/C')")
             with pytest.raises(psycopg.errors.UniqueViolation):
-                conn.execute("INSERT INTO groups (keycloak_group_id, name, path) VALUES ('k', 'd', '/states/D')")
+                conn.execute("INSERT INTO instances (keycloak_group_id, name, path) VALUES ('k', 'd', '/states/D')")
 
     @pytest.mark.db
     @pytest.mark.unit
-    def test_a_group_with_catalogs_cannot_be_deleted(self, db_connection):
+    def test_a_instance_with_catalogs_cannot_be_deleted(self, db_connection):
         db = db_connection
-        group_id = _group(db)
-        db.get_or_create_catalog(group_id, "scheme")
+        instance_id = _instance(db)
+        db.get_or_create_catalog(instance_id, "scheme")
         with db.get_connection() as conn:
             with pytest.raises(psycopg.errors.ForeignKeyViolation):
-                conn.execute("DELETE FROM groups WHERE id = %s::uuid", (group_id,))
+                conn.execute("DELETE FROM instances WHERE id = %s::uuid", (instance_id,))
 
     @pytest.mark.db
     @pytest.mark.unit
-    def test_deleting_a_group_clears_users_and_audit_snapshots(self, db_connection):
+    def test_deleting_a_instance_clears_users_and_audit_snapshots(self, db_connection):
         db = db_connection
-        group_id = _group(db, "zz")
+        instance_id = _instance(db, "zz")
         db.upsert_user("kc-zz", "zed", None, [], tenants=["zz"])
         with db.get_connection() as conn:
             conn.execute(
-                "INSERT INTO audit_logs (action_type, entity_type, group_id) VALUES ('x', 'setting', %s::uuid)",
-                (group_id,),
+                "INSERT INTO audit_logs (action_type, entity_type, instance_id) VALUES ('x', 'setting', %s::uuid)",
+                (instance_id,),
             )
-            conn.execute("DELETE FROM catalogs WHERE group_id = %s::uuid", (group_id,))
-            conn.execute("DELETE FROM groups WHERE id = %s::uuid", (group_id,))
-            assert conn.execute("SELECT group_id FROM audit_logs WHERE action_type = 'x'").fetchone()["group_id"] is None
-        assert db.get_user_by_keycloak_id("kc-zz")["group_id"] is None
+            conn.execute("DELETE FROM catalogs WHERE instance_id = %s::uuid", (instance_id,))
+            conn.execute("DELETE FROM instances WHERE id = %s::uuid", (instance_id,))
+            assert conn.execute("SELECT instance_id FROM audit_logs WHERE action_type = 'x'").fetchone()["instance_id"] is None
+        assert db.get_user_by_keycloak_id("kc-zz")["instance_id"] is None
 
 
 class TestCatalogs:
     @pytest.mark.db
     @pytest.mark.unit
-    def test_a_new_group_gets_one_catalog_per_supported_type(self, db_connection):
+    def test_a_new_instance_gets_one_catalog_per_supported_type(self, db_connection):
         from pipeline.network_constants import KIND_TO_CATALOG_TYPE
 
         db = db_connection
-        mh = _group(db, "mh")
+        mh = _instance(db, "mh")
         with db.get_connection() as conn:
             rows = conn.execute(
-                "SELECT type, name FROM catalogs WHERE group_id = %s::uuid ORDER BY type", (mh,)
+                "SELECT type, name FROM catalogs WHERE instance_id = %s::uuid ORDER BY type", (mh,)
             ).fetchall()
         assert [r["type"] for r in rows] == sorted(KIND_TO_CATALOG_TYPE.values())
         assert {r["name"] for r in rows} == {
@@ -118,14 +118,14 @@ class TestCatalogs:
     @pytest.mark.unit
     def test_upload_uses_the_seeded_catalog_and_creates_none(self, db_connection):
         db = db_connection
-        mh = _group(db, "mh")
+        mh = _instance(db, "mh")
         with db.get_connection() as conn:
             seeded = conn.execute(
-                "SELECT id FROM catalogs WHERE group_id = %s::uuid AND type = 'openagrinet:AgricultureResource'",
+                "SELECT id FROM catalogs WHERE instance_id = %s::uuid AND type = 'openagrinet:AgricultureResource'",
                 (mh,),
             ).fetchone()["id"]
             before = conn.execute("SELECT count(*) AS n FROM catalogs").fetchone()["n"]
-        _doc(db, "wf-seeded", group="mh", code="seeded")
+        _doc(db, "wf-seeded", instance="mh", code="seeded")
         assert db.get_document("wf-seeded")["catalog_id"] == str(seeded)
         with db.get_connection() as conn:
             assert conn.execute("SELECT count(*) AS n FROM catalogs").fetchone()["n"] == before
@@ -134,39 +134,39 @@ class TestCatalogs:
     @pytest.mark.unit
     def test_a_missing_catalog_is_created_on_demand(self, db_connection):
         db = db_connection
-        mh = _group(db, "mh")
+        mh = _instance(db, "mh")
         with db.get_connection() as conn:
             conn.execute(
-                "DELETE FROM catalogs WHERE group_id = %s::uuid AND type = 'openagrinet:KnowledgeAdvisory'",
+                "DELETE FROM catalogs WHERE instance_id = %s::uuid AND type = 'openagrinet:KnowledgeAdvisory'",
                 (mh,),
             )
-        _doc(db, "wf-fallback", group="mh", code="fallback", kind="advisory")
+        _doc(db, "wf-fallback", instance="mh", code="fallback", kind="advisory")
         assert db.get_document("wf-fallback")["kind"] == "advisory"
 
     @pytest.mark.db
     @pytest.mark.unit
-    def test_startup_sync_fills_missing_catalogs_for_every_group_and_is_idempotent(self, db_connection):
+    def test_startup_sync_fills_missing_catalogs_for_every_instance_and_is_idempotent(self, db_connection):
         db = db_connection
-        mh, up = _group(db, "mh"), _group(db, "up")
+        mh, up = _instance(db, "mh"), _instance(db, "up")
         with db.get_connection() as conn:
             conn.execute("DELETE FROM catalogs WHERE type = 'openagrinet:VideoResource'")
             conn.execute(
-                "DELETE FROM catalogs WHERE group_id = %s::uuid AND type = 'openagrinet:KnowledgeAdvisory'", (up,)
+                "DELETE FROM catalogs WHERE instance_id = %s::uuid AND type = 'openagrinet:KnowledgeAdvisory'", (up,)
             )
-        assert db.sync_catalogs_for_all_groups() == 3
-        assert db.sync_catalogs_for_all_groups() == 0
+        assert db.sync_catalogs_for_all_instances() == 3
+        assert db.sync_catalogs_for_all_instances() == 0
         with db.get_connection() as conn:
             counts = {
-                str(r["group_id"]): r["n"]
-                for r in conn.execute("SELECT group_id, count(*) AS n FROM catalogs GROUP BY group_id")
+                str(r["instance_id"]): r["n"]
+                for r in conn.execute("SELECT instance_id, count(*) AS n FROM catalogs GROUP BY instance_id")
             }
         assert counts == {mh: 3, up: 3}
 
     @pytest.mark.db
     @pytest.mark.unit
-    def test_get_or_create_catalog_is_idempotent_per_group_and_kind(self, db_connection):
+    def test_get_or_create_catalog_is_idempotent_per_instance_and_kind(self, db_connection):
         db = db_connection
-        mh = _group(db, "mh")
+        mh = _instance(db, "mh")
         scheme = db.get_or_create_catalog(mh, "scheme")
         assert db.get_or_create_catalog(mh, "scheme")["id"] == scheme["id"]
         assert scheme["type"] == "openagrinet:AgricultureResource"
@@ -174,52 +174,52 @@ class TestCatalogs:
         advisory = db.get_or_create_catalog(mh, "advisory")
         assert advisory["id"] != scheme["id"]
         assert advisory["type"] == "openagrinet:KnowledgeAdvisory"
-        assert db.get_or_create_catalog(_group(db, "up"), "scheme")["id"] != scheme["id"]
+        assert db.get_or_create_catalog(_instance(db, "up"), "scheme")["id"] != scheme["id"]
 
     @pytest.mark.db
     @pytest.mark.unit
     def test_a_kind_without_a_catalog_type_is_rejected(self, db_connection):
         with pytest.raises(ValueError):
-            db_connection.get_or_create_catalog(_group(db_connection), "podcast")
+            db_connection.get_or_create_catalog(_instance(db_connection), "podcast")
 
     @pytest.mark.db
     @pytest.mark.unit
-    def test_one_catalog_per_group_and_type(self, db_connection):
+    def test_one_catalog_per_instance_and_type(self, db_connection):
         db = db_connection
-        group_id = _group(db)
+        instance_id = _instance(db)
         with db.get_connection() as conn:
             conn.execute(
-                "INSERT INTO catalogs (group_id, type, name) VALUES (%s::uuid, 'openagrinet:MandiPrice', 'A')",
-                (group_id,),
+                "INSERT INTO catalogs (instance_id, type, name) VALUES (%s::uuid, 'openagrinet:MandiPrice', 'A')",
+                (instance_id,),
             )
             with pytest.raises(psycopg.errors.UniqueViolation):
                 conn.execute(
-                    "INSERT INTO catalogs (group_id, type, name) VALUES (%s::uuid, 'openagrinet:MandiPrice', 'B')",
-                    (group_id,),
+                    "INSERT INTO catalogs (instance_id, type, name) VALUES (%s::uuid, 'openagrinet:MandiPrice', 'B')",
+                    (instance_id,),
                 )
 
     @pytest.mark.db
     @pytest.mark.unit
     @pytest.mark.parametrize("bad_type", ["scheme", "openagrinet:", ":Thing", "open agrinet:X", "a:b:c", ""])
     def test_type_must_look_like_a_schema_name(self, db_connection, bad_type):
-        group_id = _group(db_connection)
+        instance_id = _instance(db_connection)
         with db_connection.get_connection() as conn:
             with pytest.raises(psycopg.errors.CheckViolation):
                 conn.execute(
-                    "INSERT INTO catalogs (group_id, type, name) VALUES (%s::uuid, %s, 'N')",
-                    (group_id, bad_type),
+                    "INSERT INTO catalogs (instance_id, type, name) VALUES (%s::uuid, %s, 'N')",
+                    (instance_id, bad_type),
                 )
 
     @pytest.mark.db
     @pytest.mark.unit
     def test_catalog_metadata_must_be_an_object(self, db_connection):
-        group_id = _group(db_connection)
+        instance_id = _instance(db_connection)
         with db_connection.get_connection() as conn:
             with pytest.raises(psycopg.errors.CheckViolation):
                 conn.execute(
-                    "INSERT INTO catalogs (group_id, type, name, metadata) "
+                    "INSERT INTO catalogs (instance_id, type, name, metadata) "
                     "VALUES (%s::uuid, 'openagrinet:MandiPrice', 'N', '[]'::jsonb)",
-                    (group_id,),
+                    (instance_id,),
                 )
 
     @pytest.mark.db
@@ -248,12 +248,12 @@ class TestDocumentIdentity:
     @pytest.mark.unit
     def test_a_new_document_lands_in_its_tenants_catalog_of_that_kind(self, db_connection):
         db = db_connection
-        _doc(db, "wf-land", group="mh", kind="advisory", code="kharif", name="Kharif advice")
+        _doc(db, "wf-land", instance="mh", kind="advisory", code="kharif", name="Kharif advice")
         doc = db.get_document("wf-land")
-        assert (doc["group"], doc["kind"], doc["code"], doc["name"]) == (
+        assert (doc["instance"], doc["kind"], doc["code"], doc["name"]) == (
             "mh", "advisory", "kharif", "Kharif advice",
         )
-        expected = db.get_or_create_catalog(_group(db, "mh"), "advisory")["id"]
+        expected = db.get_or_create_catalog(_instance(db, "mh"), "advisory")["id"]
         assert doc["catalog_id"] == expected
 
     @pytest.mark.db
@@ -266,18 +266,18 @@ class TestDocumentIdentity:
     @pytest.mark.unit
     def test_a_code_is_unique_within_its_catalog(self, db_connection):
         db = db_connection
-        _doc(db, "wf-one", group="mh", code="pm-kisan")
+        _doc(db, "wf-one", instance="mh", code="pm-kisan")
         with pytest.raises(db.DuplicateDocumentCode):
-            _doc(db, "wf-two", group="mh", code="pm-kisan")
+            _doc(db, "wf-two", instance="mh", code="pm-kisan")
         assert db.get_document("wf-two") is None
 
     @pytest.mark.db
     @pytest.mark.unit
-    def test_the_same_code_is_fine_in_another_group_or_kind(self, db_connection):
+    def test_the_same_code_is_fine_in_another_instance_or_kind(self, db_connection):
         db = db_connection
-        _doc(db, "wf-mh", group="mh", code="pm-kisan")
-        _doc(db, "wf-up", group="up", code="pm-kisan")
-        _doc(db, "wf-adv", group="mh", code="pm-kisan", kind="advisory")
+        _doc(db, "wf-mh", instance="mh", code="pm-kisan")
+        _doc(db, "wf-up", instance="up", code="pm-kisan")
+        _doc(db, "wf-adv", instance="mh", code="pm-kisan", kind="advisory")
         assert {d["workflow_id"] for d in db.list_documents()} == {"wf-mh", "wf-up", "wf-adv"}
 
     @pytest.mark.db
@@ -295,7 +295,7 @@ class TestDocumentIdentity:
     @pytest.mark.unit
     def test_find_document_by_code(self, db_connection):
         db = db_connection
-        _doc(db, "wf-find", group="mh", code="pm-kisan")
+        _doc(db, "wf-find", instance="mh", code="pm-kisan")
         found = db.find_document_by_code("mh", "scheme", "pm-kisan")
         assert found and found["workflow_id"] == "wf-find"
         assert db.find_document_by_code("MH", "scheme", "pm-kisan")["id"] == found["id"]
@@ -307,7 +307,7 @@ class TestDocumentIdentity:
     @pytest.mark.unit
     def test_the_kind_does_not_change_after_the_document_exists(self, db_connection):
         db = db_connection
-        _doc(db, "wf-kind", group="mh", code="fixed")
+        _doc(db, "wf-kind", instance="mh", code="fixed")
         before = db.get_document("wf-kind")["catalog_id"]
         db.update_document_fields("wf-kind", kind="advisory")
         doc = db.get_document("wf-kind")
@@ -376,11 +376,11 @@ class TestReupload:
 class TestUserGroup:
     @pytest.mark.db
     @pytest.mark.unit
-    def test_a_single_tenant_sets_the_group_without_a_warning(self, db_connection, caplog):
+    def test_a_single_tenant_sets_the_instance_without_a_warning(self, db_connection, caplog):
         db = db_connection
         with caplog.at_level(logging.WARNING, logger="pipeline.db"):
             db.upsert_user("kc-one", "one", None, [], tenants=["MH"])
-        assert db.get_user_by_keycloak_id("kc-one")["group_id"] == _group(db, "mh")
+        assert db.get_user_by_keycloak_id("kc-one")["instance_id"] == _instance(db, "mh")
         assert not [r for r in caplog.records if "tenants" in r.getMessage()]
 
     @pytest.mark.db
@@ -389,18 +389,18 @@ class TestUserGroup:
         db = db_connection
         with caplog.at_level(logging.WARNING, logger="pipeline.db"):
             db.upsert_user("kc-many", "many", None, [], tenants=["up", "mh", "up"])
-        assert db.get_user_by_keycloak_id("kc-many")["group_id"] == _group(db, "mh")
+        assert db.get_user_by_keycloak_id("kc-many")["instance_id"] == _instance(db, "mh")
         warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
         assert any("kc-many" in w and "mh" in w for w in warnings)
 
     @pytest.mark.db
     @pytest.mark.unit
-    def test_a_login_without_tenants_keeps_the_stored_group(self, db_connection):
+    def test_a_login_without_tenants_keeps_the_stored_instance(self, db_connection):
         db = db_connection
         db.upsert_user("kc-keep", "keep", None, [], tenants=["up"])
         db.upsert_user("kc-keep", "keep", None, [])
         db.upsert_user("kc-keep", "keep", None, [], tenants=[])
-        assert db.get_user_by_keycloak_id("kc-keep")["group_id"] == _group(db, "up")
+        assert db.get_user_by_keycloak_id("kc-keep")["instance_id"] == _instance(db, "up")
 
     @pytest.mark.db
     @pytest.mark.unit
@@ -408,23 +408,23 @@ class TestUserGroup:
         db = db_connection
         db.upsert_user("kc-move", "move", None, [], tenants=["up"])
         db.upsert_user("kc-move", "move", None, [], tenants=["mh"])
-        assert db.get_user_by_keycloak_id("kc-move")["group_id"] == _group(db, "mh")
+        assert db.get_user_by_keycloak_id("kc-move")["instance_id"] == _instance(db, "mh")
 
     @pytest.mark.db
     @pytest.mark.unit
-    def test_users_without_tenants_have_no_group(self, db_connection):
+    def test_users_without_tenants_have_no_instance(self, db_connection):
         db_connection.upsert_user("kc-none", "none", None, [])
-        assert db_connection.get_user_by_keycloak_id("kc-none")["group_id"] is None
+        assert db_connection.get_user_by_keycloak_id("kc-none")["instance_id"] is None
 
     @pytest.mark.db
     @pytest.mark.unit
-    def test_the_uploader_lands_in_the_documents_metadata_and_gets_the_tenant_group(self, db_connection):
+    def test_the_uploader_lands_in_the_documents_metadata_and_gets_the_tenant_instance(self, db_connection):
         db = db_connection
-        _doc(db, "wf-up", group="mh", uploaded_by_user_id="kc-up", uploaded_by_username="uma")
+        _doc(db, "wf-up", instance="mh", uploaded_by_user_id="kc-up", uploaded_by_username="uma")
         doc = db.get_document("wf-up")
         user = db.get_user_by_keycloak_id("kc-up")
         assert doc["uploaded_by_user_id"] == "kc-up"
-        assert user["group_id"] == _group(db, "mh")
+        assert user["instance_id"] == _instance(db, "mh")
         with db.get_connection() as conn:
             meta = conn.execute("SELECT metadata FROM documents").fetchone()["metadata"]
         assert meta["uploaded_by_user_id"] == user["id"]
@@ -433,20 +433,20 @@ class TestUserGroup:
 class TestAuditGroupSnapshot:
     @pytest.mark.db
     @pytest.mark.unit
-    def test_an_entry_snapshots_the_documents_group(self, db_connection):
+    def test_an_entry_snapshots_the_documents_instance(self, db_connection):
         db = db_connection
-        _doc(db, "wf-aud", group="mh")
+        _doc(db, "wf-aud", instance="mh")
         db.log_audit(workflow_id="wf-aud", document_id="x", action_type="page_edit", entity_type="page")
         with db.get_connection() as conn:
-            row = conn.execute("SELECT group_id FROM audit_logs WHERE action_type = 'page_edit'").fetchone()
-        assert str(row["group_id"]) == _group(db, "mh")
+            row = conn.execute("SELECT instance_id FROM audit_logs WHERE action_type = 'page_edit'").fetchone()
+        assert str(row["instance_id"]) == _instance(db, "mh")
 
     @pytest.mark.db
     @pytest.mark.unit
     def test_the_snapshot_survives_a_purge_and_keeps_tenant_scope(self, db_connection):
         db = db_connection
-        _doc(db, "wf-gone", group="mh")
-        _doc(db, "wf-other", group="up", code="other")
+        _doc(db, "wf-gone", instance="mh")
+        _doc(db, "wf-other", instance="up", code="other")
         for wf in ("wf-gone", "wf-other"):
             db.log_audit(workflow_id=wf, document_id="x", action_type="purge_document", entity_type="document")
         db.purge_document("wf-gone")
@@ -454,26 +454,26 @@ class TestAuditGroupSnapshot:
 
         with db.get_connection() as conn:
             rows = conn.execute(
-                "SELECT document_id, group_id, workflow_id FROM audit_logs WHERE action_type = 'purge_document'"
+                "SELECT document_id, instance_id, workflow_id FROM audit_logs WHERE action_type = 'purge_document'"
             ).fetchall()
         assert {r["workflow_id"] for r in rows} == {"wf-gone", "wf-other"}
         assert all(r["document_id"] is None for r in rows)
-        assert {str(r["group_id"]) for r in rows} == {_group(db, "mh"), _group(db, "up")}
-        assert db.get_all_audit_log_count(groups=["mh"]) == 1
-        assert db.get_all_audit_log_count(groups=["up"]) == 1
-        assert db.get_all_audit_log_count(groups=["gj"]) == 0
-        assert [e["workflow_id"] for e in db.get_all_audit_logs(groups=["mh"])] == ["wf-gone"]
-        assert db.get_all_audit_logs(groups=["mh"])[0]["instance"] == "mh"
+        assert {str(r["instance_id"]) for r in rows} == {_instance(db, "mh"), _instance(db, "up")}
+        assert db.get_all_audit_log_count(instances=["mh"]) == 1
+        assert db.get_all_audit_log_count(instances=["up"]) == 1
+        assert db.get_all_audit_log_count(instances=["gj"]) == 0
+        assert [e["workflow_id"] for e in db.get_all_audit_logs(instances=["mh"])] == ["wf-gone"]
+        assert db.get_all_audit_logs(instances=["mh"])[0]["instance"] == "mh"
 
     @pytest.mark.db
     @pytest.mark.unit
-    def test_system_entries_have_no_group(self, db_connection):
+    def test_system_entries_have_no_instance(self, db_connection):
         db = db_connection
         db.log_audit(workflow_id="__catalog__", document_id="__catalog__", action_type="catalog_rebuild",
                      entity_type="catalog")
         with db.get_connection() as conn:
-            row = conn.execute("SELECT group_id, document_id FROM audit_logs WHERE action_type = 'catalog_rebuild'").fetchone()
-        assert row["group_id"] is None and row["document_id"] is None
+            row = conn.execute("SELECT instance_id, document_id FROM audit_logs WHERE action_type = 'catalog_rebuild'").fetchone()
+        assert row["instance_id"] is None and row["document_id"] is None
 
 
 class TestCatalogStatusView:
@@ -484,16 +484,16 @@ class TestCatalogStatusView:
 
     @pytest.mark.db
     @pytest.mark.unit
-    def test_one_row_per_document_with_catalog_group_and_type(self, db_connection):
+    def test_one_row_per_document_with_catalog_instance_and_type(self, db_connection):
         db = db_connection
-        _doc(db, "wf-1", group="mh", code="alpha", stage="completed")
-        _doc(db, "wf-2", group="mh", code="beta", stage="completed")
-        _doc(db, "wf-3", group="up", code="gamma", stage="completed", kind="advisory")
+        _doc(db, "wf-1", instance="mh", code="alpha", stage="completed")
+        _doc(db, "wf-2", instance="mh", code="beta", stage="completed")
+        _doc(db, "wf-3", instance="up", code="gamma", stage="completed", kind="advisory")
         rows = self._rows(db)
         assert set(rows) == {"alpha", "beta", "gamma"}
         assert rows["alpha"]["catalog_id"] == rows["beta"]["catalog_id"] != rows["gamma"]["catalog_id"]
-        assert str(rows["alpha"]["group_id"]) == _group(db, "mh")
-        assert (rows["alpha"]["group_name"], rows["gamma"]["group_name"]) == ("mh", "up")
+        assert str(rows["alpha"]["instance_id"]) == _instance(db, "mh")
+        assert (rows["alpha"]["instance_name"], rows["gamma"]["instance_name"]) == ("mh", "up")
         assert rows["alpha"]["type"] == "openagrinet:AgricultureResource"
         assert rows["gamma"]["type"] == "openagrinet:KnowledgeAdvisory"
         assert rows["alpha"]["workflow_id"] == "wf-1"
@@ -568,7 +568,7 @@ class TestCatalogStatusView:
     @pytest.mark.unit
     def test_a_catalog_without_documents_has_no_rows(self, db_connection):
         db = db_connection
-        db.get_or_create_catalog(_group(db), "scheme")
+        db.get_or_create_catalog(_instance(db), "scheme")
         assert self._rows(db) == {}
 
 
@@ -725,7 +725,7 @@ class TestSharedIndexKeys:
 
     @staticmethod
     def _indexed_twin(db, workflow_id, key, env="dev", **kwargs):
-        _doc(db, workflow_id, document_id=key, group="gj", **kwargs)
+        _doc(db, workflow_id, document_id=key, instance="gj", **kwargs)
         index = "prod-index" if env == "prod" else "documents-index"
         db.upsert_document_index_status(workflow_id, index, doc_id=key, status="indexed")
 
@@ -749,7 +749,7 @@ class TestSharedIndexKeys:
     def test_an_uploaded_but_unindexed_twin_does_not_block_deletion(self, db_connection):
         db = db_connection
         first = _doc(db, "wf-up-a", document_id="e" * 32)
-        _doc(db, "wf-up-b", document_id="e" * 32, group="gj")  # same file, never indexed
+        _doc(db, "wf-up-b", document_id="e" * 32, instance="gj")  # same file, never indexed
 
         assert db.doc_id_used_by_other_document("e" * 32, first, "dev") is False
 

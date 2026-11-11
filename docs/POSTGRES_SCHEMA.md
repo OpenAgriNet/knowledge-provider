@@ -1,6 +1,6 @@
 # Postgres Schema — knowledge-provider
 
-Postgres schema behind `pipeline/db.py`. A document is content and metadata. A workflow is one run of processing against a document. A document belongs to a catalog (a provider group plus a resource type) and is identified there by its `code`. Source file and vector index state are stored as JSONB on the document. Translations are stored as JSONB on each page.
+Postgres schema behind `pipeline/db.py`. A document is content and metadata. A workflow is one run of processing against a document. A document belongs to a catalog (a provider instance plus a resource type) and is identified there by its `code`. Source file and vector index state are stored as JSONB on the document. Translations are stored as JSONB on each page.
 
 The schema is created by `migrations/0001_initial_schema.sql` and applied by the api and worker at startup (`pipeline/migrate.py`). `pipeline/db.py` is the only code that reads or writes it. The previous SQLite store is described in `docs/SQLITE_SCHEMA.md` (legacy) and is moved over once by `scripts/migrate_sqlite_to_postgres.py`.
 
@@ -43,9 +43,9 @@ The database does not check these values, so adding one needs no migration. Raw 
 
 | # | Table | Purpose |
 |---|---|---|
-| 1 | `groups` | Provider tenant nodes (`/states/MH`, `/global`), mirrored from Keycloak |
+| 1 | `instances` | Provider tenant nodes (`/states/MH`, `/global`), mirrored from Keycloak |
 | 2 | `users` | People who upload, review and act, mirrored from Keycloak |
-| 3 | `catalogs` | One row per provider group and resource type (scheme, advisory, video) |
+| 3 | `catalogs` | One row per provider instance and resource type (scheme, advisory, video) |
 | 4 | `documents` | One row per document. Content, metadata, source file, index state |
 | 5 | `workflows` | One row per processing run of a document. Stage, status, config |
 | 6 | `workflow_artifacts` | Files each workflow produces, stored in MinIO |
@@ -62,36 +62,36 @@ The database does not check these values, so adding one needs no migration. Raw 
 Relationships:
 
 ```
-groups 1 ── * users            (users.group_id, nullable)
-groups 1 ── * catalogs 1 ── * documents 1 ── * workflows 1 ── * workflow_artifacts
+instances 1 ── * users            (users.instance_id, nullable)
+instances 1 ── * catalogs 1 ── * documents 1 ── * workflows 1 ── * workflow_artifacts
                                    │
                                    ├── * pages
                                    └── * chunks
-groups 1 ── * audit_logs       (audit_logs.group_id, snapshot, SET NULL)
+instances 1 ── * audit_logs       (audit_logs.instance_id, snapshot, SET NULL)
 ```
 
-Dependency order for creation: `groups`, `users`, `catalogs`, `documents`, `workflows`, `workflow_artifacts`, `pages`, `chunks`, `audit_logs`, `search_settings`, `email_otps`, `webhook_records`, views.
+Dependency order for creation: `instances`, `users`, `catalogs`, `documents`, `workflows`, `workflow_artifacts`, `pages`, `chunks`, `audit_logs`, `search_settings`, `email_otps`, `webhook_records`, views.
 
 ---
 
-## 1. `groups`
+## 1. `instances`
 
-One row per tenant node (a state, the centre, or the platform), mirrored from Keycloak. A group is a provider: it owns catalogs. Rows are created on demand from a tenant code (`get_or_create_group`) or from a Keycloak group path (`upsert_group`).
+One row per tenant node (a state, the centre, or the platform), mirrored from Keycloak. An instance is a provider: it owns catalogs. Rows are created on demand from a tenant code (`get_or_create_instance`) or from a Keycloak group path (`upsert_instance`).
 
 Unique: `keycloak_group_id`, `path`.
 
 | Column | Type | Constraints / Default | Purpose |
 |---|---|---|---|
-| id | UUID | PRIMARY KEY, DEFAULT gen_random_uuid() | Internal group ID. |
+| id | UUID | PRIMARY KEY, DEFAULT gen_random_uuid() | Internal instance ID. |
 | keycloak_group_id | TEXT | UNIQUE | Keycloak group ID. NULL until a sync that sees the path fills it (rows made by the SQLite move or by an upload have none). |
-| name | TEXT | NOT NULL | Tenant code, lowercase (`mh`, `bv`). This is what the API calls the document's `group`. |
+| name | TEXT | NOT NULL | Tenant code, lowercase (`mh`, `bv`). This is what the API calls the document's `instance`. |
 | path | TEXT | NOT NULL UNIQUE | Keycloak group path: `/states/MH`, or `/global` for `bv`. |
 | created_at | TIMESTAMPTZ | NOT NULL DEFAULT now() | Created. |
 | updated_at | TIMESTAMPTZ | NOT NULL DEFAULT now() | Last change (trigger). |
 
 Notes
 - Only the tenant node is mirrored, not the role leaves (`/states/MH/admin`). Roles and permissions are read from the token, not from this table.
-- Role leaves stay in Keycloak; `catalogs.group_id` points at the tenant node.
+- Role leaves stay in Keycloak; `catalogs.instance_id` points at the tenant node.
 
 ---
 
@@ -108,30 +108,30 @@ Unique: `keycloak_user_id`; unique index on `lower(email)` where `email IS NOT N
 | username | TEXT | | Current username. |
 | email | TEXT | | Current email. |
 | roles | TEXT[] | NOT NULL DEFAULT '{}' | Current roles. |
-| group_id | UUID | FK → `groups(id)` ON DELETE SET NULL | The user's group (tenant). Single membership for now. |
+| instance_id | UUID | FK → `instances(id)` ON DELETE SET NULL | The user's instance (tenant). Single membership for now. |
 | first_seen_at | TIMESTAMPTZ | NOT NULL DEFAULT now() | First login or upload. |
 | last_seen_at | TIMESTAMPTZ | NOT NULL DEFAULT now() | Most recent activity. |
 
 Notes
 - Upserted on each authenticated upload or login. A `local-admin` row is seeded by the migration.
-- A token can carry several tenants but `group_id` holds one: `upsert_user(..., tenants=[...])` uses the first code in sorted order and logs a warning when there are several. Authorization still reads the token.
-- If users later need several groups, add a `user_groups` join table and drop `group_id`.
+- A token can carry several tenants but `instance_id` holds one: `upsert_user(..., tenants=[...])` uses the first code in sorted order and logs a warning when there are several. Authorization still reads the token.
+- If users later need several instances, add a `user_instances` join table and drop `instance_id`.
 - Point-in-time identity is kept in `audit_logs.actor`.
 
 ---
 
 ## 3. `catalogs`
 
-One row per provider group and resource type. A catalog is what a provider publishes on the network: Mahavistar's `scheme` catalog and its `advisory` catalog are two rows. A new type adds rows, not tables.
+One row per provider instance and resource type. A catalog is what a provider publishes on the network: Mahavistar's `scheme` catalog and its `advisory` catalog are two rows. A new type adds rows, not tables.
 
-Unique: `(group_id, type)`.
+Unique: `(instance_id, type)`.
 
 | Column | Type | Constraints / Default | Purpose |
 |---|---|---|---|
 | id | UUID | PRIMARY KEY, DEFAULT gen_random_uuid() | Catalog ID. |
-| group_id | UUID | NOT NULL, FK → `groups(id)` ON DELETE RESTRICT | The provider that owns the catalog. |
+| instance_id | UUID | NOT NULL, FK → `instances(id)` ON DELETE RESTRICT | The provider that owns the catalog. |
 | type | TEXT | NOT NULL, CHECK `^[a-z0-9]+:[A-Za-z0-9]+$` | Network schema/capability, e.g. `openagrinet:AgricultureResource`. |
-| name | TEXT | NOT NULL | Catalog display name. Defaults to `<group name> <kind>` when created on upload. |
+| name | TEXT | NOT NULL | Catalog display name. Defaults to `<instance name> <kind>` when created on upload. |
 | metadata | JSONB | NOT NULL DEFAULT '{}', CHECK object | Beckn publish information. See keys below. |
 | created_at | TIMESTAMPTZ | NOT NULL DEFAULT now() | Created. |
 | updated_at | TIMESTAMPTZ | NOT NULL DEFAULT now() | Last change (trigger). |
@@ -149,7 +149,7 @@ Pydantic (`CatalogMetadata`) validates the keys; the database only checks for an
 
 Notes
 - `type` stores the schema name, and code asks `pipeline/network_constants.py` what it means (`catalog_type_for_kind`, `kind_for_catalog_type`) instead of comparing `openagrinet:*` strings. The mapping is a placeholder: `scheme` is `openagrinet:AgricultureResource`, `advisory` is `openagrinet:KnowledgeAdvisory`, `video` is `openagrinet:VideoResource` (see ADR 0003 and ADR 0006).
-- Every group gets one catalog per supported type when the group row is created (`upsert_group` calls `ensure_group_catalogs` in the same transaction). Startup (`init_db`) runs `sync_catalogs_for_all_groups`, so a type added to `KIND_TO_CATALOG_TYPE` reaches existing groups. Upload keeps `get_or_create_catalog` as a fallback for a catalog that is missing. Names are `<GROUP> <kind> catalog`, for example `MH scheme catalog`.
+- Every instance gets one catalog per supported type when the instance row is created (`upsert_instance` calls `ensure_instance_catalogs` in the same transaction). Startup (`init_db`) runs `sync_catalogs_for_all_instances`, so a type added to `KIND_TO_CATALOG_TYPE` reaches existing instances. Upload keeps `get_or_create_catalog` as a fallback for a catalog that is missing. Names are `<INSTANCE> <kind> catalog`, for example `MH scheme catalog`.
 - Computed catalog values (status, chunk count, network visibility, `promoted_at`) come from the `catalog_status` view, not stored here.
 
 ---
@@ -163,7 +163,7 @@ Unique: `(catalog_id, code)`.
 | Column | Type | Constraints / Default | Purpose |
 |---|---|---|---|
 | id | UUID | PRIMARY KEY, DEFAULT gen_random_uuid() | Document ID. |
-| catalog_id | UUID | NOT NULL, FK → `catalogs(id)` ON DELETE RESTRICT | Catalog (provider group + type) the document belongs to. |
+| catalog_id | UUID | NOT NULL, FK → `catalogs(id)` ON DELETE RESTRICT | Catalog (provider instance + type) the document belongs to. |
 | code | TEXT | NOT NULL, CHECK `^[a-z0-9]+(-[a-z0-9]+)*$` | Short code (`pm-kmy`) that catalog consumers see. Unique within the catalog. |
 | name | TEXT | NOT NULL | Display name. |
 | aliases | TEXT[] | NOT NULL DEFAULT '{}', CHECK no empty string | Ordered alternate names used to match queries. The first one is the prompt hint. |
@@ -231,12 +231,12 @@ Column default: `'{"index_status": {}, "catalog_visible": true, "network_visible
 
 ### Notes
 - A document's stage is the `current_stage` of its latest workflow. List and filter queries join the `document_current_workflow` view.
-- The API's `group` is derived: `documents.catalog_id → catalogs.group_id → groups.name`. There is no `documents.instance` column, and tenant filters join `groups`.
+- The API's `instance` is derived: `documents.catalog_id → catalogs.instance_id → instances.name`. There is no `documents.instance` column, and tenant filters join `instances`.
 - The API's `document_kind` is derived from `catalogs.type` through the map in `network_constants.py`. `scheme_code`, `scheme_name` and `scheme_aliases` are `code`, `name` and `aliases`.
 - `chunk_count` and `page_count` are counted from `chunks` and `pages`; they are not stored.
-- A new document needs a `document_kind` and a `code`. Upload gets the catalog from the tenant and the kind (seeded with the group; created when missing). A document's kind is fixed after upload, so there is no kind change. `DuplicateDocumentCode` is raised when the code is taken in that catalog.
+- A new document needs a `document_kind` and a `code`. Upload gets the catalog from the tenant and the kind (seeded with the instance; created when missing). A document's kind is fixed after upload, so there is no kind change. `DuplicateDocumentCode` is raised when the code is taken in that catalog.
 - Re-uploading an existing code updates the same document: a new workflow starts, `source` is replaced, pages and chunks are cleared and `reindex_required` is set (`reset_document_for_reupload`). Earlier workflows and artifacts stay as history.
-- Changing a document's kind moves it to the same group's catalog of the new type (`update_document_fields(document_kind=...)`).
+- Changing a document's kind moves it to the same instance's catalog of the new type (`update_document_fields(document_kind=...)`).
 - SQL does not check types inside the JSONB columns. The insert path writes the default metadata keys, and Pydantic validates `source`, `metadata` and each `index_status` entry.
 - Each document keeps its own `source`. There is no unique key on the fingerprint.
 - Identifier lookup (`find_document_by_doc_identifier`) matches `documents.id`, `workflows.temporal_workflow_id`, `source->>'fingerprint'`, `source->>'original_filename'`, an index `doc_id` and the legacy `md5(source->>'fingerprint')`.
@@ -425,7 +425,7 @@ Append-only history of actions. Must outlive documents, so there is no cascade d
 | id | UUID | PRIMARY KEY, DEFAULT gen_random_uuid() | Audit entry ID. |
 | document_id | UUID | FK → `documents(id)` ON DELETE SET NULL | Document the action applied to. NULL for system-level entries and after a purge. |
 | workflow_id | TEXT | | Temporal workflow ID snapshot. Survives a purge. |
-| group_id | UUID | FK → `groups(id)` ON DELETE SET NULL | Provider group snapshot, so tenant scoping works after the document is gone. |
+| instance_id | UUID | FK → `instances(id)` ON DELETE SET NULL | Provider instance snapshot, so tenant scoping works after the document is gone. |
 | action_type | TEXT | NOT NULL, CHECK not blank | What happened (`page_edit`, `purge_document`, ...). 22 values and growing, so not an enum. |
 | entity_type | TEXT | | `document`, `page`, `chunk`, `setting` or `catalog` (`AuditEntityType`). |
 | entity_number | INTEGER | | Page number or chunk number the action applied to. |
@@ -439,15 +439,15 @@ Append-only history of actions. Must outlive documents, so there is no cascade d
 
 Table CHECK: `entity_type IN ('setting','catalog') OR workflow_id IS NOT NULL`.
 
-Indexes: `(document_id, created_at DESC)`, `(group_id, created_at DESC)`, `(created_at DESC)`, `(action_type, created_at DESC)`, `(created_at DESC) WHERE entity_type = 'setting'`.
+Indexes: `(document_id, created_at DESC)`, `(instance_id, created_at DESC)`, `(created_at DESC)`, `(action_type, created_at DESC)`, `(created_at DESC) WHERE entity_type = 'setting'`.
 
 Notes
 - The FK to `documents` is `SET NULL`, not cascade. A cascade would erase the audit trail on purge, and a strict FK would reject setting and catalog entries that have no document.
 - Setting and catalog entries have NULL `document_id` and `workflow_id`, with `entity_type` set to `setting` or `catalog`.
-- `group_id` is a snapshot of the document's provider group, so a purged document's history stays visible only to its own tenant.
+- `instance_id` is a snapshot of the document's provider instance, so a purged document's history stays visible only to its own tenant.
 - `entity_number` holds a page or chunk number, not an ID (chunk UUIDs would dangle after a re-chunk).
 - `get_settings_audit_logs` is `WHERE entity_type = 'setting'`.
-- `log_audit` fills `group_id`, resolves the actor to a `users` row and builds the `actor` JSON.
+- `log_audit` fills `instance_id`, resolves the actor to a `users` row and builds the `actor` JSON.
 - No `updated_at`: entries are immutable.
 - The table only grows. Monthly partitioning is possible later without changing this design.
 
@@ -510,14 +510,14 @@ Notes
 
 ## View: `catalog_status`
 
-Computed from `documents`, `catalogs`, `groups`, `workflows` and `document_current_workflow`. Stores nothing. One row per document. The `/catalog/v1/*` snapshot API reads it for the scheme type (`catalogs.type` of the scheme kind), and its fields are named `scheme_code`, `scheme_name` and so on, so consumers see no change.
+Computed from `documents`, `catalogs`, `instances`, `workflows` and `document_current_workflow`. Stores nothing. One row per document. The `/catalog/v1/*` snapshot API reads it for the scheme type (`catalogs.type` of the scheme kind), and its fields are named `scheme_code`, `scheme_name` and so on, so consumers see no change.
 
 | Column | Type | How it is computed |
 |---|---|---|
 | document_id | UUID | `documents.id`. |
 | catalog_id | UUID | `documents.catalog_id`. |
-| group_id | UUID | `catalogs.group_id`. |
-| group_name | TEXT | `groups.name`. |
+| instance_id | UUID | `catalogs.instance_id`. |
+| instance_name | TEXT | `instances.name`. |
 | type | TEXT | `catalogs.type`. |
 | code | TEXT | `documents.code`. |
 | name | TEXT | `documents.name`. |
@@ -534,7 +534,7 @@ Computed from `documents`, `catalogs`, `groups`, `workflows` and `document_curre
 
 ## 12. `webhook_records`
 
-Records pushed to `POST /webhook` (`x-api-key` = `WEBHOOK_API_KEY`). Carried over from the previous store unchanged; not part of the groups and catalogs model.
+Records pushed to `POST /webhook` (`x-api-key` = `WEBHOOK_API_KEY`). Carried over from the previous store unchanged; not part of the instances and catalogs model.
 
 Unique: `(source, external_id)`; index on `(source, status)`.
 
@@ -569,8 +569,8 @@ Created by the runner, not by a migration file: `version` (the `NNNN` prefix, pr
 
 - **Identifiers.** `db.py` functions take a `workflow_id` argument that may be the document UUID, a Temporal workflow id, the fingerprint, the filename, an index `doc_id` or the legacy `md5(fingerprint)` doc id (`find_document_by_doc_identifier`). Documents, jobs and artifacts come back as flat dicts; `id` is the UUID and `workflow_id` is the Temporal workflow id of the document's main run (the earliest `pipeline` or `ocr_only` workflow). The API rewrites `/documents/{id}/...` to that workflow id before routing, because handlers signal and query Temporal with it.
 - **Jobs.** The API's "jobs" and "runs" are `workflows` rows; job ids and artifact ids are the UUIDs of `workflows` and `workflow_artifacts`. `latest_job_id`, `original_artifact_id` and `normalized_artifact_id` are derived by join, not stored.
-- **Group.** The API returns a `group` string on documents, runs, queue rows and audit entries. It is the lowercase `groups.name` reached through `catalogs`; filters compare `lower(groups.name)`.
+- **Instance.** The API returns an `instance` string on documents, runs, queue rows and audit entries. It is the lowercase `instances.name` reached through `catalogs`; filters compare `lower(instances.name)`.
 - **Catalog version.** `/catalog/v1/version` counts `audit_logs` rows with `entity_type = 'catalog'` and `action_type = 'catalog_version_bump'`, so it only grows. `updated_at` is the newest such row.
 - **Document stage.** The stage a document shows is `document_current_workflow.current_stage`; `update_document_stage` writes to that workflow.
 - **Page translations.** `save_pages` keeps stored translations unless the page carries `translations` (replaces them) or flat `translated_*` fields (merged into `translation_target_language`). A page whose OCR text changed loses its translations.
-- **Users.** Rows are upserted from the auth dependency on write requests (at most once per five minutes per user) and from uploads, workflow starts and audit entries. `local-admin` is seeded by the migration. A user's `group_id` is set from the tenant codes in the token.
+- **Users.** Rows are upserted from the auth dependency on write requests (at most once per five minutes per user) and from uploads, workflow starts and audit entries. `local-admin` is seeded by the migration. A user's `instance_id` is set from the tenant codes in the token.

@@ -127,7 +127,7 @@ class TestIngestPathsCarryTheDisplayName:
         monkeypatch.setattr(activities, "_prepare_records", capture)
         monkeypatch.setattr(db, "get_chunks", lambda *a, **k: [CHUNK])
         monkeypatch.setattr(
-            db, "get_document", lambda workflow_id: {"name": "PM Kisan Guidelines", "group": "mh"}
+            db, "get_document", lambda workflow_id: {"name": "PM Kisan Guidelines", "instance": "mh"}
         )
         return seen
 

@@ -187,14 +187,14 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def central_groups() -> set[str]:
+def central_instances() -> set[str]:
     raw = (os.environ.get("CENTRAL_INSTANCES") or "default").strip()
     return {p.strip().lower() for p in raw.split(",") if p.strip()} or {"default"}
 
 
-def default_network_visible(group: str | None) -> bool:
-    code = (group or "default").strip().lower() or "default"
-    return code in central_groups()
+def default_network_visible(instance: str | None) -> bool:
+    code = (instance or "default").strip().lower() or "default"
+    return code in central_instances()
 
 
 def scheme_collection_name() -> str:
@@ -372,7 +372,7 @@ def rebuild_catalog_from_documents(*, reason: str = "rebuild") -> int:
     """
     Bump the catalog version.
 
-    Status, groups, chunk counts and the rest are computed by the
+    Status, instances, chunk counts and the rest are computed by the
     ``catalog_status`` view, so there is nothing to recompute here.
     """
     return db.bump_catalog_version(reason)
@@ -454,10 +454,10 @@ def build_snapshot(
         # Live snapshot for warmers: only status=live (pending excluded unless include_pending)
         if not include_pending and st != "live":
             continue
-        groups = e["groups"]
+        instances = e["instances"]
         if instance:
             inst = instance.strip().lower()
-            if inst not in {g.lower() for g in groups} and groups:
+            if inst not in {g.lower() for g in instances} and instances:
                 continue
         nv = bool(e.get("network_visible"))
         if network_visible is not None and nv != network_visible:
@@ -469,7 +469,7 @@ def build_snapshot(
                 "scheme_aliases": e["aliases"],
                 "tool": "search_schemes",
                 "tool_routing": "qdrant",
-                "instances": groups or ["default"],
+                "instances": instances or ["default"],
                 "network_visible": nv,
                 "chunk_count": int(e.get("chunk_count") or 0),
                 "workflow_ids": e["workflow_ids"],
@@ -586,7 +586,7 @@ def apply_scheme_metadata(
     if network_visible is not None:
         updates["network_visible"] = 1 if network_visible else 0
     elif new_kind == "scheme" and doc.get("network_visible") is None:
-        updates["network_visible"] = 1 if default_network_visible(doc.get("group")) else 0
+        updates["network_visible"] = 1 if default_network_visible(doc.get("instance")) else 0
 
     if valid_from is not None or valid_to is not None:
         # Validated here rather than at the SQL layer, and against the stored

@@ -1137,7 +1137,7 @@ class TestUploadCatalogIdentity:
         with db_connection.get_connection() as conn:
             catalog = conn.execute(
                 "SELECT c.type, g.name, g.path FROM documents d JOIN catalogs c ON c.id = d.catalog_id "
-                "JOIN groups g ON g.id = c.group_id WHERE d.code = %s",
+                "JOIN instances g ON g.id = c.instance_id WHERE d.code = %s",
                 (doc["code"],),
             ).fetchall()
         assert [(r["type"], r["name"], r["path"]) for r in catalog] == [
@@ -1261,7 +1261,7 @@ class TestUploadCatalogIdentity:
             document_id="d-mh",
             filename="a.pdf",
             filepath="/tmp/a.pdf",
-            group="mh",
+            instance="mh",
             kind="scheme",
             code="pm-kisan",
             **extra,
@@ -1273,7 +1273,7 @@ class TestUploadCatalogIdentity:
 
     @pytest.mark.api
     @pytest.mark.unit
-    def test_replacing_a_document_needs_rights_in_its_group(self, db_connection):
+    def test_replacing_a_document_needs_rights_in_its_instance(self, db_connection):
         from fastapi import HTTPException
 
         from pipeline.api import api
@@ -1296,7 +1296,7 @@ class TestUploadCatalogIdentity:
 
     @pytest.mark.api
     @pytest.mark.unit
-    def test_upload_into_a_group_needs_upload_rights_there(self, db_connection):
+    def test_upload_into_a_instance_needs_upload_rights_there(self, db_connection):
         from fastapi import HTTPException
 
         from pipeline.api import api
@@ -1376,15 +1376,15 @@ class TestVectorKeysToDelete:
         db = db_connection
         uuid_a = db.upsert_document(
             workflow_id="wf-k-a", document_id="a" * 32, filename="a.pdf",
-            filepath="minio://documents/a.pdf", group="mh", kind="scheme", code="k-a",
+            filepath="minio://documents/a.pdf", instance="mh", kind="scheme", code="k-a",
         )
         db.upsert_document(
             workflow_id="wf-k-b", document_id="a" * 32, filename="a.pdf",
-            filepath="minio://documents/a.pdf", group="gj", kind="scheme", code="k-b",
+            filepath="minio://documents/a.pdf", instance="gj", kind="scheme", code="k-b",
         )
         db.upsert_document(
             workflow_id="wf-k-c", document_id="b" * 32, filename="c.pdf",
-            filepath="minio://documents/c.pdf", group="mh", kind="scheme", code="k-c",
+            filepath="minio://documents/c.pdf", instance="mh", kind="scheme", code="k-c",
         )
 
         # The twin was only uploaded, never indexed, so nothing of it is at risk.

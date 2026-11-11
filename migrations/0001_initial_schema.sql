@@ -6,8 +6,8 @@ BEGIN
   RETURN NEW;
 END $$ LANGUAGE plpgsql;
 
--- 1. groups: one row per tenant node (provider), mirrored from Keycloak
-CREATE TABLE groups (
+-- 1. instances: one row per tenant node (provider), mirrored from Keycloak
+CREATE TABLE instances (
   id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   keycloak_group_id TEXT UNIQUE,
   name             TEXT NOT NULL,
@@ -15,7 +15,7 @@ CREATE TABLE groups (
   created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE TRIGGER trg_groups_updated_at BEFORE UPDATE ON groups
+CREATE TRIGGER trg_instances_updated_at BEFORE UPDATE ON instances
   FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 -- 2. users
@@ -25,7 +25,7 @@ CREATE TABLE users (
   username         TEXT,
   email            TEXT,
   roles            TEXT[] NOT NULL DEFAULT '{}',
-  group_id         UUID REFERENCES groups(id) ON DELETE SET NULL,
+  instance_id         UUID REFERENCES instances(id) ON DELETE SET NULL,
   first_seen_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   last_seen_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -34,16 +34,16 @@ CREATE UNIQUE INDEX users_email_lower_key ON users (lower(email)) WHERE email IS
 INSERT INTO users (keycloak_user_id, username, roles)
 VALUES ('local-admin', 'local-admin', '{superadmin}');
 
--- 3. catalogs: one row per provider group and resource type
+-- 3. catalogs: one row per provider instance and resource type
 CREATE TABLE catalogs (
   id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  group_id   UUID NOT NULL REFERENCES groups(id) ON DELETE RESTRICT,
+  instance_id   UUID NOT NULL REFERENCES instances(id) ON DELETE RESTRICT,
   type       TEXT NOT NULL CHECK (type ~ '^[a-z0-9]+:[A-Za-z0-9]+$'),
   name       TEXT NOT NULL,
   metadata   JSONB NOT NULL DEFAULT '{}' CHECK (jsonb_typeof(metadata) = 'object'),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (group_id, type)
+  UNIQUE (instance_id, type)
 );
 CREATE TRIGGER trg_catalogs_updated_at BEFORE UPDATE ON catalogs
   FOR EACH ROW EXECUTE FUNCTION set_updated_at();
@@ -165,7 +165,7 @@ CREATE TABLE audit_logs (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   document_id   UUID REFERENCES documents(id) ON DELETE SET NULL,
   workflow_id   TEXT,
-  group_id      UUID REFERENCES groups(id) ON DELETE SET NULL,
+  instance_id      UUID REFERENCES instances(id) ON DELETE SET NULL,
   action_type   TEXT NOT NULL CHECK (btrim(action_type) <> ''),
   entity_type   TEXT,
   entity_number INTEGER,
@@ -179,7 +179,7 @@ CREATE TABLE audit_logs (
   CHECK (entity_type IN ('setting', 'catalog') OR workflow_id IS NOT NULL)
 );
 CREATE INDEX audit_logs_document_idx ON audit_logs (document_id, created_at DESC);
-CREATE INDEX audit_logs_group_idx ON audit_logs (group_id, created_at DESC);
+CREATE INDEX audit_logs_instance_idx ON audit_logs (instance_id, created_at DESC);
 CREATE INDEX audit_logs_created_idx ON audit_logs (created_at DESC);
 CREATE INDEX audit_logs_action_idx ON audit_logs (action_type, created_at DESC);
 CREATE INDEX audit_logs_settings_idx ON audit_logs (created_at DESC) WHERE entity_type = 'setting';
@@ -233,8 +233,8 @@ CREATE VIEW catalog_status AS
 SELECT
   d.id AS document_id,
   c.id AS catalog_id,
-  c.group_id,
-  g.name AS group_name,
+  c.instance_id,
+  g.name AS instance_name,
   c.type,
   d.code,
   d.name,
@@ -254,7 +254,7 @@ SELECT
        THEN (d.metadata->'index_status'->'prod'->>'last_indexed_at')::timestamptz END AS promoted_at
 FROM documents d
 JOIN catalogs c ON c.id = d.catalog_id
-JOIN groups g ON g.id = c.group_id
+JOIN instances g ON g.id = c.instance_id
 LEFT JOIN document_current_workflow cw ON cw.document_id = d.id
 CROSS JOIN LATERAL (
   SELECT (cw.current_stage = 'completed' AND NOT d.is_disabled

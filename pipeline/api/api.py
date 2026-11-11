@@ -69,15 +69,15 @@ from ..auth.keycloak_admin import (
 from ..auth.models import AuthUser
 from ..auth.permissions import Permission
 from ..auth.tenancy import (
-    PORTAL_GROUP,
-    allowed_groups,
-    assert_document_group_access,
-    normalize_group,
-    resolve_create_group,
+    PORTAL_INSTANCE,
+    allowed_instances,
+    assert_document_instance_access,
+    normalize_instance,
+    resolve_create_instance,
     unrestricted,
-    user_can_access_group,
+    user_can_access_instance,
 )
-from ..group_names import prod_stage_disabled
+from ..instances import prod_stage_disabled
 from ..models import (
     PIPELINE_STAGES,
     PROD_ONLY_STAGES,
@@ -160,7 +160,7 @@ async def _start_services():
     if auth_cfg.disabled:
         logging.warning(
             "WARNING: AUTH_DISABLED=true — every caller is treated as synthetic "
-            "master_admin with unrestricted group access. Do not expose this "
+            "master_admin with unrestricted instance access. Do not expose this "
             "API beyond the internal network or set AUTH_DISABLED=false until "
             "the maintainer UI sends Bearer tokens."
         )
@@ -407,15 +407,15 @@ def _compute_file_fingerprint(filepath: Path) -> str:
     return md5.hexdigest()
 
 
-def _group_scope_for_user(user: AuthUser) -> Optional[list[str]]:
-    """None = unrestricted; otherwise only these group codes."""
-    allowed = allowed_groups(user)
+def _instance_scope_for_user(user: AuthUser) -> Optional[list[str]]:
+    """None = unrestricted; otherwise only these instance codes."""
+    allowed = allowed_instances(user)
     if allowed is None:
         return None
     return sorted(allowed)
 
 
-def _document_cohorts_payload(summary: dict, by_group: Optional[list[dict]] = None) -> dict:
+def _document_cohorts_payload(summary: dict, by_instance: Optional[list[dict]] = None) -> dict:
     """Shape Postgres aggregate counts for DocumentCohortsResponse (all ints)."""
     def _i(key: str, default: int = 0) -> int:
         val = summary.get(key, default)
@@ -439,15 +439,13 @@ def _document_cohorts_payload(summary: dict, by_group: Optional[list[dict]] = No
             "ready_for_ingestion": _i("ready_for_ingestion_documents"),
             "failed": _i("failed_documents"),
         },
-        "by_instance": [
-            {**row, "instance": row["group"]} for row in (by_group or [])
-        ],
+        "by_instance": by_instance or [],
     }
 
 
-def _resolve_upload_instance(user: AuthUser, instance: str) -> str:
+def _resolve_create_instance(user: AuthUser, requested: Optional[str] = None) -> str:
     """Resolve the upload owner using the existing Keycloak tenancy rules."""
-    return resolve_create_group(user, instance)
+    return resolve_create_instance(user, requested)
 
 
 def _document_title(filename: str) -> str:
@@ -459,29 +457,29 @@ def _document_title(filename: str) -> str:
 def _assert_can_replace(user: AuthUser, existing: dict) -> None:
     """Replacing a document's file clears its pages and chunks, so guard it.
 
-    Needs review rights in the document's group; a disabled document or one with
+    Needs review rights in the document's instance; a disabled document or one with
     a run in progress cannot be replaced; a document already promoted to PROD
     can only be replaced by someone who may approve ingestion.
     """
-    doc_group = existing["group"]
-    if not user.has_permission_for_group(Permission.REVIEW, doc_group):
-        raise HTTPException(403, f"No permission to replace documents in group: {doc_group}")
+    doc_instance = existing["instance"]
+    if not user.has_permission_for_instance(Permission.REVIEW, doc_instance):
+        raise HTTPException(403, f"No permission to replace documents in instance: {doc_instance}")
     if existing.get("is_disabled"):
         raise HTTPException(409, "This document is disabled; restore it before replacing its file")
     latest_job = db.get_latest_document_job(existing["workflow_id"])
     if latest_job and latest_job.get("status") == "running":
         raise HTTPException(409, "A run is still in progress for this document")
-    if (existing.get("index_status") or {}).get("prod") and not user.has_permission_for_group(
-        Permission.APPROVE_INGESTION, doc_group
+    if (existing.get("index_status") or {}).get("prod") and not user.has_permission_for_instance(
+        Permission.APPROVE_INGESTION, doc_instance
     ):
         raise HTTPException(
-            403, "Replacing a document that is live in PROD needs approval rights in its group"
+            403, "Replacing a document that is live in PROD needs approval rights in its instance"
         )
 
 
 def _resolve_document_identity(
     user: AuthUser,
-    group: str,
+    instance: str,
     kind: str,
     code: str,
     filename: str,
@@ -492,41 +490,41 @@ def _resolve_document_identity(
     kind means "update this document": the caller reuses it instead of inserting.
     Without a code one is derived from the file name.
 
-    Permissions are checked against the target group, not just globally: a user
+    Permissions are checked against the target instance, not just globally: a user
     who may upload in one state must not be able to add to, or replace a
     document of, a state where they only hold a view role. Replacing clears the
-    document's pages and chunks, so it also needs review rights in that group.
+    document's pages and chunks, so it also needs review rights in that instance.
     """
     kind = (kind or "").strip().lower()
     try:
         catalog_type_for_kind(kind)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    if not user.has_permission_for_group(Permission.UPLOAD, group):
-        raise HTTPException(403, f"No upload permission in group: {group}")
+    if not user.has_permission_for_instance(Permission.UPLOAD, instance):
+        raise HTTPException(403, f"No upload permission in instance: {instance}")
     code = (code or "").strip()
     if code:
         try:
             code = scheme_catalog.validate_scheme_code(code)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        existing = db.find_document_by_code(group, kind, code)
+        existing = db.find_document_by_code(instance, kind, code)
         if existing:
-            existing = assert_document_group_access(user, existing)
+            existing = assert_document_instance_access(user, existing)
             _assert_can_replace(user, existing)
         return kind, code, existing
     return kind, scheme_catalog.derive_scheme_code(_document_title(filename), kind=kind), None
 
 
 def _require_document_for_user(workflow_id: str, user: AuthUser) -> dict:
-    """Load a document or 404 if missing / outside the caller's group scope."""
-    return assert_document_group_access(user, db.get_document(workflow_id))
+    """Load a document or 404 if missing / outside the caller's instance scope."""
+    return assert_document_instance_access(user, db.get_document(workflow_id))
 
 
 def _document_for_user_or_none(workflow_id: str, user: AuthUser) -> Optional[dict]:
     """Like _require_document_for_user but returns None instead of raising (bulk paths)."""
     doc = db.get_document(workflow_id)
-    if not doc or not user_can_access_group(user, doc.get("group")):
+    if not doc or not user_can_access_instance(user, doc.get("instance")):
         return None
     return doc
 
@@ -581,7 +579,7 @@ def _document_summary_from_row(doc: dict, current_job: Optional[dict] = None) ->
         source_manifest_name=doc.get("source_manifest_name"),
         source_file_fingerprint=doc.get("source_file_fingerprint"),
         authoritative=bool(doc.get("source_manifest_name")),
-        instance=normalize_group(doc.get("group")),
+        instance=normalize_instance(doc.get("instance")),
         stage=DocumentStage(doc["stage"]),
         page_count=doc.get("page_count") or 0,
         chunk_count=doc.get("chunk_count") or 0,
@@ -828,8 +826,8 @@ async def auth_me(user: CurrentUser):
         "groups": list(user.groups or []),
         "state_roles": dict(user.state_roles or {}),
         "is_super_admin": bool(user.is_superadmin),
-        # Portal group code for BV / platform docs (not a state).
-        "portal_instance": PORTAL_GROUP,
+        # Portal instance code for BV / platform docs (not a state).
+        "portal_instance": PORTAL_INSTANCE,
         "auth_disabled": user.token_disabled_mode,
     }
 
@@ -931,7 +929,7 @@ async def get_operations_queue(
 ):
     """Return documents that currently need operator or agent action.
 
-    Results are limited to groups the caller can access (state users never
+    Results are limited to instances the caller can access (state users never
     see portal ``bv`` or other states' documents).
     """
     include_disabled = x_include_disabled and x_include_disabled.lower() == "true"
@@ -939,7 +937,7 @@ async def get_operations_queue(
         limit=limit,
         offset=offset,
         include_disabled=include_disabled,
-        groups=_group_scope_for_user(user),
+        instances=_instance_scope_for_user(user),
     )
     items = [
         OperationQueueEntry(
@@ -967,19 +965,16 @@ async def list_runs(
 ):
     """List recent document jobs visible to the caller (tenant/role scoped).
 
-    Restricted users only see jobs whose document ``group`` is in their
+    Restricted users only see jobs whose document ``instance`` is in their
     allowed states. Super-admin / bypass users see all tenants.
     """
-    runs = db.list_runs(
+    return db.list_runs(
         limit=limit,
         offset=offset,
         status=status,
-        groups=_group_scope_for_user(user),
+        instances=_instance_scope_for_user(user),
     )
 
-    for run in runs:
-        run["instance"] = run.pop("group")
-    return runs
 
 
 @app.get("/runs/{job_id}")
@@ -988,7 +983,7 @@ async def get_run(job_id: str, user: RequireSearch):
     run = db.get_document_job(job_id)
     if not run:
         raise HTTPException(404, f"Run not found: {job_id}")
-    # Enforce same group scope as list: hide other tenants' runs as 404.
+    # Enforce same instance scope as list: hide other tenants' runs as 404.
     workflow_id = run.get("workflow_id")
     if workflow_id:
         _require_document_for_user(str(workflow_id), user)
@@ -1039,7 +1034,7 @@ def _build_document_detail(doc: dict) -> DocumentDetail:
         source_manifest_name=doc.get("source_manifest_name"),
         source_file_fingerprint=doc.get("source_file_fingerprint"),
         authoritative=bool(doc.get("source_manifest_name")),
-        instance=normalize_group(doc.get("group")),
+        instance=normalize_instance(doc.get("instance")),
         filepath=doc["filepath"],
         stage=DocumentStage(doc["stage"]),
         page_count=doc.get("page_count", 0),
@@ -1564,7 +1559,7 @@ async def disable_document(
     doc = _require_document_for_user(workflow_id, user)
 
     if not user.has_permission(Permission.ADMIN):
-        if not user.has_permission_for_group(Permission.DELETE_OWN, doc.get("group")):
+        if not user.has_permission_for_instance(Permission.DELETE_OWN, doc.get("instance")):
             raise HTTPException(403, "Missing permission: delete_own")
         if purge:
             raise HTTPException(
@@ -2703,14 +2698,14 @@ async def get_all_audit_logs(
 
     Each entry includes the document filename for context.
     """
-    scope = _group_scope_for_user(user)
+    scope = _instance_scope_for_user(user)
     logs = db.get_all_audit_logs(
         action_type=action_type,
         limit=limit,
         offset=offset,
-        groups=scope,
+        instances=scope,
     )
-    total = db.get_all_audit_log_count(action_type, groups=scope)
+    total = db.get_all_audit_log_count(action_type, instances=scope)
 
     return AuditLogResponse(
         logs=logs,
@@ -2944,14 +2939,14 @@ async def search_chunks_across_documents(
     stage: Optional[DocumentStage] = Query(None, description="Optional document stage filter"),
 ):
     """Search chunks across all documents for KB maintainer workflows."""
-    # Tenant-scope via the owning document's group (None = unrestricted admin).
+    # Tenant-scope via the owning document's instance (None = unrestricted admin).
     chunks, total = db.search_chunks(
         query=q,
         limit=limit,
         offset=offset,
         include_excluded=include_excluded,
         stage=stage.value if stage else None,
-        groups=_group_scope_for_user(user),
+        instances=_instance_scope_for_user(user),
     )
     return {
         "items": chunks,
@@ -3643,11 +3638,11 @@ async def reconcile_document_states(user: RequirePipeline):
         'ready_for_ingestion', 'ingesting'
     ]
 
-    # Scope to caller's groups (None = unrestricted bypass / all tenants).
+    # Scope to caller's instances (None = unrestricted bypass / all tenants).
     docs = db.list_documents(
         limit=1000,
         include_disabled=True,
-        groups=_group_scope_for_user(user),
+        instances=_instance_scope_for_user(user),
     )
     active_docs = [d for d in docs if d.get('stage') in active_stages]
 

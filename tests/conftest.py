@@ -23,7 +23,7 @@ os.environ["AUTH_DISABLED"] = "true"
 
 
 _TRUNCATE_SQL = """
-    TRUNCATE documents, users, groups, catalogs, audit_logs, email_otps,
+    TRUNCATE documents, users, instances, catalogs, audit_logs, email_otps,
              webhook_records, search_settings CASCADE
 """
 

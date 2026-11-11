@@ -24,14 +24,14 @@ import {
 import { API_BASE } from '../config'
 import { apiFetch } from '../auth/keycloak'
 import { useAuth } from '../auth/AuthProvider'
-import { defaultUploadGroup, PORTAL_GROUP } from '../lib/groupLabels'
+import { defaultUploadInstance, PORTAL_INSTANCE } from '../lib/instanceLabels'
 import { fetchJson, formatCompactDateTime, getDocumentListLabel, summarizeIngestStatus } from '../lib/pipelineUi'
 import { displayNameError, filenameStem } from '../lib/displayName'
 
 const SUPPORTED_TYPES = ['.pdf', '.doc', '.docx']
 const MAX_SIZE_MB = 100
 const FILE_TYPE_CHIPS = ['PDF', 'Word']
-// The catalog a document joins is (your group, type), so the type is chosen up front.
+// The catalog a document joins is (your instance, type), so the type is chosen up front.
 const DOCUMENT_TYPE_OPTIONS = [
   { value: 'scheme', label: 'Scheme' },
   { value: 'advisory', label: 'Advisory' },
@@ -62,11 +62,11 @@ export default function NewDocumentView() {
   const navigate = useNavigate()
   const { hasPermission, instances, isSuperAdmin, user } = useAuth()
   const canUpload = hasPermission('upload')
-  // Group from login (Keycloak) — not user-selected on this form.
-  const documentGroup = defaultUploadGroup({
+  // Instance from login (Keycloak) — not user-selected on this form.
+  const documentInstance = defaultUploadInstance({
     isSuperAdmin,
     instances,
-    portalGroup: user?.portal_instance || PORTAL_GROUP,
+    portalInstance: user?.portal_instance || PORTAL_INSTANCE,
   })
   const [file, setFile] = useState(null)
   const [displayName, setDisplayName] = useState('')
@@ -135,7 +135,7 @@ export default function NewDocumentView() {
 
   async function handleSubmit() {
     if (!file || !documentKind || !canUpload || nameError) return
-    if (!documentGroup && !isSuperAdmin) {
+    if (!documentInstance && !isSuperAdmin) {
       setUploadError(
         'No state on your account. Ask an admin to assign a Keycloak group (e.g. /states/MH/admin).',
       )
@@ -148,8 +148,8 @@ export default function NewDocumentView() {
       formData.append('file', file)
       formData.append('display_name', displayName.trim())
       // State users: Keycloak group state only. Super-admin: portal BV when unset.
-      const uploadGroup = documentGroup || (isSuperAdmin ? PORTAL_GROUP : '')
-      if (!uploadGroup) {
+      const uploadInstance = documentInstance || (isSuperAdmin ? PORTAL_INSTANCE : '')
+      if (!uploadInstance) {
         setUploadError(
           'No state on your account. Ask an admin to assign a Keycloak group (e.g. /states/MH/admin).',
         )
@@ -157,7 +157,7 @@ export default function NewDocumentView() {
       }
       const params = new URLSearchParams({
         auto_approve: 'false',
-        instance: uploadGroup,
+        instance: uploadInstance,
         kind: documentKind,
       })
       const response = await apiFetch(`${API_BASE}/upload?${params}`, { method: 'POST', body: formData })
