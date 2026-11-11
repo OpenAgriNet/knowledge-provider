@@ -1,9 +1,9 @@
-"""Integration: ``POST /search`` with ``instance`` through the real Qdrant engine.
+"""Integration: ``POST /search`` with ``group`` through the real Qdrant engine.
 
 qdrant-client ships an in-process mode (``QdrantClient(":memory:")``) that
 runs the real filtering and vector engine, so this exercises the route, the
 store and the engine together without Docker. Only the embedding model is
-faked: search quality is not under test here, the instance filter is.
+faked: search quality is not under test here, the group filter is.
 """
 
 import zlib
@@ -14,7 +14,7 @@ from qdrant_client import QdrantClient
 from pipeline.vector_store import qdrant_store
 from tests.test_qdrant_validity import TODAY, clock_at
 
-INDEX = "instance-integration"
+INDEX = "group-integration"
 VECTOR_SIZE = 8
 
 CHUNKS = [
@@ -67,27 +67,27 @@ def test_every_chunk_is_indexed(local_store):
 @pytest.mark.integration
 @pytest.mark.api
 @pytest.mark.parametrize("mode", ["HYBRID", "TENSOR", "LEXICAL"])
-def test_instance_limits_hits_to_that_group_in_every_mode(local_store, test_client, mode):
-    body = search(test_client, instance="mh", search_mode=mode)
+def test_group_limits_hits_to_that_group_in_every_mode(local_store, test_client, mode):
+    body = search(test_client, group="mh", search_mode=mode)
 
-    assert body["effective_config"]["instance"] == "mh"
+    assert body["effective_config"]["group"] == "mh"
     assert body["hits"], "the mh chunk must be found"
     assert {hit["instance"] for hit in body["hits"]} == {"mh"}
 
 
 @pytest.mark.integration
 @pytest.mark.api
-def test_no_instance_searches_every_group(local_store, test_client):
+def test_no_group_searches_every_group(local_store, test_client):
     body = search(test_client)
 
-    assert body["effective_config"]["instance"] is None
+    assert body["effective_config"]["group"] is None
     assert {hit["instance"] for hit in body["hits"]} == {"mh", "ka", "bv"}
 
 
 @pytest.mark.integration
 @pytest.mark.api
-def test_unknown_instance_is_an_empty_success(local_store, test_client):
-    body = search(test_client, instance="xx")
+def test_unknown_group_is_an_empty_success(local_store, test_client):
+    body = search(test_client, group="xx")
 
     assert body["hits"] == []
     assert body["final_count"] == 0
@@ -95,9 +95,9 @@ def test_unknown_instance_is_an_empty_success(local_store, test_client):
 
 @pytest.mark.integration
 @pytest.mark.api
-def test_instance_and_validity_compose_in_the_engine(local_store, test_client):
-    current_only = search(test_client, instance="mh")
-    with_expired = search(test_client, instance="mh", include_expired=True)
+def test_group_and_validity_compose_in_the_engine(local_store, test_client):
+    current_only = search(test_client, group="mh")
+    with_expired = search(test_client, group="mh", include_expired=True)
 
     assert {hit["doc_id"] for hit in current_only["hits"]} == {"mh-current"}
     assert {hit["doc_id"] for hit in with_expired["hits"]} == {"mh-current", "mh-expired"}

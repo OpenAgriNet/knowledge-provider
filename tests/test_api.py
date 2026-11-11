@@ -615,68 +615,72 @@ class TestSearchValidity:
         assert "YYYY-MM-DD" in response.json()["detail"]
 
 
-class TestSearchInstance:
-    """`instance` narrows a search to one instance's chunks."""
+class TestSearchGroup:
+    """`group` narrows a search to one group's chunks (story #202).
+
+    The API says `group`; the store and the chunk payload say `instance`.
+    The endpoint is the only place that maps one name to the other.
+    """
 
     @pytest.mark.api
     @pytest.mark.unit
-    def test_passes_the_instance_to_the_store(self, test_client, capturing_store):
-        response = test_client.post("/search", json={"query": "kisan", "instance": "mh"})
+    def test_passes_the_group_to_the_store_as_instance(self, test_client, capturing_store):
+        response = test_client.post("/search", json={"query": "kisan", "group": "mh"})
 
         assert response.status_code == 200
         assert capturing_store.captured["instance"] == "mh"
-        assert response.json()["effective_config"]["instance"] == "mh"
+        assert response.json()["effective_config"]["group"] == "mh"
 
     @pytest.mark.api
     @pytest.mark.unit
     @pytest.mark.parametrize("raw", ["MH", "  mh ", " Mh\n"])
     def test_normalises_case_and_whitespace(self, test_client, capturing_store, raw):
-        response = test_client.post("/search", json={"query": "kisan", "instance": raw})
+        response = test_client.post("/search", json={"query": "kisan", "group": raw})
 
         assert capturing_store.captured["instance"] == "mh"
-        assert response.json()["effective_config"]["instance"] == "mh"
+        assert response.json()["effective_config"]["group"] == "mh"
 
     @pytest.mark.api
     @pytest.mark.unit
     @pytest.mark.parametrize("body", [
         {"query": "kisan"},
-        {"query": "kisan", "instance": ""},
-        {"query": "kisan", "instance": "   "},
-        {"query": "kisan", "instance": None},
+        {"query": "kisan", "group": ""},
+        {"query": "kisan", "group": "   "},
+        {"query": "kisan", "group": None},
     ])
-    def test_absent_or_empty_instance_means_no_filter(self, test_client, capturing_store, body):
+    def test_absent_or_empty_group_means_no_filter(self, test_client, capturing_store, body):
         response = test_client.post("/search", json=body)
 
         assert response.status_code == 200
         assert capturing_store.captured["instance"] is None
-        assert response.json()["effective_config"]["instance"] is None
+        assert response.json()["effective_config"]["group"] is None
 
     @pytest.mark.api
     @pytest.mark.unit
     @pytest.mark.parametrize("bad", [["mh"], 7, {"code": "mh"}])
-    def test_rejects_a_non_string_instance(self, test_client, capturing_store, bad):
-        response = test_client.post("/search", json={"query": "kisan", "instance": bad})
+    def test_rejects_a_non_string_group(self, test_client, capturing_store, bad):
+        response = test_client.post("/search", json={"query": "kisan", "group": bad})
 
         assert response.status_code == 400
-        assert response.json()["detail"] == "instance must be a string"
+        assert response.json()["detail"] == "group must be a string"
         assert capturing_store.captured == {}, "the store must not be called for a bad request"
 
     @pytest.mark.api
     @pytest.mark.unit
-    def test_unknown_instance_is_an_empty_success(self, test_client, capturing_store):
-        response = test_client.post("/search", json={"query": "kisan", "instance": "xx"})
+    def test_unknown_group_is_an_empty_success(self, test_client, capturing_store):
+        response = test_client.post("/search", json={"query": "kisan", "group": "xx"})
 
         assert response.status_code == 200
         body = response.json()
         assert body["hits"] == []
         assert body["final_count"] == 0
-        assert body["effective_config"]["instance"] == "xx"
+        assert body["effective_config"]["group"] == "xx"
 
     @pytest.mark.api
     @pytest.mark.unit
-    def test_instance_composes_with_include_expired(self, test_client, capturing_store):
+    def test_group_composes_with_include_expired(self, test_client, capturing_store):
         test_client.post(
-            "/search", json={"query": "kisan", "instance": "mh", "include_expired": True}
+            "/search", json={"query": "kisan", "group": "mh", "include_expired": True}
         )
 
         assert capturing_store.captured["instance"] == "mh"
@@ -726,8 +730,8 @@ class TestSearchProviderId:
 
     @pytest.mark.api
     @pytest.mark.unit
-    def test_composes_with_instance(self, test_client, capturing_store):
-        test_client.post("/search", json={"query": "kisan", "instance": "mh", "provider_id": "mh.provider.oan.dev"})
+    def test_composes_with_group(self, test_client, capturing_store):
+        test_client.post("/search", json={"query": "kisan", "group": "mh", "provider_id": "mh.provider.oan.dev"})
 
         assert capturing_store.captured["instance"] == "mh"
         assert capturing_store.captured["provider_id"] == "mh.provider.oan.dev"
