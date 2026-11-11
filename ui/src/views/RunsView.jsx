@@ -356,7 +356,7 @@ export default function RunsView() {
                             {title}
                           </button>
                           <div className="flex flex-wrap items-center gap-1.5">
-                            <GroupBadge group={run.group} />
+                            <GroupBadge group={run.instance} />
                             <span className="truncate font-mono text-[10px] text-muted-foreground">
                               #{runId}
                               {fileLabel && fileLabel !== title ? ` · ${fileLabel}` : ''}

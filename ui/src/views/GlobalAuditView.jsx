@@ -122,8 +122,8 @@ export default function GlobalAuditView() {
                   >
                     {entry.name || entry.filename || entry.document_id || entry.workflow_id}
                   </span>
-                  {entry.group && (
-                    <Badge variant="secondary" className="text-[10px] uppercase">{entry.group}</Badge>
+                  {entry.instance && (
+                    <Badge variant="secondary" className="text-[10px] uppercase">{entry.instance}</Badge>
                   )}
                 </div>
                 {/* What actually changed, in words — the raw before/after stays

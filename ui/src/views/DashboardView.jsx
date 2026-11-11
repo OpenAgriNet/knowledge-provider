@@ -66,7 +66,7 @@ export default function DashboardView() {
   const reindexCount = summary?.needs_reindex || 0
   const displayedQueueItems = queue.slice(0, QUEUE_ROWS_SHOWN)
 
-  const byGroup = useMemo(() => (Array.isArray(summary?.by_group) ? summary.by_group : []), [summary])
+  const byGroup = useMemo(() => (Array.isArray(summary?.by_instance) ? summary.by_instance : []), [summary])
   const stateRows = byGroup
 
   const maxStateCount = useMemo(
@@ -172,10 +172,10 @@ export default function DashboardView() {
               {stateRows.map((row) => {
                 const label = row.otherStateCount
                   ? `Others (${row.otherStateCount} states)`
-                  : formatGroupLabel(row.group) || 'No state tag'
+                  : formatGroupLabel(row.instance) || 'No state tag'
                 const pct = (value) => (maxStateCount ? (value / maxStateCount) * 100 : 0)
                 return (
-                  <div key={row.group}>
+                  <div key={row.instance}>
                     <div className="flex items-center justify-between mb-1.5">
                       <span className="text-sm font-medium text-foreground">{label}</span>
                       <span className="text-sm font-medium text-foreground">{formatCount(row.count)}</span>

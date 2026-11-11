@@ -170,10 +170,10 @@ def _rerank_hits(query: str, hits: list[dict], rerank_mode: str) -> list[dict]:
 
 
 
-def _requested_group(payload: dict) -> str | None:
-    raw = payload.get("group")
+def _requested_instance(payload: dict) -> str | None:
+    raw = payload.get("instance")
     if raw is not None and not isinstance(raw, str):
-        raise HTTPException(400, "group must be a string")
+        raise HTTPException(400, "instance must be a string")
     return (raw or "").strip().lower() or None
 
 
@@ -188,9 +188,9 @@ def _requested_provider_id(payload: dict) -> str | None:
 async def run_search(payload: dict, user: RequireSearch):
     """Search the vector index.
 
-    `group` is a filter, not an access check: this endpoint applies no tenant
+    `instance` is a filter, not an access check: this endpoint applies no tenant
     scoping to its results (unlike `GET /chunks/search`), so any
-    search-capable caller may ask for any group.
+    search-capable caller may ask for any instance.
     """
     from ..vector_store import get_default_index_name, get_vector_store
 
@@ -247,7 +247,7 @@ async def run_search(payload: dict, user: RequireSearch):
             valid_on = document_validity.parse_day(valid_on, "valid_on")
         except document_validity.DocumentValidityError as exc:
             raise HTTPException(400, str(exc)) from None
-    group = _requested_group(payload)
+    instance = _requested_instance(payload)
     provider_id = _requested_provider_id(payload)
     expanded_query = _expand_query(query, query_expansion_profile)
     # Qdrant embeddings apply E5 prefixes internally; don't pre-prefix here.
@@ -270,7 +270,7 @@ async def run_search(payload: dict, user: RequireSearch):
             ef_search=ef_search,
             apply_validity=not include_expired,
             valid_on=valid_on,
-            instance=group,
+            instance=instance,
             provider_id=provider_id,
         )
     except Exception as error:
@@ -320,7 +320,7 @@ async def run_search(payload: dict, user: RequireSearch):
             "rerank_mode": rerank_mode,
             "apply_validity": not include_expired,
             "valid_on": result.get("valid_on"),
-            "group": group,
+            "instance": instance,
             "provider_id": provider_id,
             "filter_string": None,
         },

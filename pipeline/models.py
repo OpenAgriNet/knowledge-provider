@@ -218,7 +218,7 @@ class DocumentSummary(BaseModel):
     source_manifest_name: Optional[str] = None
     source_file_fingerprint: Optional[str] = None
     authoritative: bool = False
-    group: str = "default"  # tenant code (groups.name) of the document's catalog
+    instance: str = "default"  # tenant code of the document's catalog
     stage: DocumentStage
     page_count: int
     chunk_count: int
@@ -352,8 +352,8 @@ class DocumentGraph(BaseModel):
     runtime: dict[str, Any]
 
 
-class GroupDocumentCount(BaseModel):
-    group: str
+class InstanceDocumentCount(BaseModel):
+    instance: str
     count: int
     success: int = 0
     failed: int = 0
@@ -368,7 +368,7 @@ class DocumentCohortsResponse(BaseModel):
     review_queue: int
     failed_documents: int
     by_stage: dict[str, int]
-    by_group: list[GroupDocumentCount] = []
+    by_instance: list[InstanceDocumentCount] = []
     needs_reindex: int
     running_jobs: int = 0
 
@@ -445,7 +445,7 @@ class AuditLogEntry(BaseModel):
     # strips them from the response and the UI can only show a raw doc_id hash.
     filename: Optional[str] = None
     name: Optional[str] = None
-    group: Optional[str] = None
+    instance: Optional[str] = None
     uploaded_by_username: Optional[str] = None
     uploaded_by_email: Optional[str] = None
 

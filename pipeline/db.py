@@ -2612,7 +2612,7 @@ def _audit_row_to_legacy(row: dict) -> dict:
         "actor_roles": ",".join(roles) if roles else None,
         "filename": row["filename"],
         "name": row["document_name"],
-        "group": row["doc_group"] or row["audit_group"],
+        "instance": row["doc_group"] or row["audit_group"],
         "uploaded_by_username": row["uploaded_by_username"],
         "uploaded_by_email": row["uploaded_by_email"],
     }

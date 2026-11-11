@@ -45,10 +45,10 @@ def already_has_ocr(filepath: str, fingerprint: str) -> bool:
     return bool(db.get_saved_page_numbers(doc["workflow_id"]))
 
 
-def post_document(api_base: str, filepath: str, kind: str, group: str = "") -> dict:
+def post_document(api_base: str, filepath: str, kind: str, instance: str = "") -> dict:
     params = {"stop_after_ocr": "true", "kind": kind}
-    if group:
-        params["group"] = group
+    if instance:
+        params["instance"] = instance
     query = urllib.parse.urlencode(params)
     url = f"{api_base.rstrip('/')}/documents?{query}"
     payload = json.dumps({"filepath": filepath}).encode("utf-8")
@@ -68,7 +68,7 @@ def main() -> int:
     parser.add_argument("--api-base", default="http://localhost:8001", help="Docs-pipeline API base URL")
     parser.add_argument("--limit", type=int, default=0, help="Optional max files to submit")
     parser.add_argument("--kind", choices=["scheme", "advisory"], default="scheme", help="Document kind (catalog)")
-    parser.add_argument("--group", default="", help="Tenant group code (optional; defaults to your group)")
+    parser.add_argument("--instance", default="", help="Tenant instance code (optional; defaults to your instance)")
     args = parser.parse_args()
 
     directory = Path(args.directory)
@@ -94,7 +94,7 @@ def main() -> int:
             print(f"SKIP {path.name}: OCR already present")
             continue
         try:
-            result = post_document(args.api_base, str(path), args.kind, args.group)
+            result = post_document(args.api_base, str(path), args.kind, args.instance)
             submitted += 1
             print(f"SUBMIT {path.name}: {result.get('workflow_id')}")
         except urllib.error.HTTPError as exc:

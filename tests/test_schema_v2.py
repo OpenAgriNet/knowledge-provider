@@ -463,7 +463,7 @@ class TestAuditGroupSnapshot:
         assert db.get_all_audit_log_count(groups=["up"]) == 1
         assert db.get_all_audit_log_count(groups=["gj"]) == 0
         assert [e["workflow_id"] for e in db.get_all_audit_logs(groups=["mh"])] == ["wf-gone"]
-        assert db.get_all_audit_logs(groups=["mh"])[0]["group"] == "mh"
+        assert db.get_all_audit_logs(groups=["mh"])[0]["instance"] == "mh"
 
     @pytest.mark.db
     @pytest.mark.unit

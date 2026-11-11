@@ -615,72 +615,68 @@ class TestSearchValidity:
         assert "YYYY-MM-DD" in response.json()["detail"]
 
 
-class TestSearchGroup:
-    """`group` narrows a search to one group's chunks (story #202).
-
-    The API says `group`; the store and the chunk payload say `instance`.
-    The endpoint is the only place that maps one name to the other.
-    """
+class TestSearchInstance:
+    """`instance` narrows a search to one instance's chunks."""
 
     @pytest.mark.api
     @pytest.mark.unit
-    def test_passes_the_group_to_the_store_as_instance(self, test_client, capturing_store):
-        response = test_client.post("/search", json={"query": "kisan", "group": "mh"})
+    def test_passes_the_instance_to_the_store(self, test_client, capturing_store):
+        response = test_client.post("/search", json={"query": "kisan", "instance": "mh"})
 
         assert response.status_code == 200
         assert capturing_store.captured["instance"] == "mh"
-        assert response.json()["effective_config"]["group"] == "mh"
+        assert response.json()["effective_config"]["instance"] == "mh"
 
     @pytest.mark.api
     @pytest.mark.unit
     @pytest.mark.parametrize("raw", ["MH", "  mh ", " Mh\n"])
     def test_normalises_case_and_whitespace(self, test_client, capturing_store, raw):
-        response = test_client.post("/search", json={"query": "kisan", "group": raw})
+        response = test_client.post("/search", json={"query": "kisan", "instance": raw})
 
         assert capturing_store.captured["instance"] == "mh"
-        assert response.json()["effective_config"]["group"] == "mh"
+        assert response.json()["effective_config"]["instance"] == "mh"
 
     @pytest.mark.api
     @pytest.mark.unit
     @pytest.mark.parametrize("body", [
         {"query": "kisan"},
-        {"query": "kisan", "group": ""},
-        {"query": "kisan", "group": "   "},
-        {"query": "kisan", "group": None},
+        {"query": "kisan", "instance": ""},
+        {"query": "kisan", "instance": "   "},
+        {"query": "kisan", "instance": None},
     ])
-    def test_absent_or_empty_group_means_no_filter(self, test_client, capturing_store, body):
+    def test_absent_or_empty_instance_means_no_filter(self, test_client, capturing_store, body):
         response = test_client.post("/search", json=body)
 
         assert response.status_code == 200
         assert capturing_store.captured["instance"] is None
-        assert response.json()["effective_config"]["group"] is None
+        assert response.json()["effective_config"]["instance"] is None
 
     @pytest.mark.api
     @pytest.mark.unit
     @pytest.mark.parametrize("bad", [["mh"], 7, {"code": "mh"}])
-    def test_rejects_a_non_string_group(self, test_client, capturing_store, bad):
-        response = test_client.post("/search", json={"query": "kisan", "group": bad})
+    def test_rejects_a_non_string_instance(self, test_client, capturing_store, bad):
+        response = test_client.post("/search", json={"query": "kisan", "instance": bad})
 
         assert response.status_code == 400
-        assert response.json()["detail"] == "group must be a string"
+        assert response.json()["detail"] == "instance must be a string"
         assert capturing_store.captured == {}, "the store must not be called for a bad request"
 
     @pytest.mark.api
     @pytest.mark.unit
-    def test_unknown_group_is_an_empty_success(self, test_client, capturing_store):
-        response = test_client.post("/search", json={"query": "kisan", "group": "xx"})
+    def test_unknown_instance_is_an_empty_success(self, test_client, capturing_store):
+        response = test_client.post("/search", json={"query": "kisan", "instance": "xx"})
 
         assert response.status_code == 200
         body = response.json()
         assert body["hits"] == []
         assert body["final_count"] == 0
-        assert body["effective_config"]["group"] == "xx"
+        assert body["effective_config"]["instance"] == "xx"
 
     @pytest.mark.api
     @pytest.mark.unit
-    def test_group_composes_with_include_expired(self, test_client, capturing_store):
+    def test_instance_composes_with_include_expired(self, test_client, capturing_store):
         test_client.post(
-            "/search", json={"query": "kisan", "group": "mh", "include_expired": True}
+            "/search", json={"query": "kisan", "instance": "mh", "include_expired": True}
         )
 
         assert capturing_store.captured["instance"] == "mh"
@@ -730,8 +726,8 @@ class TestSearchProviderId:
 
     @pytest.mark.api
     @pytest.mark.unit
-    def test_composes_with_group(self, test_client, capturing_store):
-        test_client.post("/search", json={"query": "kisan", "group": "mh", "provider_id": "mh.provider.oan.dev"})
+    def test_composes_with_instance(self, test_client, capturing_store):
+        test_client.post("/search", json={"query": "kisan", "instance": "mh", "provider_id": "mh.provider.oan.dev"})
 
         assert capturing_store.captured["instance"] == "mh"
         assert capturing_store.captured["provider_id"] == "mh.provider.oan.dev"
@@ -1126,14 +1122,16 @@ class TestUploadCatalogIdentity:
     ):
         response = test_client.post(
             "/upload",
-            params={"kind": "scheme", "group": "mh"},
+            params={"kind": "scheme", "instance": "mh"},
             files={"file": ("National Mission on Natural Farming.pdf", sample_pdf_content, "application/pdf")},
         )
 
         assert response.status_code == 200
         doc = test_client.get(f"/documents/{response.json()['workflow_id']}").json()
         assert doc["kind"] == "scheme"
-        assert doc["group"] == "mh"
+        assert response.json()["instance"] == "mh"
+        assert doc["instance"] == "mh"
+        assert "group" not in doc
         assert doc["code"] == "nmnf"
         assert doc["name"] == "National Mission on Natural Farming"
         with db_connection.get_connection() as conn:
@@ -1148,17 +1146,39 @@ class TestUploadCatalogIdentity:
 
     @pytest.mark.api
     @pytest.mark.unit
+    def test_upload_rejects_an_unauthorized_instance(
+        self, test_client, db_connection, sample_pdf_content, monkeypatch
+    ):
+        from pipeline.api.api import app
+        from pipeline.auth.deps import get_current_user
+
+        monkeypatch.setitem(
+            app.dependency_overrides, get_current_user,
+            lambda: self._user("/states/MH/contributor"),
+        )
+        response = test_client.post(
+            "/upload",
+            params={"kind": "scheme", "instance": "gj"},
+            files={"file": ("a.pdf", sample_pdf_content, "application/pdf")},
+        )
+
+        assert response.status_code == 403
+        with db_connection.get_connection() as conn:
+            assert conn.execute("SELECT count(*) AS n FROM documents").fetchone()["n"] == 0
+
+    @pytest.mark.api
+    @pytest.mark.unit
     def test_a_second_upload_reuses_the_catalog_and_gets_a_fresh_code(
         self, test_client, db_connection, sample_pdf_content
     ):
         first = test_client.post(
             "/upload",
-            params={"kind": "advisory", "group": "mh"},
+            params={"kind": "advisory", "instance": "mh"},
             files={"file": ("Crop Advisory.pdf", self._pdf(sample_pdf_content, "one"), "application/pdf")},
         )
         second = test_client.post(
             "/upload",
-            params={"kind": "advisory", "group": "mh"},
+            params={"kind": "advisory", "instance": "mh"},
             files={"file": ("Crop Advisory.pdf", self._pdf(sample_pdf_content, "two"), "application/pdf")},
         )
 
@@ -1178,7 +1198,7 @@ class TestUploadCatalogIdentity:
     ):
         first = test_client.post(
             "/upload",
-            params={"kind": "scheme", "group": "mh", "code": "pm-kisan"},
+            params={"kind": "scheme", "instance": "mh", "code": "pm-kisan"},
             files={"file": ("pmkisan.pdf", self._pdf(sample_pdf_content, "v1"), "application/pdf")},
         )
         assert first.status_code == 200
@@ -1194,7 +1214,7 @@ class TestUploadCatalogIdentity:
 
         second = test_client.post(
             "/upload",
-            params={"kind": "scheme", "group": "mh", "code": "pm-kisan"},
+            params={"kind": "scheme", "instance": "mh", "code": "pm-kisan"},
             files={"file": ("pmkisan-2026.pdf", self._pdf(sample_pdf_content, "v2"), "application/pdf")},
         )
 
@@ -1219,7 +1239,7 @@ class TestUploadCatalogIdentity:
         for group, tag in (("mh", "a"), ("gj", "b")):
             response = test_client.post(
                 "/upload",
-                params={"kind": "scheme", "group": group, "code": "pm-kisan"},
+                params={"kind": "scheme", "instance": group, "code": "pm-kisan"},
                 files={"file": ("p.pdf", self._pdf(sample_pdf_content, tag), "application/pdf")},
             )
             assert response.status_code == 200

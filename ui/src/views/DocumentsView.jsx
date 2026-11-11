@@ -48,7 +48,7 @@ export default function DocumentsView() {
 
   const stageOptions = useMemo(() => ['all', ...new Set(documents.map(doc => doc.stage))], [documents])
   const groupOptions = useMemo(() => {
-    const fromDocs = documents.map((d) => (d.group || '').trim().toLowerCase()).filter(Boolean)
+    const fromDocs = documents.map((d) => (d.instance || '').trim().toLowerCase()).filter(Boolean)
     return ['all', ...new Set(fromDocs)]
   }, [documents])
 
@@ -60,7 +60,7 @@ export default function DocumentsView() {
       if (authFilter === 'authoritative' && !doc.authoritative) return false
       if (authFilter === 'legacy' && doc.authoritative) return false
       if (groupFilter !== 'all') {
-        const code = (doc.group || 'default').trim().toLowerCase()
+        const code = (doc.instance || 'default').trim().toLowerCase()
         if (code !== groupFilter) return false
       }
       if (showFailed && !doc.failed && doc.stage !== 'failed') return false
@@ -233,7 +233,7 @@ export default function DocumentsView() {
                       <div className="text-xs text-muted-foreground font-mono truncate">{getDocumentMetaLabel(doc)}</div>
                     </td>
                     <td className="px-4 py-3">
-                      <GroupBadge group={doc.group} />
+                      <GroupBadge group={doc.instance} />
                     </td>
                     <td className="px-4 py-3"><StageBadge stage={doc.stage} compact /></td>
                     <td className="px-4 py-3">
