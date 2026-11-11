@@ -74,7 +74,7 @@ export function DocumentHeaderSummary({
   const pages = pageCount ?? doc?.page_count ?? 0
   const chunks = chunkCount ?? doc?.chunk_count ?? 0
   const uploader = uploaderName(doc)
-  const stateLabel = formatGroupLabel(doc?.group)
+  const stateLabel = formatGroupLabel(doc?.instance)
   const roleLabels = useMemo(
     () => productRoleLabels(doc?.uploaded_by_roles || []),
     [doc?.uploaded_by_roles],
@@ -126,7 +126,7 @@ export function DocumentHeaderSummary({
             </DetailRow>
             <DetailRow label="State">
               {stateLabel ? (
-                <span title={groupBadgeTitle(doc?.group)}>{stateLabel}</span>
+                <span title={groupBadgeTitle(doc?.instance)}>{stateLabel}</span>
               ) : (
                 '—'
               )}

@@ -36,7 +36,7 @@ async def start_document_workflow(
     min_tokens: int = 100,
     index_name: str = "documents-index",
     stop_after_ocr: bool = False,
-    group: str = "",
+    instance: str = "",
     kind: str = Query(..., description="scheme or advisory"),
     code: str = "",
 ):
@@ -54,7 +54,7 @@ async def start_document_workflow(
     Rate limited to 10 requests/minute per IP.
     Requires permission: upload (no-op while AUTH_DISABLED=true).
     """
-    create_group = _api._resolve_create_group(user, group)
+    create_group = _api._resolve_upload_instance(user, instance)
     # Validate file path to prevent path traversal attacks
     filepath = _api.validate_file_path(data.filepath)
     source_filename = _api.get_filename_from_path(filepath)
@@ -85,7 +85,7 @@ async def start_document_workflow(
                     source_filename=source_filename,
                     source_file_fingerprint=source_file_fingerprint,
                     authoritative=bool(existing_doc.get("source_manifest_name")) if existing_doc else False,
-                    group=normalize_group(existing_doc.get("group")),
+                    instance=normalize_group(existing_doc.get("group")),
                     stage=DocumentStage(state.get("stage", "registered")),
                     page_count=state.get("page_count", 0),
                     chunk_count=state.get("chunk_count", 0),
@@ -182,7 +182,7 @@ async def start_document_workflow(
         new_value=source_filename,
         metadata={
             "source": "register_endpoint",
-            "group": create_group,
+            "instance": create_group,
             "kind": doc_kind,
             "code": doc_code,
             "replaced_existing": bool(replace_doc),
@@ -198,7 +198,7 @@ async def start_document_workflow(
         source_filename=source_filename,
         source_file_fingerprint=source_file_fingerprint,
         authoritative=False,
-        group=create_group,
+        instance=create_group,
         stage=DocumentStage.REGISTERED,
         page_count=0,
         chunk_count=0,
@@ -220,11 +220,11 @@ async def start_batch_workflows(
     chunk_overlap: int = 128,
     min_tokens: int = 100,
     stop_after_ocr: bool = False,
-    group: str = "",
+    instance: str = "",
     kind: str = Query(..., description="scheme or advisory"),
 ):
     """Start workflows for all supported documents in a directory."""
-    create_group = _api._resolve_create_group(user, group)
+    create_group = _api._resolve_upload_instance(user, instance)
     directory = Path(data.directory)
     if not directory.exists():
         raise HTTPException(404, f"Directory not found: {data.directory}")
@@ -245,7 +245,7 @@ async def start_batch_workflows(
                 chunk_overlap=chunk_overlap,
                 min_tokens=min_tokens,
                 stop_after_ocr=stop_after_ocr,
-                group=create_group,
+                instance=create_group,
                 kind=kind,
                 code="",
             )

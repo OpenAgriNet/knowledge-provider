@@ -60,7 +60,7 @@ def test_no_provider_searches_every_chunk(local_store, test_client):
 
 @pytest.mark.integration
 @pytest.mark.api
-def test_provider_composes_with_group(local_store, test_client):
-    body = search(test_client, provider_id="bv.provider.oan.dev", group="mh")
+def test_provider_composes_with_instance(local_store, test_client):
+    body = search(test_client, provider_id="bv.provider.oan.dev", instance="mh")
 
     assert body["hits"] == []

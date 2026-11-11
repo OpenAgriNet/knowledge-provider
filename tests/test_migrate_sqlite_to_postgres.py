@@ -375,7 +375,7 @@ class TestSqliteToPostgresMigration:
         assert [e["action_type"] for e in purged] == ["purge_document"]
         demo_trail = db.get_audit_logs(WF5)  # kept for the skipped demo document, tied to its group
         assert [e["action_type"] for e in demo_trail] == ["stage_change"]
-        assert demo_trail[0]["group"] == "mh"
+        assert demo_trail[0]["instance"] == "mh"
         settings_log = db.get_settings_audit_logs()
         assert settings_log[0]["field_name"] == "retrieval.alpha"
 

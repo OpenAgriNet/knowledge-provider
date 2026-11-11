@@ -31,7 +31,7 @@ async def upload_and_process(
     min_tokens: int = 100,
     index_name: str = "documents-index",
     stop_after_ocr: bool = False,
-    group: str = "",
+    instance: str = "",
     kind: str = Query(..., description="scheme or advisory"),
     code: str = "",
     display_name: Optional[str] = Form(None),
@@ -44,7 +44,7 @@ async def upload_and_process(
     Rate limited to 10 requests/minute per IP.
     Requires permission: upload (no-op while AUTH_DISABLED=true).
     """
-    create_group = _api._resolve_create_group(user, group)
+    create_group = _api._resolve_upload_instance(user, instance)
     doc_kind, doc_code, replace_doc = _api._resolve_document_identity(
         user, create_group, kind, code, file.filename or ""
     )
@@ -104,7 +104,7 @@ async def upload_and_process(
                     source_filename=file.filename,
                     source_file_fingerprint=file_hash,
                     authoritative=bool(existing_doc.get("source_manifest_name")) if existing_doc else False,
-                    group=normalize_group(existing_doc.get("group")),
+                    instance=normalize_group(existing_doc.get("group")),
                     stage=DocumentStage(state.get("stage", "registered")),
                     page_count=state.get("page_count", 0),
                     chunk_count=state.get("chunk_count", 0),
@@ -211,7 +211,7 @@ async def upload_and_process(
         new_value=file.filename,
         metadata={
             "source": "upload_endpoint",
-            "group": create_group,
+            "instance": create_group,
             "kind": doc_kind,
             "code": doc_code,
             "replaced_existing": bool(replace_doc),
@@ -237,7 +237,7 @@ async def upload_and_process(
         source_filename=file.filename,
         source_file_fingerprint=file_hash,
         authoritative=False,
-        group=create_group,
+        instance=create_group,
         stage=DocumentStage.REGISTERED,
         page_count=0,
         chunk_count=0,

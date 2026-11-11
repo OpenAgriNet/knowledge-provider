@@ -66,7 +66,7 @@ export default function NewDocumentView() {
   const documentGroup = defaultUploadGroup({
     isSuperAdmin,
     instances,
-    portalGroup: user?.portal_group || PORTAL_GROUP,
+    portalGroup: user?.portal_instance || PORTAL_GROUP,
   })
   const [file, setFile] = useState(null)
   const [displayName, setDisplayName] = useState('')
@@ -157,7 +157,7 @@ export default function NewDocumentView() {
       }
       const params = new URLSearchParams({
         auto_approve: 'false',
-        group: uploadGroup,
+        instance: uploadGroup,
         kind: documentKind,
       })
       const response = await apiFetch(`${API_BASE}/upload?${params}`, { method: 'POST', body: formData })

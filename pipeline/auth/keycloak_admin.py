@@ -506,7 +506,7 @@ def provision_user(
         "roles": [r.get("name") for r in (roles or []) if isinstance(r, dict)],
         "app_url": ui_url,
         "login_url": login_url,
-        "portal_group": PORTAL_GROUP,
+        "portal_instance": PORTAL_GROUP,
         "share_message": "\n".join(share_lines),
     }
 
@@ -517,7 +517,7 @@ def list_access_options() -> dict[str, Any]:
     return {
         "keycloak_admin_configured": cfg.configured,
         "realm": cfg.realm,
-        "portal_group": PORTAL_GROUP,
+        "portal_instance": PORTAL_GROUP,
         "access_types": [
             {
                 "id": "super_admin",

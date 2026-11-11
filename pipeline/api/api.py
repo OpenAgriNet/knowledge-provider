@@ -418,13 +418,15 @@ def _document_cohorts_payload(summary: dict, by_group: Optional[list[dict]] = No
             "ready_for_ingestion": _i("ready_for_ingestion_documents"),
             "failed": _i("failed_documents"),
         },
-        "by_group": by_group or [],
+        "by_instance": [
+            {**row, "instance": row["group"]} for row in (by_group or [])
+        ],
     }
 
 
-def _resolve_create_group(user: AuthUser, requested: Optional[str] = None) -> str:
-    """Pick the document's group from Keycloak-allowed states / portal."""
-    return resolve_create_group(user, requested)
+def _resolve_upload_instance(user: AuthUser, instance: str) -> str:
+    """Resolve the upload owner using the existing Keycloak tenancy rules."""
+    return resolve_create_group(user, instance)
 
 
 def _document_title(filename: str) -> str:
@@ -558,7 +560,7 @@ def _document_summary_from_row(doc: dict, current_job: Optional[dict] = None) ->
         source_manifest_name=doc.get("source_manifest_name"),
         source_file_fingerprint=doc.get("source_file_fingerprint"),
         authoritative=bool(doc.get("source_manifest_name")),
-        group=normalize_group(doc.get("group")),
+        instance=normalize_group(doc.get("group")),
         stage=DocumentStage(doc["stage"]),
         page_count=doc.get("page_count") or 0,
         chunk_count=doc.get("chunk_count") or 0,
@@ -804,7 +806,7 @@ async def auth_me(user: CurrentUser):
         "state_roles": dict(user.state_roles or {}),
         "is_super_admin": bool(user.is_superadmin),
         # Portal group code for BV / platform docs (not a state).
-        "portal_group": PORTAL_GROUP,
+        "portal_instance": PORTAL_GROUP,
         "auth_disabled": user.token_disabled_mode,
     }
 
@@ -945,12 +947,16 @@ async def list_runs(
     Restricted users only see jobs whose document ``group`` is in their
     allowed states. Super-admin / bypass users see all tenants.
     """
-    return db.list_runs(
+    runs = db.list_runs(
         limit=limit,
         offset=offset,
         status=status,
         groups=_group_scope_for_user(user),
     )
+
+    for run in runs:
+        run["instance"] = run.pop("group")
+    return runs
 
 
 @app.get("/runs/{job_id}")
@@ -1010,7 +1016,7 @@ def _build_document_detail(doc: dict) -> DocumentDetail:
         source_manifest_name=doc.get("source_manifest_name"),
         source_file_fingerprint=doc.get("source_file_fingerprint"),
         authoritative=bool(doc.get("source_manifest_name")),
-        group=normalize_group(doc.get("group")),
+        instance=normalize_group(doc.get("group")),
         filepath=doc["filepath"],
         stage=DocumentStage(doc["stage"]),
         page_count=doc.get("page_count", 0),
