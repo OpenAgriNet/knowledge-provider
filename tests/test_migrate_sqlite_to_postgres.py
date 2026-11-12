@@ -271,7 +271,9 @@ class TestSqliteToPostgresMigration:
         assert report.tables["documents"]["skipped"] == 2
         assert report.mismatches() == []
 
-    def test_a_full_run_maps_every_table(self, db_connection, postgres_url, legacy_db):
+    def test_a_full_run_maps_every_table(self, db_connection, postgres_url, legacy_db, monkeypatch):
+        # The fixture documents only ever reached the DEV index, as in a deployment with PROD off.
+        monkeypatch.setenv("DISABLE_PROD_SETTING", "true")
         db = db_connection
         report = _load_script().run_migration(legacy_db, postgres_url)
 
@@ -420,6 +422,18 @@ class TestSqliteToPostgresMigration:
         assert doc["valid_from"] == "2026-06-01" and doc["valid_to"] is None
         notes = " ".join(report.notes)
         assert "valid_to cleared" in notes and "not a valid slug, code derived" in notes
+
+    def test_a_dev_only_legacy_document_is_not_live_when_prod_is_enabled(
+        self, db_connection, postgres_url, legacy_db, monkeypatch
+    ):
+        monkeypatch.delenv("DISABLE_PROD_SETTING", raising=False)
+        _load_script().run_migration(legacy_db, postgres_url)
+
+        with db_connection.get_connection() as conn:
+            status = conn.execute(
+                "SELECT status FROM catalog_status WHERE code = 'pm-kmy'"
+            ).fetchone()["status"]
+        assert status == "disabled"
 
     def test_renamed_code_flags_the_document_for_reindex(self, db_connection, postgres_url, legacy_db):
         """A suffixed code no longer matches the points in the old index, so it must be re-indexed."""

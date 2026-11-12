@@ -1067,6 +1067,16 @@ class TestCatalogView:
             name=code.upper(), **kwargs,
         )
 
+    @staticmethod
+    def _skip_prod(db, workflow_id):
+        """Mark the document's run as one that skipped PROD, which makes completed mean live."""
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE workflows SET config = config || '{\"skip_prod\": true}'::jsonb "
+                "WHERE temporal_workflow_id = %s",
+                (workflow_id,),
+            )
+
     @pytest.mark.db
     @pytest.mark.unit
     def test_status_rules(self, db_connection):
@@ -1074,6 +1084,8 @@ class TestCatalogView:
         self._scheme_doc(db, "wf-live", "live-one", "completed")
         self._scheme_doc(db, "wf-stale", "stale-one", "completed")
         db.mark_document_reindex_required("wf-stale", True, "edit")
+        for wf in ("wf-live", "wf-stale", "wf-off"):
+            self._skip_prod(db, wf)
         self._scheme_doc(db, "wf-gate", "gate-one", "approval_for_prod")
         self._scheme_doc(db, "wf-wip", "wip-one", "chunk_review")
         self._scheme_doc(db, "wf-off", "off-one", "completed")
@@ -1095,6 +1107,8 @@ class TestCatalogView:
         db = db_connection
         self._scheme_doc(db, "wf-a", "scheme-a", "completed", instance="mh")
         self._scheme_doc(db, "wf-b", "scheme-b", "completed", instance="up")
+        self._skip_prod(db, "wf-a")
+        self._skip_prod(db, "wf-b")
         db.save_chunks("wf-a", [{"chunk_number": 1, "original_text": "x"}])
         db.save_chunks("wf-b", [{"chunk_number": 1, "original_text": "y"},
                                 {"chunk_number": 2, "original_text": "z"}])

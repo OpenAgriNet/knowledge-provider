@@ -45,6 +45,7 @@ from psycopg.rows import dict_row  # noqa: E402
 from psycopg.types.json import Jsonb  # noqa: E402
 
 from pipeline import db, migrate  # noqa: E402
+from pipeline.instances import prod_stage_disabled  # noqa: E402
 from pipeline.models import (  # noqa: E402
     ChunkingRun,
     DocumentMetadata,
@@ -578,6 +579,12 @@ def migrate_document(
     report.count("documents", "inserted")
 
     workflows, job_ids = _build_workflows(sq, doc, uploader, report)
+    if prod_stage_disabled():
+        # The legacy deployment finished at DEV ingest; catalog_status needs the
+        # marker to count those completed runs as live without a PROD index entry.
+        for w in workflows:
+            if w["type"] in ("pipeline", "ocr_only"):
+                w["config"].setdefault("skip_prod", True)
     root = next((w for w in workflows if w["type"] in ("pipeline", "ocr_only")), workflows[0])
     for w in workflows:
         started_by = w["started_by"]
