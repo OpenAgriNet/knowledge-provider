@@ -87,6 +87,13 @@ class _Fails:
         raise ApplicationError("chunking rejected", non_retryable=True)
 
 
+@workflow.defn
+class _WaitsForever:
+    @workflow.run
+    async def run(self) -> None:
+        await workflow.wait_condition(lambda: False)
+
+
 async def _run_workflow(workflow_cls):
     async with await WorkflowEnvironment.start_time_skipping() as env:
         async with Worker(
@@ -132,3 +139,32 @@ async def test_workflow_failure_is_logged_with_its_error(caplog):
     assert failed.workflow_type == "_Fails"
     assert "chunking rejected" in failed.error
     assert failed.exc_info is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.workflow
+async def test_workflow_cancellation_logs_an_end(caplog):
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with Worker(
+            env.client,
+            task_queue="logging-test",
+            workflows=[_WaitsForever],
+            interceptors=[activity_logging.ActivityLogging()],
+        ):
+            with caplog.at_level(logging.INFO):
+                handle = await env.client.start_workflow(
+                    _WaitsForever.run, id=f"wf-{uuid.uuid4()}", task_queue="logging-test"
+                )
+                await handle.cancel()
+                with pytest.raises(Exception):
+                    await handle.result()
+
+    [cancelled] = [r for r in caplog.records if r.getMessage().startswith("workflow cancelled")]
+    assert cancelled.levelno == logging.WARNING
+    assert cancelled.workflow_type == "_WaitsForever"
+
+
+def test_temporal_context_stays_out_of_the_message():
+    # It still arrives as an attribute; in the message it only clutters the body.
+    assert activity.logger.activity_info_on_message is False
+    assert workflow.logger.workflow_info_on_message is False

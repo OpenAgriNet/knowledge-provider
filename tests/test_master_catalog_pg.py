@@ -227,6 +227,23 @@ def test_sync_catalog_entry_dev_upserts_and_pushes_redis(catalog_pg):
     assert fake_redis.ttls["master-catalog:dev:snapshot"] == 172800
 
 
+def test_a_failed_redis_push_is_logged_and_does_not_fail_the_sync(catalog_pg, monkeypatch, caplog):
+    # Postgres is the source of truth; the warning is the only sign the mirror is stale.
+    db, pg, store, fake_redis = catalog_pg
+    _make_scheme_doc(db, workflow_id="wf-1", scheme_code="pm-ddky")
+
+    def refuse(*args, **kwargs):
+        raise ConnectionError("redis down")
+
+    monkeypatch.setattr(fake_redis, "set", refuse)
+    with caplog.at_level("WARNING", logger=pg.logger.name):
+        version = pg.sync_catalog_entry("wf-1", "dev")
+
+    assert version == 1
+    [failed] = [r for r in caplog.records if r.getMessage() == "master catalog Redis push failed"]
+    assert failed.error == "redis down"
+
+
 def test_sync_catalog_entry_live_appears_in_both_tiers(catalog_pg):
     db, pg, store, fake_redis = catalog_pg
     _make_scheme_doc(db, workflow_id="wf-2", scheme_code="mif", tool_routing="legacy")
