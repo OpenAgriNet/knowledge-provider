@@ -194,10 +194,10 @@ async def run_search(payload: dict, user: RequireSearch):
     """
     from ..vector_store import get_default_index_name, get_vector_store
 
+    caller = user.username or user.email or user.user_id
     logging.info(
-        "search payload user=%s payload=%s",
-        user.username or user.email or user.user_id,
-        json.dumps(payload, ensure_ascii=False, default=str),
+        "search payload",
+        extra={"user": caller, "payload": json.dumps(payload, ensure_ascii=False, default=str)},
     )
 
     settings = db.get_search_settings()
@@ -207,11 +207,8 @@ async def run_search(payload: dict, user: RequireSearch):
         raise HTTPException(400, "query is required")
 
     logging.info(
-        "search request user=%s index=%s query=%r top_k=%s",
-        user.username or user.email or user.user_id,
-        index_name,
-        query,
-        payload.get("top_k"),
+        "search request",
+        extra={"user": caller, "index": index_name, "query": query, "top_k": payload.get("top_k")},
     )
 
     search_mode = (payload.get("search_mode") or settings.get("searchMethod") or "HYBRID").upper()
@@ -290,12 +287,14 @@ async def run_search(payload: dict, user: RequireSearch):
             break
 
     logging.info(
-        "search response user=%s index=%s query=%r candidate_count=%s final_count=%s",
-        user.username or user.email or user.user_id,
-        index_name,
-        query,
-        len(hits),
-        len(final_hits),
+        "search response",
+        extra={
+            "user": caller,
+            "index": index_name,
+            "query": query,
+            "candidate_count": len(hits),
+            "final_count": len(final_hits),
+        },
     )
 
     return {

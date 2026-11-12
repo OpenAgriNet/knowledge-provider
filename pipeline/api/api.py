@@ -101,7 +101,7 @@ from ..models import (
 )
 from ..network_constants import RESULT_REJECTED
 from ..network_group import validate_network_provider_config
-from ..observability import configure_logs, reset_logs
+from ..observability import configure_console, configure_logs, reset_logs
 from ..workflows import (
     ChunkingOnlyWorkflow,
     DocumentPipelineWorkflow,
@@ -117,11 +117,7 @@ LOG_LEVEL = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").strip().upper()
 # logging.info() calls in this module (e.g. /search) are silently dropped
 # without configuring the root logger too - same LOG_LEVEL convention as
 # pipeline/worker.py.
-logging.basicConfig(
-    level=LOG_LEVEL,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    datefmt='%H:%M:%S',
-)
+configure_console(LOG_LEVEL)
 
 TASK_QUEUE = "ocr-pipeline"
 
@@ -162,10 +158,12 @@ async def _start_services():
         )
     else:
         logging.info(
-            "Auth enabled: issuer=%s audience=%s jwks=%s",
-            auth_cfg.keycloak_issuer,
-            auth_cfg.keycloak_audience or "(none)",
-            auth_cfg.keycloak_jwks_url,
+            "auth enabled",
+            extra={
+                "issuer": auth_cfg.keycloak_issuer,
+                "audience": auth_cfg.keycloak_audience or "(none)",
+                "jwks": auth_cfg.keycloak_jwks_url,
+            },
         )
 
     # Initialize SQLite database
@@ -197,14 +195,16 @@ async def _start_services():
     # Ensure bucket exists
     if not minio_client.bucket_exists(MINIO_BUCKET):
         minio_client.make_bucket(MINIO_BUCKET)
-        logging.info("api startup: created MinIO bucket %s", MINIO_BUCKET)
+        logging.info("api startup: created MinIO bucket", extra={"bucket": MINIO_BUCKET})
 
     logging.info(
-        "api started auth=%s temporal=%s minio=%s bucket=%s",
-        "disabled" if auth_cfg.disabled else "enabled",
-        temporal_host,
-        minio_endpoint,
-        MINIO_BUCKET,
+        "api started",
+        extra={
+            "auth": "disabled" if auth_cfg.disabled else "enabled",
+            "temporal": temporal_host,
+            "minio": minio_endpoint,
+            "bucket": MINIO_BUCKET,
+        },
     )
 
 
@@ -578,7 +578,9 @@ def delete_single_chunk_from_index(document_id: str, chunk_num: int, index_name:
         resolved_index = index_name or get_default_index_name()
         return store.delete_chunk(resolved_index, document_id, chunk_num)
     except Exception as e:
-        logging.exception("vector chunk delete failed doc_id=%s chunk=%s", document_id, chunk_num)
+        logging.exception(
+            "vector chunk delete failed", extra={"doc_id": document_id, "chunk": chunk_num}
+        )
         return {"deleted": False, "error": str(e)}
 
 
@@ -594,7 +596,7 @@ def delete_chunks_from_index(document_id: str, index_name: str = "documents-inde
             result["doc_id"] = document_id
         return result
     except Exception as e:
-        logging.exception("vector document delete failed doc_id=%s", document_id)
+        logging.exception("vector document delete failed", extra={"doc_id": document_id})
         return {"deleted": 0, "doc_id": document_id, "error": str(e)}
 
 
@@ -1030,7 +1032,9 @@ def _delete_document_points_from_prod(doc: dict) -> dict:
         store = QdrantVectorStore(client=client)
         return store.delete_by_doc_id(collection, doc_id)
     except Exception as exc:
-        logging.exception("prod vector delete failed doc_id=%s collection=%s", doc_id, collection)
+        logging.exception(
+            "prod vector delete failed", extra={"doc_id": doc_id, "collection": collection}
+        )
         return {"deleted": False, "error": str(exc), "collection": collection}
 
 
@@ -1060,7 +1064,9 @@ def _delete_scheme_points_from_prod(doc: dict) -> dict:
         store = QdrantVectorStore(client=client)
         return store.delete_by_doc_id(collection, doc_id)
     except Exception as exc:
-        logging.exception("prod vector delete failed doc_id=%s collection=%s", doc_id, collection)
+        logging.exception(
+            "prod vector delete failed", extra={"doc_id": doc_id, "collection": collection}
+        )
         return {"deleted": False, "error": str(exc), "collection": collection}
 
 

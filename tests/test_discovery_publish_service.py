@@ -387,15 +387,12 @@ class TestDiscoveryPublishServiceLogging:
                     transaction_id="txn-log", document_kind="advisory", workflow_id="wf-log"
                 )
 
-        messages = [r.getMessage() for r in caplog.records]
-        assert any(
-            "network_publish_url=https://discovery.example.com/publish" in m
-            and "workflow_id=wf-log" in m
-            and "transaction_id=txn-log" in m
-            and "catalog_id=cat-oan-knowledge-provider-advisories" in m
-            for m in messages
-        )
-        assert any("network_publish_status=200" in m for m in messages)
+        [sent] = [r for r in caplog.records if r.getMessage() == "network publish sent"]
+        assert sent.network_publish_url == "https://discovery.example.com/publish"
+        assert (sent.workflow_id, sent.transaction_id) == ("wf-log", "txn-log")
+        assert sent.catalog_id == "cat-oan-knowledge-provider-advisories"
+        [answered] = [r for r in caplog.records if r.getMessage() == "network publish answered"]
+        assert answered.network_publish_status == 200
 
     @pytest.mark.unit
     def test_logs_an_error_when_the_call_fails(self, monkeypatch, caplog):
@@ -413,13 +410,9 @@ class TestDiscoveryPublishServiceLogging:
                         transaction_id="txn-log", document_kind="advisory", workflow_id="wf-log"
                     )
 
-        errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
-        assert any(
-            "network_publish_failed=True" in m
-            and "workflow_id=wf-log" in m
-            and "transaction_id=txn-log" in m
-            for m in errors
-        )
+        [failed] = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert failed.getMessage() == "network publish failed"
+        assert (failed.workflow_id, failed.transaction_id) == ("wf-log", "txn-log")
 
     @pytest.mark.unit
     def test_skipped_publish_logs_no_request(self, monkeypatch, caplog):
@@ -434,8 +427,8 @@ class TestDiscoveryPublishServiceLogging:
                 )
 
         messages = [r.getMessage() for r in caplog.records]
-        assert any("network_publish_skipped=True" in m for m in messages)
-        assert not any("network_publish_url=" in m for m in messages)
+        assert "network publish skipped" in messages
+        assert "network publish sent" not in messages
 
 
 def _use_group_providers(monkeypatch, tmp_path, content):

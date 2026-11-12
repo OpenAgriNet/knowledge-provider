@@ -256,8 +256,14 @@ def sync_catalog_entry(workflow_id: str, status: str) -> Optional[int]:
             version = row[0] if row else None
 
         logger.info(
-            "master_catalog_pg: synced code=%s name=%s status=%s workflow_id=%s version=%s",
-            code, name, status, workflow_id, version,
+            "master catalog entry synced",
+            extra={
+                "code": code,
+                "scheme_name": name,
+                "status": status,
+                "workflow_id": workflow_id,
+                "version": version,
+            },
         )
         _push_snapshots_to_redis(conn, version, now)
         return version
@@ -298,8 +304,8 @@ def remove_catalog_entry(workflow_id: str) -> Optional[int]:
 
             if not deleted:
                 logger.info(
-                    "master_catalog_pg: no catalog row for workflow_id=%s (code=%s), nothing to remove",
-                    workflow_id, code,
+                    "master catalog has no row to remove",
+                    extra={"workflow_id": workflow_id, "code": code},
                 )
                 return None
 
@@ -317,8 +323,8 @@ def remove_catalog_entry(workflow_id: str) -> Optional[int]:
             version = row[0] if row else None
 
         logger.info(
-            "master_catalog_pg: removed code=%s workflow_id=%s version=%s",
-            code, workflow_id, version,
+            "master catalog entry removed",
+            extra={"code": code, "workflow_id": workflow_id, "version": version},
         )
         _push_snapshots_to_redis(conn, version, now)
         return version
@@ -411,8 +417,13 @@ def _push_snapshots_to_redis(conn, version: Optional[int], updated_at: str) -> N
             }
             client.set(f"{_REDIS_KEY_PREFIX}:{tier}:snapshot", json.dumps(payload), ex=ttl)
             logger.info(
-                "master_catalog_pg: pushed %s:%s snapshot (%d entries, version=%s)",
-                _REDIS_KEY_PREFIX, tier, len(rows), version,
+                "master catalog snapshot pushed",
+                extra={
+                    "redis_key": f"{_REDIS_KEY_PREFIX}:{tier}:snapshot",
+                    "tier": tier,
+                    "entry_count": len(rows),
+                    "version": version,
+                },
             )
     except Exception as exc:
-        logger.warning("master_catalog_pg: Redis push failed: %s", exc)
+        logger.warning("master catalog Redis push failed", extra={"error": str(exc)})

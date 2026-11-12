@@ -63,12 +63,11 @@ class RequestLogging:
             await self.app(scope, receive, send_and_watch)
         except Exception as exc:
             logger.error(
-                "request method=%s uri=%s status=%s duration_ms=%d error=%r",
-                scope["method"],
-                _uri(scope),
-                status.get("code", 500),
-                _elapsed_ms(started),
-                exc,
+                "request failed",
+                extra={
+                    **_request_fields(scope, status.get("code", 500), _elapsed_ms(started)),
+                    "error": repr(exc),
+                },
                 exc_info=True,
             )
             raise
@@ -77,10 +76,10 @@ class RequestLogging:
 
 
 def _log_response(scope: Scope, code: int, duration_ms: int) -> None:
-    method, uri = scope["method"], _uri(scope)
+    fields = _request_fields(scope, code, duration_ms)
     if code < 400:
         level = logging.DEBUG if scope["path"] in QUIET_PATHS else logging.INFO
-        logger.log(level, "request method=%s uri=%s status=%s duration_ms=%d", method, uri, code, duration_ms)
+        logger.log(level, "request completed", extra=fields)
         return
 
     state = scope.get("state") or {}
@@ -88,14 +87,20 @@ def _log_response(scope: Scope, code: int, duration_ms: int) -> None:
     cause = state.get("error_cause")
     logger.log(
         logging.ERROR if code >= 500 else logging.WARNING,
-        "request method=%s uri=%s status=%s duration_ms=%d error=%r",
-        method,
-        uri,
-        code,
-        duration_ms,
-        error,
+        "request failed",
+        extra={**fields, "error": str(error)},
         exc_info=(type(cause), cause, cause.__traceback__) if code >= 500 and cause else None,
     )
+
+
+def _request_fields(scope: Scope, code: int, duration_ms: int) -> dict[str, Any]:
+    return {
+        "method": scope["method"],
+        "uri": _uri(scope),
+        "path": scope["path"],
+        "status": code,
+        "duration_ms": duration_ms,
+    }
 
 
 def _uri(scope: Scope) -> str:
