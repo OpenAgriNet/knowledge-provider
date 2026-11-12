@@ -6,7 +6,6 @@ import asyncio
 import logging
 import os
 
-from temporalio import activity, workflow
 from temporalio.client import Client
 from temporalio.worker import Worker
 
@@ -42,11 +41,6 @@ from .workflows import (
 LOG_LEVEL = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").strip().upper(), logging.INFO)
 
 configure_console(LOG_LEVEL)
-
-# Temporal appends its context to the message by default. It also sends it as
-# an attribute, which a log search can filter on; the message copy only clutters.
-activity.logger.activity_info_on_message = False
-workflow.logger.workflow_info_on_message = False
 
 # Set Temporal SDK logging to INFO regardless of LOG_LEVEL - its own DEBUG
 # output is noisy and rarely what LOG_LEVEL=DEBUG is set to see.

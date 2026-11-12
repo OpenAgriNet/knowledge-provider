@@ -17,6 +17,11 @@ from temporalio.worker import (
 
 logger = logging.getLogger(__name__)
 
+# Temporal appends its context to the message by default. It also sends it as
+# an attribute, which a log search can filter on; the message copy only clutters.
+activity.logger.activity_info_on_message = False
+workflow.logger.workflow_info_on_message = False
+
 
 class ActivityLogging(Interceptor):
     def intercept_activity(self, next: ActivityInboundInterceptor) -> ActivityInboundInterceptor:

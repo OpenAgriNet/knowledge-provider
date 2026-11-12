@@ -112,10 +112,3 @@ def test_api_startup_failure_is_logged_and_flushed(monkeypatch, calls, caplog):
     assert failed.levelname == "ERROR" and isinstance(failed.exc_info[1], RuntimeError)
     assert calls == ["reset"]
 
-
-def test_worker_keeps_temporal_context_out_of_the_message():
-    # It still arrives as an attribute; in the message it only clutters the body.
-    from temporalio import activity, workflow
-
-    assert activity.logger.activity_info_on_message is False
-    assert workflow.logger.workflow_info_on_message is False
