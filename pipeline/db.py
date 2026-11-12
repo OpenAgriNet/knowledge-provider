@@ -1247,9 +1247,15 @@ def update_document_stage(
     stage: str,
     page_count: Optional[int] = None,
     chunk_count: Optional[int] = None,
-    error_message: Optional[str] = None
-):
-    """Update the stage (of the document's current workflow).
+    error_message: Optional[str] = None,
+    run_workflow_id: Optional[str] = None,
+) -> Optional[str]:
+    """Update the stage of one workflow run; returns that run's workflow UUID.
+
+    ``run_workflow_id`` is the Temporal workflow id of the run reporting the stage.
+    When it matches a run of this document, only that run is written, so a late
+    update from an older run cannot move a newer run's stage. Without it (or when
+    no run matches) the document's current workflow is updated, as before.
 
     ``page_count`` and ``chunk_count`` are accepted for call-site compatibility;
     both are counted from ``pages`` and ``chunks``, so only the audit entry keeps them.
@@ -1259,14 +1265,26 @@ def update_document_stage(
     with get_connection() as conn:
         doc_uuid = _resolve_document_uuid(conn, workflow_id)
         if doc_uuid is None:
-            return
-        cw = conn.execute(
-            "SELECT id, current_stage FROM document_current_workflow WHERE document_id = %s::uuid",
-            (doc_uuid,),
-        ).fetchone()
+            return None
+        cw = None
+        if run_workflow_id:
+            cw = conn.execute(
+                """
+                SELECT id, current_stage FROM workflows
+                WHERE document_id = %s::uuid AND temporal_workflow_id = %s
+                ORDER BY started_at DESC, id DESC LIMIT 1
+                """,
+                (doc_uuid, run_workflow_id),
+            ).fetchone()
         if cw is None:
-            return
+            cw = conn.execute(
+                "SELECT id, current_stage FROM document_current_workflow WHERE document_id = %s::uuid",
+                (doc_uuid,),
+            ).fetchone()
+        if cw is None:
+            return None
         old_stage = cw["current_stage"]
+        run_id = str(cw["id"])
 
         assignments = ["current_stage = %s"]
         params: list = [stage]
@@ -1303,6 +1321,7 @@ def update_document_stage(
             new_value=stage,
             metadata={"page_count": page_count, "chunk_count": chunk_count}
         )
+    return run_id
 
 
 def _root_workflow_id(conn, doc_uuid: str) -> Optional[str]:

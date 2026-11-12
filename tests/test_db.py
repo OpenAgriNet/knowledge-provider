@@ -718,6 +718,36 @@ class TestWorkflows:
 
     @pytest.mark.db
     @pytest.mark.unit
+    def test_stage_update_from_an_older_run_leaves_the_newer_run_alone(self, db_connection):
+        _new_doc(db_connection, "wf-owner", stage="ingesting")
+        db_connection.create_document_job(
+            "wf-owner", "ocr_retry", temporal_workflow_id="wf-owner-retry-ocr-1",
+            current_stage="ocr_processing",
+        )
+
+        # The original pipeline run reports late, after the retry has started.
+        returned = db_connection.update_document_stage(
+            "wf-owner", "completed", run_workflow_id="wf-owner"
+        )
+
+        by_type = {j["job_type"]: j["current_stage"] for j in db_connection.list_document_jobs("wf-owner")}
+        assert by_type == {"pipeline": "completed", "ocr_retry": "ocr_processing"}
+        assert db_connection.get_document("wf-owner")["stage"] == "ocr_processing"
+        pipeline_job = next(j for j in db_connection.list_document_jobs("wf-owner") if j["job_type"] == "pipeline")
+        assert returned == pipeline_job["id"]
+
+    @pytest.mark.db
+    @pytest.mark.unit
+    def test_stage_update_with_an_unknown_run_falls_back_to_the_current_workflow(self, db_connection):
+        _new_doc(db_connection, "wf-fallback", stage="completed")
+        db_connection.create_document_job("wf-fallback", "ocr_retry", current_stage="ocr_processing")
+
+        db_connection.update_document_stage("wf-fallback", "ocr_review", run_workflow_id="no-such-run")
+
+        assert db_connection.get_document("wf-fallback")["stage"] == "ocr_review"
+
+    @pytest.mark.db
+    @pytest.mark.unit
     def test_stage_timestamps_are_set_once(self, db_connection):
         _new_doc(db_connection, "wf-once")
         db_connection.update_document_stage("wf-once", "ocr_review")
