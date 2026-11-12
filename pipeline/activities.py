@@ -1599,19 +1599,25 @@ async def update_document_state(
     page_count: int = 0,
     chunk_count: int = 0,
     error_message: str = None,
+    run_workflow_id: str = None,
 ) -> dict:
-    """Update document state in Postgres."""
+    """Update document state in Postgres.
+
+    ``run_workflow_id`` is the reporting run's own Temporal workflow id; the stage
+    (and its job row) is written for that run rather than the document's newest.
+    """
     from . import db
 
     activity.logger.info(f"Updating state for {workflow_id}: stage={stage}")
-    db.update_document_stage(
+    run_job_id = db.update_document_stage(
         workflow_id=workflow_id,
         stage=stage,
         page_count=page_count,
         chunk_count=chunk_count,
         error_message=error_message,
+        run_workflow_id=run_workflow_id,
     )
-    latest_job = db.get_latest_document_job(workflow_id)
+    latest_job = db.get_document_job(run_job_id) if run_job_id else db.get_latest_document_job(workflow_id)
     if latest_job:
         job_updates = {"current_stage": stage}
         if stage in {

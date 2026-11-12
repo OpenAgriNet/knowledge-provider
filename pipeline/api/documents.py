@@ -170,6 +170,7 @@ async def start_document_workflow(
             "min_tokens": min_tokens,
             "index_name": index_name,
             "stop_after_ocr": stop_after_ocr,
+            "skip_prod": prod_stage_disabled(),
             "uploaded_by": actor,
         },
         actor=actor,

@@ -26,6 +26,14 @@ def _doc(db, workflow_id, **kwargs):
     return db.upsert_document(workflow_id=workflow_id, **kwargs)
 
 
+def _prod_indexed(db, workflow_id, monkeypatch, collection="prod-docs"):
+    """Record a successful PROD index, which is what makes a completed document live."""
+    monkeypatch.setenv("PROD_VECTOR_DB_COLLECTION_NAME", collection)
+    db.upsert_document_index_status(
+        workflow_id, collection, last_indexed_at="2026-05-01T10:00:00+00:00", status="indexed"
+    )
+
+
 def _instance(db, instance="mh"):
     return db.get_or_create_instance(instance)
 
@@ -501,7 +509,7 @@ class TestCatalogStatusView:
 
     @pytest.mark.db
     @pytest.mark.unit
-    def test_status_follows_stage_flags_and_disabling(self, db_connection):
+    def test_status_follows_stage_flags_and_disabling(self, db_connection, monkeypatch):
         db = db_connection
         _doc(db, "wf-live", code="live", stage="completed")
         _doc(db, "wf-stale", code="stale", stage="completed")
@@ -514,6 +522,8 @@ class TestCatalogStatusView:
         db.update_document_fields("wf-hidden", catalog_visible=False)
         _doc(db, "wf-gate-off", code="gate-off", stage="approval_for_prod")
         db.set_document_disabled("wf-gate-off", True)
+        for wf in ("wf-live", "wf-stale", "wf-off", "wf-hidden"):
+            _prod_indexed(db, wf, monkeypatch)
 
         status = {code: row["status"] for code, row in self._rows(db).items()}
         assert status == {
@@ -525,6 +535,40 @@ class TestCatalogStatusView:
             "hidden": "disabled",
             "gate-off": "disabled",
         }
+
+    @pytest.mark.db
+    @pytest.mark.unit
+    def test_a_dev_only_completed_document_is_not_live(self, db_connection):
+        db = db_connection
+        _doc(db, "wf-dev", code="dev-only", stage="completed")
+        db.upsert_document_index_status("wf-dev", "documents-index", status="indexed")
+        assert self._rows(db)["dev-only"]["status"] == "disabled"
+
+    @pytest.mark.db
+    @pytest.mark.unit
+    def test_a_completed_run_that_skipped_prod_is_live(self, db_connection):
+        db = db_connection
+        _doc(db, "wf-skip", code="skipped", stage="completed")
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE workflows SET config = config || '{\"skip_prod\": true}'::jsonb "
+                "WHERE temporal_workflow_id = 'wf-skip'"
+            )
+        assert self._rows(db)["skipped"]["status"] == "live"
+
+    @pytest.mark.db
+    @pytest.mark.unit
+    def test_a_new_run_does_not_hide_a_live_document(self, db_connection, monkeypatch):
+        db = db_connection
+        _doc(db, "wf-run", code="running", stage="completed")
+        _prod_indexed(db, "wf-run", monkeypatch)
+        assert self._rows(db)["running"]["status"] == "live"
+
+        db.create_document_job(
+            "wf-run", "reingest", temporal_workflow_id="wf-run-reingest-1", current_stage="ingesting",
+        )
+
+        assert self._rows(db)["running"]["status"] == "live"
 
     @pytest.mark.db
     @pytest.mark.unit
@@ -556,7 +600,9 @@ class TestCatalogStatusView:
         _doc(db, "wf-p2", code="not-live", stage="chunk_review")
         _doc(db, "wf-p3", code="dev-only", stage="completed")
         for wf in ("wf-p1", "wf-p2"):
-            db.upsert_document_index_status(wf, "prod-docs", last_indexed_at="2026-05-01T10:00:00+00:00")
+            db.upsert_document_index_status(
+                wf, "prod-docs", last_indexed_at="2026-05-01T10:00:00+00:00", status="indexed"
+            )
         db.upsert_document_index_status("wf-p3", "documents-index", last_indexed_at="2026-05-02T10:00:00+00:00")
         rows = self._rows(db)
         assert rows["promoted"]["promoted_at"] is not None

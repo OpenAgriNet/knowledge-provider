@@ -103,17 +103,22 @@ async def _mirror_state(
     Local activities avoid starving tiny state updates behind long-running OCR,
     translation, or chunking activities on the shared task queue.
     """
+    args = [workflow_id, stage, page_count, chunk_count, error_message]
+    if workflow.patched("run-owned-stage-v1"):
+        # Tell the activity which run is reporting, so it writes that run's row.
+        args.append(workflow.info().workflow_id)
+
     if workflow.patched("local-state-update-v1"):
         return await workflow.execute_local_activity(
             update_document_state,
-            args=[workflow_id, stage, page_count, chunk_count, error_message],
+            args=args,
             start_to_close_timeout=timedelta(seconds=30),
             retry_policy=STATE_UPDATE_RETRY,
         )
 
     return await workflow.execute_activity(
         update_document_state,
-        args=[workflow_id, stage, page_count, chunk_count, error_message],
+        args=args,
         start_to_close_timeout=timedelta(seconds=30),
         retry_policy=STATE_UPDATE_RETRY,
     )

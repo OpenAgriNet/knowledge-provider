@@ -99,6 +99,7 @@ def _stub_activities(call_log: list):
         page_count: int = 0,
         chunk_count: int = 0,
         error_message: str = None,
+        run_workflow_id: str = None,
     ) -> dict:
         call_log.append(f"state:{stage}")
         return {}
