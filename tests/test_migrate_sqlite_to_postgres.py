@@ -421,6 +421,31 @@ class TestSqliteToPostgresMigration:
         notes = " ".join(report.notes)
         assert "valid_to cleared" in notes and "not a valid slug, code derived" in notes
 
+    def test_renamed_code_flags_the_document_for_reindex(self, db_connection, postgres_url, legacy_db):
+        """A suffixed code no longer matches the points in the old index, so it must be re-indexed."""
+        dup = "doc-dup-scheme"
+        conn = sqlite3.connect(legacy_db)
+        _insert(
+            conn, "documents", workflow_id=dup, document_id="dup-scheme", filename="dup.pdf",
+            filepath="/tmp/dup.pdf", stage="completed", created_at="2026-05-04T10:00:00",
+            updated_at="2026-05-04T10:00:00", instance="mh", document_kind="scheme",
+            scheme_code="pm-kmy", reindex_required=0,
+        )
+        conn.commit()
+        conn.close()
+
+        report = _load_script().run_migration(legacy_db, postgres_url)
+
+        renamed = db_connection.get_document(dup)
+        assert renamed["code"] == "pm-kmy-2"
+        assert renamed["reindex_required"] is True
+        assert "'pm-kmy' -> 'pm-kmy-2'" in renamed["reindex_reason"]
+        assert any("stored as 'pm-kmy-2'" in n for n in report.notes)
+
+        kept = db_connection.get_document(WF1)
+        assert kept["code"] == "pm-kmy"
+        assert kept["reindex_reason"] == "edit"
+
     def test_running_it_twice_changes_nothing(self, db_connection, postgres_url, legacy_db):
         script = _load_script()
         script.run_migration(legacy_db, postgres_url)

@@ -534,6 +534,7 @@ def migrate_document(
 
     catalog_id = _catalog_for(conn, _instance_for(conn, _instance_of(doc)), kind)
     code = (_get(doc, "scheme_code") or "").strip().lower()
+    original_code = code
     entry = registry.get(code) if kind == "scheme" and code else None
     if entry is not None:
         consumed.add(code)
@@ -553,6 +554,13 @@ def migrate_document(
     if unique != code:
         report.notes.append(f"{workflow_id}: code {code!r} already used in its catalog, stored as {unique!r}")
         code = unique
+    if original_code and code != original_code:
+        # The legacy index still carries the old code on its points. Postgres now
+        # advertises a different one, so the document must be re-indexed to match.
+        metadata["reindex_required"] = True
+        metadata["reindex_reason"] = (
+            f"scheme_code changed during migration: {original_code!r} -> {code!r}"
+        )
 
     created_at = parse_ts(doc["created_at"]) or datetime.now(timezone.utc)
     updated_at = parse_ts(doc["updated_at"]) or created_at
