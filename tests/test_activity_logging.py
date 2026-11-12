@@ -21,8 +21,8 @@ def _interceptor(next_result=None, error=None):
     return activity_logging.ActivityLogging().intercept_activity(following)
 
 
-def _messages(caplog, name=LOGGER):
-    return [(r.levelno, r.getMessage()) for r in caplog.records if r.name == name]
+def _records(caplog, name=LOGGER):
+    return [r for r in caplog.records if r.name == name]
 
 
 @pytest.mark.asyncio
@@ -33,11 +33,12 @@ async def test_activity_logs_start_and_completion(caplog):
         result = await ActivityEnvironment().run(interceptor.execute_activity, MagicMock())
 
     assert result == "done"
-    [(start_level, start), (end_level, end)] = _messages(caplog)
-    assert start_level == end_level == logging.INFO
-    assert start.startswith("activity started name=unknown")
-    assert "workflow_id=test" in start and "attempt=1" in start
-    assert end.startswith("activity completed name=unknown") and "duration_ms=" in end
+    [start, end] = _records(caplog)
+    assert start.levelno == end.levelno == logging.INFO
+    assert start.getMessage() == "activity started"
+    assert (start.activity_type, start.workflow_id, start.attempt) == ("unknown", "test", 1)
+    assert end.getMessage() == "activity completed"
+    assert isinstance(end.duration_ms, int)
 
 
 @pytest.mark.asyncio
@@ -48,10 +49,10 @@ async def test_activity_failure_is_logged_and_reraised(caplog):
         with pytest.raises(ValueError):
             await ActivityEnvironment().run(interceptor.execute_activity, MagicMock())
 
-    [_, (level, failed)] = _messages(caplog)
-    assert level == logging.WARNING
-    assert failed.startswith("activity failed name=unknown")
-    assert "error=ValueError('bad page')" in failed
+    [_, failed] = _records(caplog)
+    assert failed.levelno == logging.WARNING
+    assert failed.getMessage() == "activity failed"
+    assert failed.error == "ValueError('bad page')"
 
 
 @pytest.mark.asyncio
@@ -62,9 +63,9 @@ async def test_activity_cancellation_logs_an_end(caplog):
         with pytest.raises(asyncio.CancelledError):
             await ActivityEnvironment().run(interceptor.execute_activity, MagicMock())
 
-    [_, (level, cancelled)] = _messages(caplog)
-    assert level == logging.WARNING
-    assert cancelled.startswith("activity cancelled name=unknown")
+    [_, cancelled] = _records(caplog)
+    assert cancelled.levelno == logging.WARNING
+    assert cancelled.getMessage() == "activity cancelled"
 
 
 @activity.defn
@@ -106,14 +107,17 @@ async def test_workflow_and_its_activities_log_start_and_completion(caplog):
     with caplog.at_level(logging.INFO):
         assert await _run_workflow(_Succeeds) == "ok"
 
-    lines = [r.getMessage() for r in caplog.records]
-    for prefix in (
-        "workflow started name=_Succeeds",
-        "activity started name=_echo",
-        "activity completed name=_echo",
-        "workflow completed name=_Succeeds",
+    logged = {
+        (r.getMessage(), getattr(r, "workflow_type", None) or getattr(r, "activity_type", None))
+        for r in caplog.records
+    }
+    for expected in (
+        ("workflow started", "_Succeeds"),
+        ("activity started", "_echo"),
+        ("activity completed", "_echo"),
+        ("workflow completed", "_Succeeds"),
     ):
-        assert any(line.startswith(prefix) for line in lines), prefix
+        assert expected in logged, expected
 
 
 @pytest.mark.asyncio
@@ -123,7 +127,8 @@ async def test_workflow_failure_is_logged_with_its_error(caplog):
         with pytest.raises(Exception):
             await _run_workflow(_Fails)
 
-    [failed] = [r for r in caplog.records if r.getMessage().startswith("workflow failed name=_Fails")]
+    [failed] = [r for r in caplog.records if r.getMessage().startswith("workflow failed")]
     assert failed.levelno == logging.ERROR
-    assert "chunking rejected" in failed.getMessage()
+    assert failed.workflow_type == "_Fails"
+    assert "chunking rejected" in failed.error
     assert failed.exc_info is not None

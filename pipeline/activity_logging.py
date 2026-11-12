@@ -31,30 +31,28 @@ class ActivityLogging(Interceptor):
 class _LogActivity(ActivityInboundInterceptor):
     async def execute_activity(self, input: ExecuteActivityInput) -> Any:
         info = activity.info()
-        fields = (info.activity_type, info.workflow_id, info.attempt)
-        logger.info("activity started name=%s workflow_id=%s attempt=%s", *fields)
+        fields = {
+            "activity_type": info.activity_type,
+            "workflow_id": info.workflow_id,
+            "attempt": info.attempt,
+        }
+        logger.info("activity started", extra=fields)
         started = time.perf_counter()
         try:
             result = await self.next.execute_activity(input)
         except asyncio.CancelledError:
             logger.warning(
-                "activity cancelled name=%s workflow_id=%s attempt=%s duration_ms=%d",
-                *fields,
-                _elapsed_ms(started),
+                "activity cancelled", extra={**fields, "duration_ms": _elapsed_ms(started)}
             )
             raise
         except Exception as exc:
             logger.warning(
-                "activity failed name=%s workflow_id=%s attempt=%s duration_ms=%d error=%r",
-                *fields,
-                _elapsed_ms(started),
-                exc,
+                "activity failed",
+                extra={**fields, "duration_ms": _elapsed_ms(started), "error": repr(exc)},
             )
             raise
         logger.info(
-            "activity completed name=%s workflow_id=%s attempt=%s duration_ms=%d",
-            *fields,
-            _elapsed_ms(started),
+            "activity completed", extra={**fields, "duration_ms": _elapsed_ms(started)}
         )
         return result
 
@@ -62,24 +60,23 @@ class _LogActivity(ActivityInboundInterceptor):
 class _LogWorkflow(WorkflowInboundInterceptor):
     async def execute_workflow(self, input: ExecuteWorkflowInput) -> Any:
         info = workflow.info()
-        fields = (info.workflow_type, info.workflow_id, info.run_id)
-        workflow.logger.info("workflow started name=%s workflow_id=%s run_id=%s", *fields)
+        fields = {
+            "workflow_type": info.workflow_type,
+            "workflow_id": info.workflow_id,
+            "run_id": info.run_id,
+        }
+        workflow.logger.info("workflow started", extra=fields)
         try:
             result = await self.next.execute_workflow(input)
         except asyncio.CancelledError:
-            workflow.logger.warning(
-                "workflow cancelled name=%s workflow_id=%s run_id=%s", *fields
-            )
+            workflow.logger.warning("workflow cancelled", extra=fields)
             raise
         except Exception as exc:
             workflow.logger.error(
-                "workflow failed name=%s workflow_id=%s run_id=%s error=%r",
-                *fields,
-                exc,
-                exc_info=True,
+                "workflow failed", extra={**fields, "error": repr(exc)}, exc_info=True
             )
             raise
-        workflow.logger.info("workflow completed name=%s workflow_id=%s run_id=%s", *fields)
+        workflow.logger.info("workflow completed", extra=fields)
         return result
 
 

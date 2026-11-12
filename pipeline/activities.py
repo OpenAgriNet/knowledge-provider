@@ -1365,10 +1365,8 @@ async def promote_document_to_prod_qdrant(
         display_name=doc.get("display_name"),
     )
     activity.logger.info(
-        "Promoting %s records to PROD Qdrant collection %s (kind=%s)",
-        len(records),
-        prod_collection,
-        kind,
+        "promoting records to PROD Qdrant",
+        extra={"record_count": len(records), "collection": prod_collection, "kind": kind},
     )
     store = QdrantVectorStore(client=client)
     result = await asyncio.to_thread(
@@ -1581,7 +1579,7 @@ async def update_document_state(
     """Update document state in SQLite."""
     from . import db
 
-    activity.logger.info(f"Updating state for {workflow_id}: stage={stage}")
+    activity.logger.info("updating document stage", extra={"workflow_id": workflow_id, "stage": stage})
     db.update_document_stage(
         workflow_id=workflow_id,
         stage=stage,

@@ -18,6 +18,7 @@ Decision:
 
 Consequences:
 - Logs only. Traces and metrics are not emitted.
+- Each line is a short, fixed message. Its fields travel as attributes, so HyperDX can filter on them. A nested value, like Temporal's workflow context, is flattened into dotted keys (`temporal_activity.workflow_id`). Temporal no longer repeats that context inside the message.
 - Every API request logs one line on `pipeline.api.requests`: method, path with query string, status and duration, never a body. A pure ASGI middleware times the whole response, so streamed downloads are timed to their last byte and a failure mid-stream is logged.
 - Status below 400 logs at INFO (successful `/health` at DEBUG, since the UI polls it). 4xx logs at WARNING and 5xx at ERROR, with the error detail (validation errors keep only type, field and message, never the submitted value), or the HTTP reason when there is none. A 5xx raised from a caught exception carries that exception's traceback. Unhandled exceptions log at ERROR with their traceback. uvicorn's own access log doesn't reach the root logger and is not shipped.
 - A Temporal worker interceptor (`pipeline/activity_logging.py`) logs every workflow's and activity's start and its completion, failure or cancellation, so new workflows and activities are covered without extra code. Activity failures log at WARNING without a traceback, because each attempt may be retried and Temporal's own `Completing activity as failed` line already carries it. Workflow failures log at ERROR with the traceback.
