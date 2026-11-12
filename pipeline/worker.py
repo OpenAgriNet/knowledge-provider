@@ -28,7 +28,7 @@ from .activities import (
 )
 from .activity_logging import ActivityLogging
 from .network_group import validate_network_provider_config
-from .observability import configure_logs, reset_logs
+from .observability import configure_console, configure_logs, reset_logs
 from .workflows import (
     ChunkingOnlyWorkflow,
     DocumentPipelineWorkflow,
@@ -40,12 +40,7 @@ from .workflows import (
 
 LOG_LEVEL = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").strip().upper(), logging.INFO)
 
-# Configure verbose logging
-logging.basicConfig(
-    level=LOG_LEVEL,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    datefmt='%H:%M:%S'
-)
+configure_console(LOG_LEVEL)
 
 # Set Temporal SDK logging to INFO regardless of LOG_LEVEL - its own DEBUG
 # output is noisy and rarely what LOG_LEVEL=DEBUG is set to see.
@@ -119,10 +114,12 @@ async def _run():
     )
 
     logging.info(
-        "worker started queue=%s temporal=%s activity_concurrency=%s",
-        TASK_QUEUE,
-        temporal_host,
-        max_concurrent_activities,
+        "worker started",
+        extra={
+            "queue": TASK_QUEUE,
+            "temporal": temporal_host,
+            "activity_concurrency": max_concurrent_activities,
+        },
     )
     await worker.run()
 

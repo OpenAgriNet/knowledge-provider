@@ -431,8 +431,8 @@ def _mint_tokens_for_verified_email(email: str) -> dict[str, Any]:
         return _token_response(payload)
 
     logging.error(
-        "email-otp: password-grant bridge failed for %s: status=%s body=%s",
-        email, status, payload,
+        "email-otp: password-grant bridge failed",
+        extra={"email": email, "status": status, "body": str(payload)},
     )
 
     error = str(payload.get("error") or "")

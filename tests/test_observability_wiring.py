@@ -55,7 +55,8 @@ def test_api_lifespan_configures_logs_first_and_resets_them_on_shutdown(monkeypa
         asyncio.run(run())
 
     assert calls == ["configure", "validate", "serving", "reset"]
-    assert any(r.getMessage().startswith("api started auth=disabled") for r in caplog.records)
+    [started] = [r for r in caplog.records if r.getMessage() == "api started"]
+    assert started.auth == "disabled"
 
 
 def test_worker_crash_is_logged_with_its_traceback(monkeypatch, calls, caplog):
@@ -91,7 +92,8 @@ def test_worker_logs_startup_and_hands_its_interceptors_to_temporal(monkeypatch,
         asyncio.run(worker._run())
 
     assert built["interceptors"] is worker.INTERCEPTORS
-    assert any(r.getMessage().startswith("worker started queue=ocr-pipeline") for r in caplog.records)
+    [started] = [r for r in caplog.records if r.getMessage() == "worker started"]
+    assert started.queue == "ocr-pipeline"
 
 
 def test_api_startup_failure_is_logged_and_flushed(monkeypatch, calls, caplog):
@@ -109,3 +111,4 @@ def test_api_startup_failure_is_logged_and_flushed(monkeypatch, calls, caplog):
     [failed] = [r for r in caplog.records if r.getMessage() == "api startup failed"]
     assert failed.levelname == "ERROR" and isinstance(failed.exc_info[1], RuntimeError)
     assert calls == ["reset"]
+

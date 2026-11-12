@@ -55,6 +55,40 @@ def test_info_lines_from_root_and_module_loggers_are_exported(exported):
     assert _bodies(exported) == ["search request query='cotton pest'", "ocr retry"]
 
 
+def test_extras_are_exported_as_attributes(exported):
+    # Attributes, not body text, are what HyperDX can filter on.
+    logging.info("search request", extra={"query": "cotton pest", "top_k": 5})
+
+    [item] = exported.get_finished_logs()
+    assert item.log_record.body == "search request"
+    assert item.log_record.attributes["query"] == "cotton pest"
+    assert item.log_record.attributes["top_k"] == 5
+
+
+def test_a_dict_extra_is_flattened_into_dotted_attributes(exported):
+    # Temporal sends its context as one dict; flat keys let a search filter on workflow_id.
+    logging.info("ocr done", extra={"temporal_activity": {"workflow_id": "wf-1", "attempt": 2}})
+
+    [item] = exported.get_finished_logs()
+    assert item.log_record.attributes["temporal_activity.workflow_id"] == "wf-1"
+    assert item.log_record.attributes["temporal_activity.attempt"] == 2
+    assert "temporal_activity" not in item.log_record.attributes
+
+
+def test_a_non_primitive_extra_is_exported_as_text(exported):
+    logging.info("publish rejected", extra={"errors": ["bad catalog"]})
+
+    [item] = exported.get_finished_logs()
+    assert item.log_record.attributes["errors"] == "['bad catalog']"
+
+
+def test_console_prints_extras_as_key_value():
+    formatter = observability.KeyValueFormatter("%(message)s")
+    record = logging.makeLogRecord({"msg": "worker started", "queue": "ocr-pipeline"})
+
+    assert formatter.format(record) == "worker started queue=ocr-pipeline"
+
+
 def test_exported_line_keeps_its_level(exported):
     logging.getLogger("pipeline.activities").error("ingest failed")
 

@@ -78,7 +78,7 @@ Core modules (all under `pipeline/`):
 - `discovery_publish_service.py` — `DiscoveryPublishService`: owns the Publish to Network env vars and the HTTP call. Deliberately Temporal-free
 - `models.py` — Pydantic models, including `DocumentStage` enum and `PIPELINE_STAGES` (the stepper-UI stage list)
 - `config.py` — `Config` dataclass reading env vars, with defaults
-- `observability.py` — bridges root-logger `INFO`+ lines to OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set (ClickHouse/HyperDX); no-op otherwise. See ADR 0007
+- `observability.py` — bridges root-logger `INFO`+ lines to OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set (ClickHouse/HyperDX); no-op otherwise. See ADR 0007. Log fields go in `extra=` and export as flat attributes; the console prints them as `key=value`. Log fields go in `extra=` and export as flat attributes; the console prints them as `key=value`
 - `instances.py` — instance/tenant (state) code ↔ human name mapping; `bv` = Bharat Vistaar platform-wide, others are state codes matching Keycloak group paths (`/states/MH/...` → `mh`)
 - `master_catalog_pg.py`, `scheme_catalog.py` — Postgres-backed master scheme catalog, synced to Redis for the AI layer (bharat-oan-api) to consume
 - `ocr/`, `translation/`, `chunking/`, `vector_store/` — pluggable provider packages, each with a `base.py` protocol/ABC and a `service.py` (or equivalent) that dispatches to the configured provider
