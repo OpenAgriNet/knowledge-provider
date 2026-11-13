@@ -44,13 +44,7 @@ if docker buildx version >/dev/null 2>&1; then
   docker buildx build --platform "$PLATFORM" \
     -t docs-pipeline-ui:latest \
     -f ui/Dockerfile.prod \
-    --build-arg "VITE_API_BASE=${VITE_API_BASE:-/docs-pipeline-api}" \
-    --build-arg "VITE_BASE=${VITE_BASE:-/docs-pipeline/}" \
-    --build-arg "VITE_KEYCLOAK_URL=${VITE_KEYCLOAK_URL:-https://auth-vistaar.da.gov.in/auth}" \
-    --build-arg "VITE_KEYCLOAK_REALM=${VITE_KEYCLOAK_REALM:-bharat-vistaar}" \
-    --build-arg "VITE_KEYCLOAK_CLIENT_ID=${VITE_KEYCLOAK_CLIENT_ID:-bharat-vistaar}" \
-    --build-arg "VITE_KEYCLOAK_IDP_HINT=${VITE_KEYCLOAK_IDP_HINT:-}" \
-    --build-arg "VITE_AUTH_ENABLED=${VITE_AUTH_ENABLED:-true}" \
+    --build-arg "VITE_BASE=${VITE_BASE:-/knowledge-provider/}" \
     ./ui --load
 else
   echo "==> Using docker compose build (DOCKER_DEFAULT_PLATFORM=$PLATFORM)"

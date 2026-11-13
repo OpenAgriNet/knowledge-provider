@@ -321,7 +321,7 @@ services:
 
   # ---------------------------------------------------------------------------
   # React UI
-  # Dockerfile.prod builds a static nginx image; VITE_* args come from .env.
+  # Dockerfile.prod builds a static nginx image; API/Keycloak/flags are read at container start.
   # ---------------------------------------------------------------------------
   ui:
     image: ghcr.io/openagrinet/knowledge-provider-ui:${IMAGE_TAG:-latest}
@@ -335,13 +335,15 @@ services:
       # multi-minute+ hang. Host networking during build avoids that.
       network: host
       args:
-        VITE_API_BASE: ${VITE_API_BASE:-/docs-pipeline-api}
-        VITE_BASE: ${VITE_BASE:-/docs-pipeline/}
-        VITE_KEYCLOAK_URL: ${VITE_KEYCLOAK_URL:-}
-        VITE_KEYCLOAK_REALM: ${VITE_KEYCLOAK_REALM:-}
-        VITE_KEYCLOAK_CLIENT_ID: ${VITE_KEYCLOAK_CLIENT_ID:-}
-        VITE_KEYCLOAK_IDP_HINT: ${VITE_KEYCLOAK_IDP_HINT:-}
-        VITE_AUTH_ENABLED: ${VITE_AUTH_ENABLED:-false}
+        VITE_BASE: ${VITE_BASE:-/knowledge-provider/}
+    environment:
+      API_BASE: ${VITE_API_BASE:-/docs-pipeline-api}
+      AUTH_ENABLED: ${VITE_AUTH_ENABLED:-false}
+      KEYCLOAK_URL: ${VITE_KEYCLOAK_URL:-}
+      KEYCLOAK_REALM: ${VITE_KEYCLOAK_REALM:-}
+      KEYCLOAK_CLIENT_ID: ${VITE_KEYCLOAK_CLIENT_ID:-}
+      KEYCLOAK_IDP_HINT: ${VITE_KEYCLOAK_IDP_HINT:-}
+      DOCUMENT_VALIDITY_ENABLED: ${VITE_DOCUMENT_VALIDITY_ENABLED:-true}
     ports:
       - "127.0.0.1:${UI_HOST_PORT:-3011}:80"
     depends_on:
