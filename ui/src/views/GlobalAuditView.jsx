@@ -120,7 +120,7 @@ export default function GlobalAuditView() {
                     onClick={() => navigate(`/documents/${entry.workflow_id}`)}
                     title={entry.document_id || entry.workflow_id}
                   >
-                    {entry.display_name || entry.filename || entry.document_id || entry.workflow_id}
+                    {entry.name || entry.filename || entry.document_id || entry.workflow_id}
                   </span>
                   {entry.instance && (
                     <Badge variant="secondary" className="text-[10px] uppercase">{entry.instance}</Badge>

@@ -1,5 +1,5 @@
 /**
- * Plan 2: display labels for documents.instance (state / portal tag).
+ * Plan 2: display labels for the document instance (state / portal tag).
  * Authorization still comes from Keycloak JWT — this is UI only.
  */
 

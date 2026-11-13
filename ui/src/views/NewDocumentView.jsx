@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Button } from '../components/ui/button'
 import { Badge } from '../components/ui/badge'
 import { Input } from '../components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select'
 import {
   Upload,
   FileText,
@@ -30,6 +31,12 @@ import { displayNameError, filenameStem } from '../lib/displayName'
 const SUPPORTED_TYPES = ['.pdf', '.doc', '.docx']
 const MAX_SIZE_MB = 100
 const FILE_TYPE_CHIPS = ['PDF', 'Word']
+// The catalog a document joins is (your instance, type), so the type is chosen up front.
+const DOCUMENT_TYPE_OPTIONS = [
+  { value: 'scheme', label: 'Scheme' },
+  { value: 'advisory', label: 'Advisory' },
+  { value: 'video', label: 'Video' },
+]
 
 const PIPELINE_STEPS = [
   { id: 'ocr', label: 'OCR', icon: ScanText },
@@ -63,6 +70,7 @@ export default function NewDocumentView() {
   })
   const [file, setFile] = useState(null)
   const [displayName, setDisplayName] = useState('')
+  const [documentKind, setDocumentKind] = useState('')
   const [dragging, setDragging] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadSuccess, setUploadSuccess] = useState(false)
@@ -126,7 +134,7 @@ export default function NewDocumentView() {
   const nameError = file ? displayNameError(displayName) : ''
 
   async function handleSubmit() {
-    if (!file || !canUpload || nameError) return
+    if (!file || !documentKind || !canUpload || nameError) return
     if (!documentInstance && !isSuperAdmin) {
       setUploadError(
         'No state on your account. Ask an admin to assign a Keycloak group (e.g. /states/MH/admin).',
@@ -150,6 +158,7 @@ export default function NewDocumentView() {
       const params = new URLSearchParams({
         auto_approve: 'false',
         instance: uploadInstance,
+        kind: documentKind,
       })
       const response = await apiFetch(`${API_BASE}/upload?${params}`, { method: 'POST', body: formData })
       const data = await response.json()
@@ -169,6 +178,7 @@ export default function NewDocumentView() {
     setDisplayName('')
     setUploadSuccess(false)
     setLastWorkflowId('')
+    setDocumentKind('')
     setUploadError('')
     setValidationError('')
   }
@@ -230,6 +240,24 @@ export default function NewDocumentView() {
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-12 lg:gap-4">
         {/* Left column */}
         <div className="flex min-w-0 flex-col gap-3 lg:col-span-8">
+          <div className="flex flex-wrap items-center gap-2">
+            <label htmlFor="document-kind" className="text-xs font-medium text-foreground">
+              Document type
+            </label>
+            <Select value={documentKind} onValueChange={setDocumentKind} disabled={!canUpload}>
+              <SelectTrigger id="document-kind" className="h-8 w-[160px] text-xs">
+                <SelectValue placeholder="Select type…" />
+              </SelectTrigger>
+              <SelectContent>
+                {DOCUMENT_TYPE_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <span className="text-[11px] text-muted-foreground">Required</span>
+          </div>
           <div
             className={[
               'rounded-xl border-2 border-dashed bg-card transition-colors',
@@ -381,7 +409,7 @@ export default function NewDocumentView() {
           <Button
             className="h-10 w-full text-sm font-medium sm:w-auto sm:min-w-[200px]"
             onClick={handleSubmit}
-            disabled={!file || uploading || !canUpload || Boolean(nameError)}
+            disabled={!file || !documentKind || uploading || !canUpload || Boolean(nameError)}
           >
             {uploading ? (
               <>

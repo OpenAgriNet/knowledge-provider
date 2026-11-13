@@ -64,7 +64,11 @@ Root `.env` (see `.env.example`). Required by FastAPI (`pipeline/api/`), Tempora
 | `LOG_LEVEL` | `INFO` | Worker log verbosity (`DEBUG`/`INFO`/`WARNING`/`ERROR`); the `temporalio` SDK logger stays at `INFO` regardless, to avoid its own noisy debug output |
 | `MINIO_ENDPOINT` | `localhost:9000` | MinIO API host:port |
 | `MINIO_BUCKET` | `documents` | Object storage bucket |
-| `DOCUMENT_DB_PATH` | `/data/documents.db` | SQLite path (use `./data/documents.db` for local non-Docker) |
+| `DATABASE_URL` | `postgresql://postgres:postgres@localhost:5432/knowledge_provider` | Application Postgres (documents, workflows, pages, chunks, audit, settings). The compose `postgres` service builds it from `DB_USERNAME` / `DB_PASSWORD` / `DB_NAME` (defaults `docs` / `docs` / `knowledge_provider`). Pending SQL migrations in `migrations/` are applied by the api and worker at startup |
+| `DB_POOL_MIN_SIZE` | `1` | Connection pool minimum per process |
+| `DB_POOL_MAX_SIZE` | `10` | Connection pool maximum per process (api and worker each hold their own pool) |
+| `DB_POOL_TIMEOUT_SECONDS` | `30` | Seconds to wait for a free pooled connection |
+| `DOCUMENT_DB_PATH` | `/data/documents.db` | Only read by `scripts/migrate_sqlite_to_postgres.py`: the legacy SQLite file to import |
 
 ### Logs to ClickHouse (OTLP)
 
@@ -88,6 +92,18 @@ Off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set. When it is set, API and worker 
 | `DOCS_PIPELINE_API_URL` | request base URL | Public API base for provenance/links |
 | `DOCS_PIPELINE_UI_URL` | `http://localhost:3000` | Public UI base for links |
 | `DEFAULT_INSTANCE` | `default` | Default tenant / instance id |
+
+### Webhook (`POST /webhook`)
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `WEBHOOK_MAX_RECORDS` | `500` | Max records per `/webhook` request; more returns 413 |
+| `WEBHOOK_API_KEY` | *(empty — required)* | 32-char hex secret. Callers send it in the `x-api-key` header. Missing/invalid header → 401. Unset/empty → 503 (fails closed, ignores `AUTH_DISABLED`). Generate with `openssl rand -hex 16`. |
+| `ADVISORY_BACKFILL_ON_START` | `false` | When `true`, the worker queues an index workflow for every unindexed `webhook_records` row once at startup (backfill of existing records). Leave off normally; `POST /webhook/advisory/reindex` does the same on demand. |
+
+Each saved record whose `payload_hash` differs from its `indexed_hash` also starts one Temporal workflow `advisory-<record id>` that writes advisory chunks (`document_kind=advisory`) to the Qdrant collection `VECTOR_DB_COLLECTION_NAME`. Admin endpoints (Keycloak admin): `POST /webhook/advisory/reindex`, `POST /webhook/advisory/promote` (copies to `PROD_VECTOR_DB_COLLECTION_NAME` (on `PROD_VECTOR_DB_URL`)), `GET /webhook/advisory/status`.
+
+Body is a JSON array of objects (max `WEBHOOK_MAX_RECORDS`); stored in the `webhook_records` table, upserted on `(source, external_id)` where `external_id` is `contentID` (else `id`, `slug`, payload hash).
 
 ### Auth / Keycloak (backend JWT validation)
 
@@ -237,24 +253,7 @@ Exposes `/catalog/v1/*` so **bharat-oan-api** and **bharat-provider-backend** ca
 | `PROD_SCHEME_VECTOR_DB_API_KEY` | `PROD_VECTOR_DB_API_KEY` | Scheme collection API key |
 | `PROD_SCHEME_VECTOR_DB_COLLECTION_NAME` | `schemes-index` | Must **not** equal documents collection |
 
-**Endpoints:** `GET /catalog/v1/snapshot`, `/version`, `/schemes`, `/tool-prompt`; `POST /catalog/v1/rebuild`, `/bootstrap`; `PATCH /documents/{id}/scheme-metadata`.
-
-### Master Catalog — Postgres + Redis push (dev preview channel)
-
-Separate from the SQLite/Qdrant catalog above (which tracks PROD vector publication and is scheme-specific). This one is a generic Postgres table (`master_catalog`: code, content_type, name, tool_name, doc_id, prompt_snippet, status) — not scheme-only, since ingested documents can be schemes, advisories, or other kinds that later grow their own code/name/tool metadata. docs-pipeline writes to it on **DEV ingest complete** (`status=dev`) and **PROD promote complete** (`status=live`), then pushes directly into the AI layer's Redis so bharat-oan-api can test an entry's prompt/tool routing in the dev chatbot without an AI-layer redeploy.
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `MASTER_CATALOG_PG_HOST` | *(empty — required)* | Host of your existing Postgres instance. No DB container is provisioned by docker-compose for this — bring your own server and create the database on it (e.g. `CREATE DATABASE master_catalog`). Tables are created automatically on first sync. |
-| `MASTER_CATALOG_PG_PORT` | `5432` | Postgres port |
-| `MASTER_CATALOG_PG_DB` | `master_catalog` | Database name |
-| `MASTER_CATALOG_PG_USER` / `MASTER_CATALOG_PG_PASSWORD` | `master_catalog` / *(empty)* | Credentials |
-| `MASTER_CATALOG_PG_SSLMODE` | `disable` | Use `require` for managed prod Postgres |
-| `AI_LAYER_REDIS_HOST` | *(empty)* | bharat-oan-api's Redis host. Empty = Postgres sync still happens, Redis push is skipped |
-| `AI_LAYER_REDIS_PORT` / `AI_LAYER_REDIS_DB` / `AI_LAYER_REDIS_PASSWORD` | `6379` / `0` / *(empty)* | AI layer Redis connection |
-| `MASTER_CATALOG_REDIS_TTL_SECONDS` | `172800` (48h) | Snapshot key TTL — a dead-man's switch, not a freshness mechanism (writes are push-driven) |
-
-**Redis keys:** `master-catalog:dev:snapshot` (dev + live entries — what the dev chatbot reads), `master-catalog:live:snapshot` (live only — what prod reads). Plain JSON via raw `redis-py`, not routed through bharat-oan-api's `aiocache` layer, since it's an external write contract rather than an internal cache value.
+**Endpoints:** `GET /catalog/v1/snapshot`, `/version`, `/schemes`, `/tool-prompt`; `POST /catalog/v1/rebuild`; `PATCH /documents/{id}/scheme-metadata` (body: `kind`, `code`, `name`, `aliases`, `tool_routing`, `catalog_visible`, `network_visible`, `valid_from`, `valid_to`). The catalog is computed from documents (one row per document), so there is no bootstrap endpoint. `/upload`, `/documents` and `/documents/batch` take a required `kind` (`scheme` or `advisory`) and an optional `group` and `code`.
 
 ### Publish to Network
 
@@ -285,7 +284,7 @@ Each instance has one provider for both its advisory and scheme catalogs: id and
 |---------|----|-----|--------|
 | `VITE_*` proxies & Keycloak browser login | ✅ | — | — |
 | JWT validation (`AUTH_*`, `KEYCLOAK_*`) | — | ✅ | — |
-| Temporal / MinIO / SQLite | — | ✅ | ✅ |
+| Temporal / MinIO / Postgres (`DATABASE_URL`) | — | ✅ | ✅ |
 | OCR / translation / chunking / domain tags | — | config / status | ✅ runs jobs |
 | Qdrant (`VECTOR_DB_*`) | — | ✅ | ✅ |
 | Publish to Network (`DISCOVERY_SERVICE_ENDPOINT`, `NETWORK_SENDER_ID`) | — | — | ✅ runs the publish activity |
@@ -299,7 +298,7 @@ Each instance has one provider for both its advisory and scheme catalogs: id and
 
 ```bash
 set -a && source .env && set +a
-export DOCUMENT_DB_PATH="$(pwd)/data/documents.db"
+export DATABASE_URL="postgresql://docs:docs@localhost:5433/knowledge_provider"   # the compose `postgres` service (`docker compose up -d postgres`)
 export ALLOWED_FILE_PATHS="$(pwd)/books,$(pwd)/data/documents"
 export CORS_ORIGINS="http://localhost:3000,http://localhost:3001"
 export PYTHONPATH="$(pwd)"

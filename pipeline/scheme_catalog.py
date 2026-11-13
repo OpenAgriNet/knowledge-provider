@@ -19,11 +19,6 @@ from . import display_name as display_name_rules
 
 SCHEME_CODE_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
-# document_kind is a free-form slug (scheme, advisory, video, or a custom
-# type entered in the UI) — same character rules as scheme_code but allows
-# underscores too since kind names read more naturally that way (e.g. "how_to").
-DOCUMENT_KIND_RE = re.compile(r"^[a-z0-9]+(?:[_-][a-z0-9]+)*$")
-SUGGESTED_DOCUMENT_KINDS = ("document", "scheme", "advisory", "video")
 
 _SCHEME_CODE_STOPWORDS = {
     "a", "an", "the", "of", "on", "for", "and", "or", "to", "in", "at", "by",
@@ -198,8 +193,8 @@ def central_instances() -> set[str]:
 
 
 def default_network_visible(instance: str | None) -> bool:
-    inst = (instance or "default").strip().lower() or "default"
-    return inst in central_instances()
+    code = (instance or "default").strip().lower() or "default"
+    return code in central_instances()
 
 
 def scheme_collection_name() -> str:
@@ -234,19 +229,21 @@ def _acronym_from_title(title: str) -> str:
     return letters
 
 
-def derive_scheme_code(title: str, exclude_workflow_id: Optional[str] = None) -> str:
+def derive_scheme_code(
+    title: str, exclude_workflow_id: Optional[str] = None, kind: str = "scheme"
+) -> str:
     """Auto-generate a scheme_code from a document title: acronym of significant
     words, falling back to a truncated slug if the title has too few words to
     produce a useful acronym (e.g. a single-word title). Appends -2, -3, ... on
-    collision against every scheme_code already in use (documents table +
-    scheme_catalog_entries registry) so two schemes never share a code.
+    collision against every code already in use for the kind (``documents.code``)
+    so two documents of a kind never share a code across tenants.
     """
     base = _acronym_from_title(title)
     if len(base) < 2:
         slug = re.sub(r"[^a-z0-9]+", "", (title or "").strip().lower())
         base = slug[:8] or "scheme"
 
-    used = db.list_used_scheme_codes(exclude_workflow_id=exclude_workflow_id)
+    used = db.list_used_scheme_codes(exclude_workflow_id=exclude_workflow_id, kind=kind)
     if base not in used:
         return base
     n = 2
@@ -345,8 +342,8 @@ def _dedupe_aliases(aliases: list[str]) -> list[str]:
 
 
 def resolve_scheme_aliases(
-    scheme_code: str | None,
-    scheme_name: str | None,
+    code: str | None,
+    name: str | None,
     explicit: Any = None,
 ) -> list[str]:
     """Aliases to index for a scheme, in precedence order.
@@ -358,254 +355,26 @@ def resolve_scheme_aliases(
     All three are merged rather than short-circuited, so a curator adding one
     alias does not silently discard the bootstrap and derived ones.
     """
-    code = (scheme_code or "").strip().lower()
+    code = (code or "").strip().lower()
     merged: list[str] = list(parse_aliases(explicit))
 
     bootstrap = BOOTSTRAP_VECTOR_SCHEMES.get(code)
     if bootstrap:
         merged.extend(bootstrap.get("scheme_aliases") or [])
-        if not (scheme_name or "").strip():
-            scheme_name = bootstrap.get("scheme_name")
+        if not (name or "").strip():
+            name = bootstrap.get("scheme_name")
 
-    merged.extend(_derive_aliases(code, scheme_name or ""))
+    merged.extend(_derive_aliases(code, name or ""))
     return _dedupe_aliases(merged)
-
-
-def _content_hash(code: str, name: str, aliases: list[str], network_visible: bool, status: str) -> str:
-    payload = json.dumps(
-        {
-            "code": code,
-            "name": name,
-            "aliases": sorted(aliases),
-            "network_visible": network_visible,
-            "status": status,
-        },
-        sort_keys=True,
-    )
-    return hashlib.sha256(payload.encode()).hexdigest()[:16]
-
-
-def ensure_catalog_schema() -> None:
-    """Create catalog tables and scheme metadata columns (idempotent)."""
-    db.init_scheme_catalog_schema()
-
-
-def bootstrap_catalog_if_empty(*, force: bool = False) -> dict[str, Any]:
-    """Seed bootstrap vector + legacy schemes when catalog is empty (or force)."""
-    ensure_catalog_schema()
-    meta = db.get_catalog_meta()
-    entries = db.list_catalog_entries()
-    if entries and not force:
-        return {"bootstrapped": False, "version": meta.get("version", 0), "entry_count": len(entries)}
-
-    now = utc_now_iso()
-    collection = scheme_collection_name()
-    for code, definition in BOOTSTRAP_VECTOR_SCHEMES.items():
-        aliases = list(definition.get("scheme_aliases") or [])
-        name = definition["scheme_name"]
-        status = "live"
-        db.upsert_catalog_entry(
-            scheme_code=code,
-            scheme_name=name,
-            scheme_aliases=aliases,
-            instances=["default"],
-            workflow_ids=[],
-            collection_name=collection,
-            chunk_count=0,
-            status=status,
-            network_visible=True,
-            promoted_at=None,
-            content_hash=_content_hash(code, name, aliases, True, status),
-            source="bootstrap",
-            updated_at=now,
-        )
-    version = db.bump_catalog_version("bootstrap_vector_schemes")
-    return {
-        "bootstrapped": True,
-        "version": version,
-        "vector_count": len(BOOTSTRAP_VECTOR_SCHEMES),
-        "legacy_count": len(BOOTSTRAP_LEGACY_SCHEMES),
-    }
 
 
 def rebuild_catalog_from_documents(*, reason: str = "rebuild") -> int:
     """
-    Recompute scheme_catalog_entries from documents table, then bump version.
+    Bump the catalog version.
 
-    Pipeline-sourced live docs override bootstrap for the same scheme_code.
-    Bootstrap-only codes with no live docs remain live (migration phase A1).
+    Status, instances, chunk counts and the rest are computed by the
+    ``catalog_status`` view, so there is nothing to recompute here.
     """
-    ensure_catalog_schema()
-    now = utc_now_iso()
-    collection = scheme_collection_name()
-
-    docs = db.list_scheme_documents_for_catalog()
-    by_code: dict[str, list[dict]] = {}
-    for doc in docs:
-        code = (doc.get("scheme_code") or "").strip().lower()
-        if not code:
-            continue
-        by_code.setdefault(code, []).append(doc)
-
-    # Track which codes are fully owned by pipeline live docs
-    live_pipeline_codes: set[str] = set()
-
-    for code, group in by_code.items():
-        live_docs = [
-            d
-            for d in group
-            if (d.get("stage") == "completed")
-            and not int(d.get("is_disabled") or 0)
-            and int(d.get("catalog_visible") if d.get("catalog_visible") is not None else 1)
-            and (d.get("document_kind") or "document") == "scheme"
-        ]
-        pending_reindex = any(
-            (d.get("stage") == "completed")
-            and not int(d.get("is_disabled") or 0)
-            and (d.get("reindex_required") or d.get("_pending_reindex"))
-            for d in group
-        )
-        # Also treat reindex_reason containing scheme_code_rename as pending_reindex
-        for d in group:
-            reason_txt = (d.get("reindex_reason") or "")
-            if "scheme_code_rename" in reason_txt and d.get("stage") == "completed" and not int(d.get("is_disabled") or 0):
-                pending_reindex = True
-
-        if pending_reindex and live_docs:
-            # If any live doc is waiting reindex after rename, publish as pending_reindex
-            # unless we only have non-rename live docs — keep simple: any reindex_required on scheme
-            if any(int(d.get("reindex_required") or 0) for d in live_docs):
-                status = "pending_reindex"
-            else:
-                status = "live"
-        elif live_docs:
-            status = "live"
-            live_pipeline_codes.add(code)
-        elif any(d.get("stage") == "approval_for_prod" and not int(d.get("is_disabled") or 0) for d in group):
-            status = "pending_prod"
-        else:
-            status = "disabled"
-
-        # Prefer live docs for aggregation; else all group
-        use = live_docs or group
-        names = [d.get("scheme_name") for d in use if d.get("scheme_name")]
-        scheme_name = names[0] if names else code
-        aliases: list[str] = []
-        seen_alias: set[str] = set()
-        for d in use:
-            for a in parse_aliases(d.get("scheme_aliases_json")):
-                key = a.lower()
-                if key not in seen_alias:
-                    seen_alias.add(key)
-                    aliases.append(a)
-        instances = sorted(
-            {
-                (d.get("instance") or "default").strip().lower() or "default"
-                for d in use
-            }
-        )
-        workflow_ids = [d["workflow_id"] for d in use if d.get("workflow_id")]
-        chunk_count = sum(int(d.get("chunk_count") or 0) for d in use)
-        network_visible = any(int(d.get("network_visible") or 0) for d in use)  # OR
-        promoted_times = [d.get("ingested_at") or d.get("updated_at") for d in live_docs if d.get("ingested_at") or d.get("updated_at")]
-        promoted_at = max(promoted_times) if promoted_times else None
-        source = "pipeline" if any((d.get("document_kind") or "") == "scheme" for d in group) else "import"
-
-        # pending_reindex entries must not appear as live for consumers
-        if status == "pending_reindex":
-            # still store entry but status excludes from vector_schemes
-            pass
-
-        db.upsert_catalog_entry(
-            scheme_code=code,
-            scheme_name=scheme_name,
-            scheme_aliases=aliases,
-            instances=instances,
-            workflow_ids=workflow_ids,
-            collection_name=collection,
-            chunk_count=chunk_count,
-            status=status if status != "disabled" or live_docs else "disabled",
-            network_visible=1 if network_visible else 0,
-            promoted_at=promoted_at,
-            content_hash=_content_hash(code, scheme_name, aliases, network_visible, status),
-            source=source,
-            updated_at=now,
-        )
-
-    # Preserve bootstrap live entries for codes with no document rows;
-    # disable orphan pipeline / import codes that have no docs left.
-    existing = {e["scheme_code"]: e for e in db.list_catalog_entries()}
-    for code, definition in BOOTSTRAP_VECTOR_SCHEMES.items():
-        if code in by_code:
-            continue
-        if code in existing and existing[code].get("source") == "pipeline":
-            # Was pipeline-owned but no longer eligible → mark disabled
-            if code not in live_pipeline_codes:
-                db.upsert_catalog_entry(
-                    scheme_code=code,
-                    scheme_name=existing[code].get("scheme_name") or definition["scheme_name"],
-                    scheme_aliases=parse_aliases(existing[code].get("scheme_aliases_json")),
-                    instances=parse_aliases(existing[code].get("instances_json")) or ["default"],
-                    workflow_ids=parse_aliases(existing[code].get("workflow_ids_json")),
-                    collection_name=collection,
-                    chunk_count=int(existing[code].get("chunk_count") or 0),
-                    status="disabled",
-                    network_visible=int(existing[code].get("network_visible") or 0),
-                    promoted_at=existing[code].get("promoted_at"),
-                    content_hash=_content_hash(
-                        code,
-                        existing[code].get("scheme_name") or definition["scheme_name"],
-                        parse_aliases(existing[code].get("scheme_aliases_json")),
-                        bool(existing[code].get("network_visible")),
-                        "disabled",
-                    ),
-                    source="pipeline",
-                    updated_at=now,
-                )
-            continue
-        # Keep or re-seed bootstrap
-        aliases = list(definition.get("scheme_aliases") or [])
-        name = definition["scheme_name"]
-        db.upsert_catalog_entry(
-            scheme_code=code,
-            scheme_name=name,
-            scheme_aliases=aliases,
-            instances=["default"],
-            workflow_ids=[],
-            collection_name=collection,
-            chunk_count=0,
-            status="live",
-            network_visible=1,
-            promoted_at=None,
-            content_hash=_content_hash(code, name, aliases, True, "live"),
-            source="bootstrap",
-            updated_at=now,
-        )
-
-    # Disable non-bootstrap entries that no longer appear in any document group
-    for code, entry in existing.items():
-        if code in by_code or code in BOOTSTRAP_VECTOR_SCHEMES:
-            continue
-        if (entry.get("status") or "") == "disabled":
-            continue
-        name = entry.get("scheme_name") or code
-        aliases = parse_aliases(entry.get("scheme_aliases_json"))
-        db.upsert_catalog_entry(
-            scheme_code=code,
-            scheme_name=name,
-            scheme_aliases=aliases,
-            instances=parse_aliases(entry.get("instances_json")) or ["default"],
-            workflow_ids=[],
-            collection_name=collection,
-            chunk_count=int(entry.get("chunk_count") or 0),
-            status="disabled",
-            network_visible=int(entry.get("network_visible") or 0),
-            promoted_at=entry.get("promoted_at"),
-            content_hash=_content_hash(code, name, aliases, bool(entry.get("network_visible")), "disabled"),
-            source=entry.get("source") or "pipeline",
-            updated_at=now,
-        )
-
     return db.bump_catalog_version(reason)
 
 
@@ -614,7 +383,7 @@ def on_scheme_document_promoted(workflow_id: str) -> Optional[int]:
     doc = db.get_document(workflow_id)
     if not doc:
         return None
-    if (doc.get("document_kind") or "document") != "scheme":
+    if doc.get("kind") != "scheme":
         return None
     # Clear reindex flag on successful promote (new code is live)
     if int(doc.get("reindex_required") or 0):
@@ -626,7 +395,7 @@ def on_scheme_document_promoted(workflow_id: str) -> Optional[int]:
     return rebuild_catalog_from_documents(reason=f"promote_scheme:{workflow_id}")
 
 
-def on_scheme_document_disabled(workflow_id: str, scheme_code: Optional[str] = None) -> Optional[int]:
+def on_scheme_document_disabled(workflow_id: str, code: Optional[str] = None) -> Optional[int]:
     return rebuild_catalog_from_documents(reason=f"disable_scheme:{workflow_id}")
 
 
@@ -668,7 +437,6 @@ def build_snapshot(
     include_pending: bool = False,
     network_visible: Optional[bool] = None,
 ) -> dict[str, Any]:
-    ensure_catalog_schema()
     meta = db.get_catalog_meta()
     version = int(meta.get("version") or 0)
     updated_at = meta.get("updated_at") or utc_now_iso()
@@ -686,29 +454,27 @@ def build_snapshot(
         # Live snapshot for warmers: only status=live (pending excluded unless include_pending)
         if not include_pending and st != "live":
             continue
-        instances = parse_aliases(e.get("instances_json"))
+        instances = e["instances"]
         if instance:
             inst = instance.strip().lower()
-            if inst not in {i.lower() for i in instances} and instances:
-                # bootstrap may have ["default"] only
-                if inst not in {i.lower() for i in instances}:
-                    continue
-        nv = bool(int(e.get("network_visible") or 0))
+            if inst not in {g.lower() for g in instances} and instances:
+                continue
+        nv = bool(e.get("network_visible"))
         if network_visible is not None and nv != network_visible:
             continue
         vector_schemes.append(
             {
-                "scheme_code": e["scheme_code"],
-                "scheme_name": e.get("scheme_name") or e["scheme_code"],
-                "scheme_aliases": parse_aliases(e.get("scheme_aliases_json")),
+                "scheme_code": e["code"],
+                "scheme_name": e.get("name") or e["code"],
+                "scheme_aliases": e["aliases"],
                 "tool": "search_schemes",
                 "tool_routing": "qdrant",
                 "instances": instances or ["default"],
                 "network_visible": nv,
                 "chunk_count": int(e.get("chunk_count") or 0),
-                "workflow_ids": parse_aliases(e.get("workflow_ids_json")),
+                "workflow_ids": e["workflow_ids"],
                 "promoted_at": e.get("promoted_at"),
-                "source": e.get("source") or "bootstrap",
+                "source": e.get("source") or "pipeline",
                 "status": st,
             }
         )
@@ -748,10 +514,9 @@ def build_snapshot(
 def apply_scheme_metadata(
     workflow_id: str,
     *,
-    document_kind: Optional[str] = None,
-    scheme_code: Optional[str] = None,
-    scheme_name: Optional[str] = None,
-    scheme_aliases: Optional[list[str]] = None,
+    code: Optional[str] = None,
+    name: Optional[str] = None,
+    aliases: Optional[list[str]] = None,
     tool_routing: Optional[str] = None,
     catalog_visible: Optional[bool] = None,
     network_visible: Optional[bool] = None,
@@ -759,7 +524,7 @@ def apply_scheme_metadata(
     valid_to: Optional[str] = None,
     display_name: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Update document scheme fields and rebuild catalog when needed.
+    """Update document catalog fields and rebuild catalog when needed.
 
     `valid_from`/`valid_to` set the document's validity period (see
     `pipeline/document_validity.py`). Either end alone is enough - the other is
@@ -767,70 +532,60 @@ def apply_scheme_metadata(
     document has none - so a reviewer who only moves the end date does not have
     to restate the start.
     """
-    ensure_catalog_schema()
     doc = db.get_document(workflow_id)
     if not doc:
         raise LookupError(f"Document not found: {workflow_id}")
 
     updates: dict[str, Any] = {}
-    old_code = (doc.get("scheme_code") or "").strip().lower() or None
-    old_kind = (doc.get("document_kind") or "document").strip().lower()
+    old_code = (doc.get("code") or "").strip().lower() or None
+    old_kind = (doc.get("kind") or "").strip().lower()
     code_renamed = False
     pending_reindex = False
 
-    stored_display_name = doc.get("display_name")
+    stored_display_name = doc.get("name")  # v2: the display name is documents.name
     if display_name is not None and (stored_display_name is None or display_name.strip() != stored_display_name):
         display_name_rules.ensure_editable(doc)
-        updates["display_name"] = display_name_rules.normalize(display_name)
+        updates["name"] = display_name_rules.normalize(display_name)
 
-    if document_kind is not None:
-        kind = document_kind.strip().lower().replace(" ", "-")
-        if not kind or not DOCUMENT_KIND_RE.match(kind):
-            raise ValueError(
-                f"Invalid document_kind '{document_kind}'. Use a lowercase slug, "
-                f"e.g. one of {SUGGESTED_DOCUMENT_KINDS} or a custom type."
-            )
-        updates["document_kind"] = kind
-    else:
-        kind = old_kind
+    new_kind = old_kind  # the kind is fixed at upload; it is the document's catalog
 
     new_code = old_code
-    if scheme_code is not None:
-        new_code = validate_scheme_code(scheme_code) if scheme_code else None
-        updates["scheme_code"] = new_code
+    if code is not None:
+        new_code = validate_scheme_code(code) if code else None
+        updates["code"] = new_code
         if old_code and new_code and old_code != new_code:
             code_renamed = True
 
-    if scheme_name is not None:
-        updates["scheme_name"] = scheme_name.strip() if scheme_name else None
+    if name is not None:
+        updates["name"] = name.strip() if name else None
 
-    # Auto-derive scheme_code from the title when the caller set a name but no
+    # Auto-derive the code from the title when the caller set a name but no
     # explicit code (the UI form only collects a name and previews the code;
     # this is the authoritative, collision-checked source of truth for it).
-    final_name = (updates["scheme_name"] if "scheme_name" in updates else doc.get("scheme_name")) or ""
-    if scheme_code is None and not new_code and kind == "scheme" and final_name.strip():
-        new_code = derive_scheme_code(final_name, exclude_workflow_id=workflow_id)
-        updates["scheme_code"] = new_code
+    final_name = (updates["name"] if "name" in updates else doc.get("name")) or ""
+    if code is None and not new_code and new_kind == "scheme" and final_name.strip():
+        new_code = derive_scheme_code(final_name, exclude_workflow_id=workflow_id, kind=new_kind)
+        updates["code"] = new_code
 
-    if scheme_aliases is not None:
-        updates["scheme_aliases_json"] = json.dumps(parse_aliases(scheme_aliases))
+    if aliases is not None:
+        updates["aliases"] = parse_aliases(aliases)
 
     if tool_routing is not None:
         tr = tool_routing.strip().lower()
         if tr not in ("qdrant", "legacy", "both"):
             raise ValueError("tool_routing must be qdrant|legacy|both")
         updates["tool_routing"] = tr
-    elif kind == "scheme" and not doc.get("tool_routing"):
+    elif new_kind == "scheme" and not doc.get("tool_routing"):
         updates["tool_routing"] = "qdrant"
 
     if catalog_visible is not None:
         updates["catalog_visible"] = 1 if catalog_visible else 0
-    elif kind == "scheme" and doc.get("catalog_visible") is None:
+    elif new_kind == "scheme" and doc.get("catalog_visible") is None:
         updates["catalog_visible"] = 1
 
     if network_visible is not None:
         updates["network_visible"] = 1 if network_visible else 0
-    elif kind == "scheme" and doc.get("network_visible") is None:
+    elif new_kind == "scheme" and doc.get("network_visible") is None:
         updates["network_visible"] = 1 if default_network_visible(doc.get("instance")) else 0
 
     if valid_from is not None or valid_to is not None:
@@ -844,10 +599,6 @@ def apply_scheme_metadata(
         updates["valid_from"] = period.start_date
         updates["valid_to"] = period.end_date
 
-    if kind == "scheme" and not (new_code or updates.get("scheme_code") or old_code):
-        # Allow setting kind first without code only if not completing as scheme
-        pass
-
     if code_renamed and (doc.get("stage") == "completed") and not int(doc.get("is_disabled") or 0):
         # Rule (b): hide new code until reindex
         updates["reindex_required"] = 1
@@ -859,7 +610,7 @@ def apply_scheme_metadata(
 
     # Rebuild catalog if scheme-related
     final = db.get_document(workflow_id) or doc
-    final_kind = (final.get("document_kind") or "document").strip().lower()
+    final_kind = (final.get("kind") or "").strip().lower()
     catalog_version = None
     if final_kind == "scheme" or old_kind == "scheme" or code_renamed:
         reason = "scheme_metadata_patch"

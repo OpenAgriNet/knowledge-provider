@@ -10,6 +10,7 @@ Tests cover:
 """
 
 import asyncio
+import itertools
 import os
 from unittest.mock import MagicMock
 
@@ -19,6 +20,14 @@ from temporalio.exceptions import ApplicationError
 os.environ["MINIO_ACCESS_KEY"] = "test-access"
 os.environ["MINIO_SECRET_KEY"] = "test-secret"
 os.environ["TRANSLATION_VLLM_BASE_URL"] = "http://localhost:8000/v1"
+
+
+_code_seq = itertools.count(1)
+
+
+def _next_code() -> str:
+    """A unique document code for fixtures (documents need one in v2)."""
+    return f"doc-{next(_code_seq)}"
 
 
 class TestChunkingActivity:
@@ -164,6 +173,36 @@ class TestPrepareIngestionRecords:
             assert records[0]["instance_name"] == expected
 
     @pytest.mark.unit
+    def test_prepare_records_type_carries_kind(self):
+        """Every record's payload type is its kind; document_kind is not written."""
+        from pipeline.activities import _prepare_records
+        from pipeline.vector_store.qdrant_store import _record_payload
+
+        chunks = [{"chunk_number": 1, "original_text": "Test chunk", "token_count": 5}]
+
+        advisory = _prepare_records(
+            document_id="test-doc", filename="test.pdf", chunks=chunks, kind="advisory"
+        )
+        assert advisory[0]["type"] == "advisory"
+        assert "document_kind" not in advisory[0]
+        assert _record_payload(advisory[0])["type"] == "advisory"
+        assert "document_kind" not in _record_payload(advisory[0])
+
+        default = _prepare_records(document_id="test-doc", filename="test.pdf", chunks=chunks)
+        assert default[0]["type"] == "document"
+
+        scheme = _prepare_records(
+            document_id="test-doc",
+            filename="test.pdf",
+            chunks=chunks,
+            kind="scheme",
+            code="pm-kisan",
+            name="PM-KISAN",
+        )
+        assert scheme[0]["type"] == "scheme"
+        assert "document_kind" not in scheme[0]
+
+    @pytest.mark.unit
     def test_prepare_records_fills_scheme_aliases(self):
         """A scheme must never index with scheme_aliases: []."""
         from pipeline.activities import _prepare_records
@@ -175,10 +214,10 @@ class TestPrepareIngestionRecords:
             filename="NMEO-OPGUIEDELINES.pdf",
             chunks=chunks,
             instance="bv",
-            document_kind="scheme",
-            scheme_code="nmeoop",
-            scheme_name="National Mission on Edible Oils - Oil Palm",
-            scheme_aliases=None,
+            kind="scheme",
+            code="nmeoop",
+            name="National Mission on Edible Oils - Oil Palm",
+            aliases=None,
         )
 
         record = records[0]
@@ -201,7 +240,7 @@ class TestPrepareIngestionRecords:
             filename="test.pdf",
             chunks=chunks,
             instance="mh",
-            document_kind="document",
+            kind="document",
         )
 
         assert "scheme_aliases" not in records[0]
@@ -395,16 +434,24 @@ class TestUpdateDocumentState:
 
     @pytest.mark.unit
     def test_update_state(self, db_connection):
-        """Test updating document state in SQLite."""
+        """Test updating document state in the database."""
         from pipeline.activities import update_document_state
 
         workflow_id = "state-update-test"
         db_connection.upsert_document(
+            kind="scheme",
+            code=_next_code(),
             workflow_id=workflow_id,
             document_id="doc-state",
             filename="test.pdf",
             filepath="/app/books/test.pdf",
             stage="registered"
+        )
+
+        # Page and chunk counts are derived from the pages table, not stored.
+        db_connection.save_pages(
+            workflow_id,
+            [{"page_number": n, "original_markdown": f"page {n}"} for n in range(1, 6)],
         )
 
         asyncio.run(update_document_state(
@@ -530,9 +577,9 @@ class TestPublishCatalogToNetworkActivity:
             def __init__(self):
                 pass
 
-            def publish(self, transaction_id, document_kind, workflow_id=None, group=None):
+            def publish(self, transaction_id, kind, workflow_id=None, group=None):
                 assert transaction_id == "txn-1"
-                assert document_kind == "advisory"
+                assert kind == "advisory"
                 assert workflow_id == "wf-1"
                 return fake_result
 
@@ -542,7 +589,7 @@ class TestPublishCatalogToNetworkActivity:
             "_upload_file_to_minio",
             lambda *a, **k: ("minio://documents/network_publish.json", 123, "application/json"),
         )
-        monkeypatch.setattr(db, "get_document", lambda workflow_id: {"document_kind": "advisory"})
+        monkeypatch.setattr(db, "get_document", lambda workflow_id: {"kind": "advisory"})
         monkeypatch.setattr(db, "get_latest_document_job", lambda workflow_id: {"id": 42})
 
         recorded = {}
@@ -579,11 +626,11 @@ class TestPublishCatalogToNetworkActivity:
         import pipeline.db as db
 
         class FakeService:
-            def publish(self, transaction_id, document_kind, workflow_id=None, group=None):
+            def publish(self, transaction_id, kind, workflow_id=None, group=None):
                 raise RuntimeError("discovery service unreachable")
 
         monkeypatch.setattr(activities, "DiscoveryPublishService", FakeService)
-        monkeypatch.setattr(db, "get_document", lambda workflow_id: {"document_kind": "advisory"})
+        monkeypatch.setattr(db, "get_document", lambda workflow_id: {"kind": "advisory"})
 
         add_artifact_calls = []
         monkeypatch.setattr(db, "add_document_artifact", lambda **kwargs: add_artifact_calls.append(kwargs))
@@ -606,7 +653,7 @@ class TestPublishCatalogToNetworkActivity:
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
         monkeypatch.setenv("NETWORK_SENDER_ID", "provider.oan.dev")
         monkeypatch.delenv(unset)
-        monkeypatch.setattr(db, "get_document", lambda workflow_id: {"document_kind": "advisory"})
+        monkeypatch.setattr(db, "get_document", lambda workflow_id: {"kind": "advisory"})
 
         with pytest.raises(ApplicationError, match=unset) as excinfo:
             await activities.publish_catalog_to_network("wf-1", "txn-1")
@@ -620,7 +667,7 @@ class TestPublishCatalogToNetworkActivity:
         import pipeline.db as db
 
         class FakeService:
-            def publish(self, transaction_id, document_kind, workflow_id=None, group=None):
+            def publish(self, transaction_id, kind, workflow_id=None, group=None):
                 return {
                     "skipped": True,
                     "envelope": None,
@@ -636,7 +683,7 @@ class TestPublishCatalogToNetworkActivity:
             "_upload_file_to_minio",
             lambda *a, **k: ("minio://documents/network_publish_skipped.json", 45, "application/json"),
         )
-        monkeypatch.setattr(db, "get_document", lambda workflow_id: {"document_kind": "document"})
+        monkeypatch.setattr(db, "get_document", lambda workflow_id: {"kind": "document"})
         monkeypatch.setattr(db, "get_latest_document_job", lambda workflow_id: None)
 
         recorded = {}
@@ -679,7 +726,7 @@ class TestPublishCatalogToNetworkActivity:
             "_upload_file_to_minio",
             lambda *a, **k: ("minio://documents/network_publish_skipped.json", 45, "application/json"),
         )
-        monkeypatch.setattr(db, "get_document", lambda workflow_id: {"document_kind": "advisory"})
+        monkeypatch.setattr(db, "get_document", lambda workflow_id: {"kind": "advisory"})
         monkeypatch.setattr(db, "get_latest_document_job", lambda workflow_id: None)
         recorded = {}
         monkeypatch.setattr(db, "add_document_artifact", lambda **kwargs: recorded.update(kwargs))
@@ -700,7 +747,7 @@ class TestPublishCatalogToNetworkActivity:
         import pipeline.db as db
 
         class FakeService:
-            def publish(self, transaction_id, document_kind, workflow_id=None, group=None):
+            def publish(self, transaction_id, kind, workflow_id=None, group=None):
                 return {
                     "skipped": False,
                     "envelope": {"context": {"messageId": "msg-3"}},
@@ -716,7 +763,7 @@ class TestPublishCatalogToNetworkActivity:
             "_upload_file_to_minio",
             lambda *a, **k: ("minio://documents/network_publish.json", 12, "application/json"),
         )
-        monkeypatch.setattr(db, "get_document", lambda workflow_id: {"document_kind": "advisory"})
+        monkeypatch.setattr(db, "get_document", lambda workflow_id: {"kind": "advisory"})
         monkeypatch.setattr(db, "get_latest_document_job", lambda workflow_id: None)
         monkeypatch.setattr(db, "add_document_artifact", lambda **kwargs: 1)
 
@@ -734,7 +781,7 @@ class TestPublishCatalogToNetworkActivity:
         errors = [{"code": "SCH_SCHEMA_VALIDATION_FAILED", "message": "topics is required"}]
 
         class FakeService:
-            def publish(self, transaction_id, document_kind, workflow_id=None, group=None):
+            def publish(self, transaction_id, kind, workflow_id=None, group=None):
                 return {
                     "skipped": False,
                     "envelope": {"context": {"messageId": "msg-4"}},
@@ -750,7 +797,7 @@ class TestPublishCatalogToNetworkActivity:
             "_upload_file_to_minio",
             lambda *a, **k: ("minio://documents/network_publish.json", 12, "application/json"),
         )
-        monkeypatch.setattr(db, "get_document", lambda workflow_id: {"document_kind": "advisory"})
+        monkeypatch.setattr(db, "get_document", lambda workflow_id: {"kind": "advisory"})
         monkeypatch.setattr(db, "get_latest_document_job", lambda workflow_id: None)
 
         recorded = {}
@@ -812,7 +859,7 @@ class TestPublishCatalogToNetworkGroups:
         seen = {}
         self._wire(
             monkeypatch,
-            {"document_kind": "advisory", "instance": instance},
+            {"kind": "advisory", "instance": instance},
             self._PUBLISHED,
             seen,
         )
@@ -836,7 +883,7 @@ class TestPublishCatalogToNetworkGroups:
         }
         recorded = self._wire(
             monkeypatch,
-            {"document_kind": "document", "instance": "mh"},
+            {"kind": "document", "instance": "mh"},
             skipped,
             {},
         )
@@ -861,7 +908,7 @@ class TestPublishCatalogToNetworkGroups:
                 raise InvalidProviderIdError("Provider id 'advisory.ladakh_ut.provider.oan.dev' is invalid")
 
         monkeypatch.setattr(activities, "DiscoveryPublishService", FakeService)
-        monkeypatch.setattr(db, "get_document", lambda workflow_id: {"document_kind": "advisory", "instance": "ladakh_ut"})
+        monkeypatch.setattr(db, "get_document", lambda workflow_id: {"kind": "advisory", "instance": "ladakh_ut"})
         recorded = {}
         monkeypatch.setattr(db, "add_document_artifact", lambda **kwargs: recorded.update(kwargs))
 
@@ -900,3 +947,98 @@ class TestWorkerActivityRegistration:
         missing = {name for name in defined_activities if name not in worker_source}
 
         assert not missing, f"Activities defined but never registered on the worker: {missing}"
+
+
+class TestSupersededPoints:
+    """After new content is indexed, points of earlier file versions are deleted."""
+
+    class _Store:
+        def __init__(self, failing=()):
+            self.calls = []
+            self.failing = set(failing)
+
+        def delete_by_doc_id(self, collection, doc_id):
+            self.calls.append((collection, doc_id))
+            if doc_id in self.failing:
+                return {"deleted": 0, "doc_id": doc_id, "error": "boom"}
+            return {"deleted": -1, "doc_id": doc_id}
+
+    @staticmethod
+    def _document(db):
+        doc_uuid = db.upsert_document(
+            workflow_id="wf-sup-act",
+            document_id="c" * 32,
+            filename="a.pdf",
+            filepath="minio://documents/a.pdf",
+            kind="scheme",
+            code="sup-act",
+        )
+        db.upsert_document_index_status("wf-sup-act", "documents-index", doc_id="a" * 32, status="indexed")
+        db.reset_document_for_reupload(
+            doc_uuid, filename="b.pdf", filepath="minio://documents/b.pdf", fingerprint="c" * 32
+        )
+        return doc_uuid
+
+    @pytest.mark.asyncio
+    @pytest.mark.db
+    @pytest.mark.unit
+    async def test_old_keys_are_deleted_and_forgotten(self, db_connection):
+        from pipeline import activities
+
+        doc_uuid = self._document(db_connection)
+        store = self._Store()
+
+        await activities._drop_superseded_points(
+            "dev", "wf-sup-act", db_connection.get_document(doc_uuid), "c" * 32, "documents-index", store=store
+        )
+
+        assert store.calls == [("documents-index", "a" * 32)]
+        assert db_connection.get_document(doc_uuid)["superseded_doc_ids"] == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.db
+    @pytest.mark.unit
+    async def test_a_failed_delete_keeps_the_key_for_the_next_run(self, db_connection):
+        from pipeline import activities
+
+        doc_uuid = self._document(db_connection)
+        store = self._Store(failing={"a" * 32})
+
+        await activities._drop_superseded_points(
+            "dev", "wf-sup-act", db_connection.get_document(doc_uuid), "c" * 32, "documents-index", store=store
+        )
+
+        assert db_connection.get_document(doc_uuid)["superseded_doc_ids"] == {"dev": ["a" * 32]}
+
+    @pytest.mark.asyncio
+    @pytest.mark.db
+    @pytest.mark.unit
+    async def test_a_key_another_live_document_is_indexed_under_is_kept_and_remembered(self, db_connection):
+        from pipeline import activities
+
+        doc_uuid = self._document(db_connection)
+        # A second document is indexed under the very key the first one replaced.
+        db_connection.upsert_document(
+            workflow_id="wf-twin", document_id="a" * 32, filename="a.pdf",
+            filepath="minio://documents/a.pdf", instance="gj", kind="scheme", code="twin",
+        )
+        db_connection.upsert_document_index_status(
+            "wf-twin", "documents-index", doc_id="a" * 32, status="indexed"
+        )
+        store = self._Store()
+
+        await activities._drop_superseded_points(
+            "dev", "wf-sup-act", db_connection.get_document(doc_uuid), "c" * 32, "documents-index", store=store
+        )
+
+        # Points stay for the twin, and the key stays on the list for a later cleanup.
+        assert store.calls == []
+        assert db_connection.get_document(doc_uuid)["superseded_doc_ids"] == {"dev": ["a" * 32]}
+
+        # Once the twin is gone the same cleanup removes them.
+        db_connection.set_document_disabled("wf-twin", True)
+        await activities._drop_superseded_points(
+            "dev", "wf-sup-act", db_connection.get_document(doc_uuid), "c" * 32, "documents-index", store=store
+        )
+        assert store.calls == [("documents-index", "a" * 32)]
+        assert db_connection.get_document(doc_uuid)["superseded_doc_ids"] == {}

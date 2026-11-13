@@ -54,6 +54,21 @@ PAYLOAD_FIELDS = (
     "scheme_aliases",
     "chunk_id",
     "chunk_index",
+    # Advisory payload (type=advisory; webhook records and PDF advisory documents)
+    "external_id",
+    "pop_id",
+    "slug",
+    "crop",
+    "domain",
+    "subdomain",
+    "institute",
+    "creator",
+    "problem_type",
+    "problem",
+    "season",
+    "start_period",
+    "end_period",
+    "updated_at",
     # Document validity - the period this chunk is searchable in. Absent on
     # points written before validity existed, which search treats as current.
     "start_date",

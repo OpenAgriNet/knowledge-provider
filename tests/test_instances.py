@@ -1,9 +1,9 @@
-"""Tests for instance code → state name resolution."""
+"""Tests for instance (tenant) code → state name resolution."""
 
 import pytest
 
 
-class TestInstanceDisplayName:
+class TestGroupDisplayName:
     @pytest.mark.unit
     @pytest.mark.parametrize(
         "code,expected",

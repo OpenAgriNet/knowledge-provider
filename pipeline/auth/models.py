@@ -85,7 +85,7 @@ class AuthUser:
 
     def has_instance(self, instance: str) -> bool:
         if not self.instances:
-            # Empty instance list means "no tenant restriction yet" only in disabled mode.
+            # Empty list means "no tenant restriction yet" only in disabled mode.
             return self.token_disabled_mode
         return instance.strip().lower() in {i.lower() for i in self.instances}
 

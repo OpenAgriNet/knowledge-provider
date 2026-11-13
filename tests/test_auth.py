@@ -200,6 +200,10 @@ def test_every_route_is_gated_or_explicitly_classified():
         # credential, and the access token has usually expired by then.
         ("POST", "/auth/session/refresh"),
         ("POST", "/auth/otp/refresh"),
+        # Inbound webhook for external systems: gated by its own x-api-key
+        # (require_webhook_key, fails closed when WEBHOOK_API_KEY is unset),
+        # not by a user token.
+        ("POST", "/webhook"),
     }
     def dependency_calls(dependant):
         calls = {dependant.call}

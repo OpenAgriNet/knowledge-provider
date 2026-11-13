@@ -127,7 +127,7 @@ class TestIngestPathsCarryTheDisplayName:
         monkeypatch.setattr(activities, "_prepare_records", capture)
         monkeypatch.setattr(db, "get_chunks", lambda *a, **k: [CHUNK])
         monkeypatch.setattr(
-            db, "get_document", lambda workflow_id: {"display_name": "PM Kisan Guidelines", "instance": "mh"}
+            db, "get_document", lambda workflow_id: {"name": "PM Kisan Guidelines", "instance": "mh"}
         )
         return seen
 
@@ -174,24 +174,26 @@ class TestUploadEndpoint:
         response = test_client.post(
             "/upload",
             files={"file": ("scan_0042.pdf", sample_pdf_content, "application/pdf")},
+            params={"kind": "scheme"},
             data={"display_name": "  PM Kisan Guidelines "},
         )
 
         assert response.status_code == 200
         doc = test_client.get(f"/documents/{response.json()['workflow_id']}").json()
-        assert doc["display_name"] == "PM Kisan Guidelines"
+        assert doc["name"] == "PM Kisan Guidelines"
 
     @pytest.mark.api
     @pytest.mark.unit
-    def test_omitting_it_stores_nothing(self, test_client, sample_pdf_content):
+    def test_omitting_it_defaults_to_the_file_title(self, test_client, sample_pdf_content):
         response = test_client.post(
             "/upload",
             files={"file": ("no-name.pdf", sample_pdf_content + b" ", "application/pdf")},
+            params={"kind": "scheme"},
         )
 
         assert response.status_code == 200
         doc = test_client.get(f"/documents/{response.json()['workflow_id']}").json()
-        assert doc["display_name"] is None
+        assert doc["name"] == "no name"
 
     @pytest.mark.api
     @pytest.mark.unit
@@ -200,6 +202,7 @@ class TestUploadEndpoint:
         response = test_client.post(
             "/upload",
             files={"file": ("bad-name.pdf", sample_pdf_content, "application/pdf")},
+            params={"kind": "scheme"},
             data={"display_name": value},
         )
 
@@ -214,6 +217,8 @@ class TestMetadataEndpoint:
             filename="scan_0042.pdf",
             filepath="/app/books/scan_0042.pdf",
             stage=stage,
+            kind="scheme",
+            code=workflow_id,
         )
 
     @pytest.mark.api
@@ -227,8 +232,8 @@ class TestMetadataEndpoint:
         )
 
         assert response.status_code == 200
-        assert response.json()["display_name"] == "Cotton Pest Advisory"
-        assert db_connection.get_document("display-001")["display_name"] == "Cotton Pest Advisory"
+        assert response.json()["name"] == "Cotton Pest Advisory"
+        assert db_connection.get_document("display-001")["name"] == "Cotton Pest Advisory"
 
     @pytest.mark.api
     @pytest.mark.unit
@@ -250,7 +255,7 @@ class TestMetadataEndpoint:
         )
 
         assert response.status_code == 409
-        assert db_connection.get_document("display-003")["display_name"] is None
+        assert db_connection.get_document("display-003")["name"] != "Too Late"
 
     @pytest.mark.api
     @pytest.mark.unit
@@ -259,7 +264,7 @@ class TestMetadataEndpoint:
 
         response = test_client.patch(
             "/documents/display-004/scheme-metadata",
-            json={"document_kind": "advisory"},
+            json={"aliases": ["cotton"]},
         )
 
         assert response.status_code == 200
@@ -268,15 +273,15 @@ class TestMetadataEndpoint:
     @pytest.mark.unit
     def test_resending_the_unchanged_name_on_a_locked_document_is_accepted(self, test_client, db_connection):
         self._document(db_connection, "display-005", stage="ready_for_ingestion")
-        db_connection.update_document_fields("display-005", display_name="Cotton Pest Advisory", ingested_at="2026-11-01T10:00:00")
+        db_connection.update_document_fields("display-005", name="Cotton Pest Advisory", ingested_at="2026-11-01T10:00:00")
 
         response = test_client.patch(
             "/documents/display-005/scheme-metadata",
-            json={"document_kind": "advisory", "display_name": " Cotton Pest Advisory "},
+            json={"aliases": ["cotton"], "display_name": " Cotton Pest Advisory "},
         )
 
         assert response.status_code == 200
-        assert db_connection.get_document("display-005")["document_kind"] == "advisory"
+        assert db_connection.get_document("display-005")["name"] == "Cotton Pest Advisory"
 
     @pytest.mark.api
     @pytest.mark.unit

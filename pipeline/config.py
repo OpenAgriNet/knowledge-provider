@@ -20,7 +20,10 @@ class Config:
     temporal_host: str = "localhost:7233"
     minio_endpoint: str = "localhost:9000"
     minio_bucket: str = "documents"
-    document_db_path: str = "/data/documents.db"
+    database_url: str = "postgresql://postgres:postgres@localhost:5432/knowledge_provider"
+    db_pool_min_size: int = 1
+    db_pool_max_size: int = 10
+    db_pool_timeout_seconds: float = 30.0
     translation_provider: str = "gemma_vllm"
     translation_model: str = "google/gemma-4-31b-it"
     translation_vllm_base_url: str = "http://localhost:8020/v1"
@@ -51,22 +54,6 @@ class Config:
 
     # File access
     allowed_file_paths: list[str] = None
-
-    # Master Catalog (Postgres) — code/name/tool_name/prompt_snippet, generic
-    # across content types (scheme, advisory, ...), not scheme-specific
-    master_catalog_pg_host: str = "localhost"
-    master_catalog_pg_port: int = 5432
-    master_catalog_pg_db: str = "master_catalog"
-    master_catalog_pg_user: str = "master_catalog"
-    master_catalog_pg_password: str = ""
-    master_catalog_pg_sslmode: str = "disable"
-
-    # AI layer Redis (bharat-oan-api) — direct write of the catalog snapshot
-    ai_layer_redis_host: str = ""
-    ai_layer_redis_port: int = 6379
-    ai_layer_redis_db: int = 0
-    ai_layer_redis_password: str = ""
-    master_catalog_redis_ttl_seconds: int = 172800
 
     def __post_init__(self):
         if self.cors_origins is None:
@@ -121,7 +108,10 @@ def load_config() -> Config:
         temporal_host=os.environ.get("TEMPORAL_HOST", "localhost:7233"),
         minio_endpoint=os.environ.get("MINIO_ENDPOINT", "localhost:9000"),
         minio_bucket=os.environ.get("MINIO_BUCKET", "documents"),
-        document_db_path=os.environ.get("DOCUMENT_DB_PATH", "/data/documents.db"),
+        database_url=os.environ.get("DATABASE_URL", Config.database_url),
+        db_pool_min_size=int(os.environ.get("DB_POOL_MIN_SIZE", "1")),
+        db_pool_max_size=int(os.environ.get("DB_POOL_MAX_SIZE", "10")),
+        db_pool_timeout_seconds=float(os.environ.get("DB_POOL_TIMEOUT_SECONDS", "30")),
         translation_provider=os.environ.get("TRANSLATION_PROVIDER", "gemma_vllm"),
         translation_model=os.environ.get("TRANSLATION_MODEL", "google/gemma-4-31b-it"),
         translation_vllm_base_url=os.environ.get("TRANSLATION_VLLM_BASE_URL", "http://localhost:8020/v1"),
@@ -152,21 +142,6 @@ def load_config() -> Config:
 
         # File access
         allowed_file_paths=os.environ.get("ALLOWED_FILE_PATHS", "").split(",") if os.environ.get("ALLOWED_FILE_PATHS") else None,
-
-        # Master Catalog (Postgres)
-        master_catalog_pg_host=os.environ.get("MASTER_CATALOG_PG_HOST", "localhost"),
-        master_catalog_pg_port=int(os.environ.get("MASTER_CATALOG_PG_PORT", "5432")),
-        master_catalog_pg_db=os.environ.get("MASTER_CATALOG_PG_DB", "master_catalog"),
-        master_catalog_pg_user=os.environ.get("MASTER_CATALOG_PG_USER", "master_catalog"),
-        master_catalog_pg_password=os.environ.get("MASTER_CATALOG_PG_PASSWORD", ""),
-        master_catalog_pg_sslmode=os.environ.get("MASTER_CATALOG_PG_SSLMODE", "disable"),
-
-        # AI layer Redis
-        ai_layer_redis_host=os.environ.get("AI_LAYER_REDIS_HOST", ""),
-        ai_layer_redis_port=int(os.environ.get("AI_LAYER_REDIS_PORT", "6379")),
-        ai_layer_redis_db=int(os.environ.get("AI_LAYER_REDIS_DB", "0")),
-        ai_layer_redis_password=os.environ.get("AI_LAYER_REDIS_PASSWORD", ""),
-        master_catalog_redis_ttl_seconds=int(os.environ.get("MASTER_CATALOG_REDIS_TTL_SECONDS", "172800")),
     )
 
 
@@ -189,7 +164,10 @@ def print_config_status():
         ("TEMPORAL_HOST", "localhost:7233"),
         ("MINIO_ENDPOINT", "localhost:9000"),
         ("MINIO_BUCKET", "documents"),
-        ("DOCUMENT_DB_PATH", "/data/documents.db"),
+        ("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/knowledge_provider"),
+        ("DB_POOL_MIN_SIZE", "1"),
+        ("DB_POOL_MAX_SIZE", "10"),
+        ("DB_POOL_TIMEOUT_SECONDS", "30"),
         ("TRANSLATION_PROVIDER", "gemma_vllm"),
         ("TRANSLATION_MODEL", "gemma-4"),
         ("TRANSLATION_VLLM_BASE_URL", "http://localhost:8020/v1"),
@@ -213,9 +191,6 @@ def print_config_status():
         ("CORS_ORIGINS", "(default)"),
         ("RATE_LIMIT_DEFAULT", "100/minute"),
         ("RATE_LIMIT_UPLOAD", "10/minute"),
-        ("MASTER_CATALOG_PG_HOST", "localhost"),
-        ("MASTER_CATALOG_PG_DB", "master_catalog"),
-        ("AI_LAYER_REDIS_HOST", "(unset — Redis push disabled)"),
     ]
 
     for var_name, default in optional:

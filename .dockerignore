@@ -67,6 +67,7 @@ test_ocr_output*/
 
 # Scripts (not needed at runtime inside the container)
 scripts/
+!scripts/migrate_sqlite_to_postgres.py
 
 # Claude / AI tooling
 .claude/
