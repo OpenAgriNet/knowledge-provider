@@ -16,20 +16,21 @@
 
 import { appPath } from '../basePath'
 import { API_BASE } from '../config'
+import { getEnv } from '../runtimeEnv'
 
-const rawAuthEnabled = import.meta.env.VITE_AUTH_ENABLED
+const rawAuthEnabled = getEnv('AUTH_ENABLED')
 export const AUTH_ENABLED = String(rawAuthEnabled ?? 'false').toLowerCase() === 'true'
 
 function normalizeKeycloakUrl(url) {
   return String(url || '').replace(/\/$/, '')
 }
 
-const keycloakUrl = normalizeKeycloakUrl(import.meta.env.VITE_KEYCLOAK_URL || '')
-const keycloakRealm = import.meta.env.VITE_KEYCLOAK_REALM || ''
-const keycloakClientId = import.meta.env.VITE_KEYCLOAK_CLIENT_ID || 'docs-pipeline-ui'
+const keycloakUrl = normalizeKeycloakUrl(getEnv('KEYCLOAK_URL') || '')
+const keycloakRealm = getEnv('KEYCLOAK_REALM') || ''
+const keycloakClientId = getEnv('KEYCLOAK_CLIENT_ID') || 'docs-pipeline-ui'
 // Empty/unset = show Keycloak login form (username/password + social IdPs).
 // Set VITE_KEYCLOAK_IDP_HINT=google only when you want to skip the form.
-const keycloakIdpHint = String(import.meta.env.VITE_KEYCLOAK_IDP_HINT || '').trim()
+const keycloakIdpHint = String(getEnv('KEYCLOAK_IDP_HINT') || '').trim()
 
 export const KEYCLOAK_CONFIG = {
   url: keycloakUrl,
