@@ -19,6 +19,22 @@ Load from `ui/.env` (local) or build-time env. See also `ui/.env.example`.
 | `VITE_KEYCLOAK_CLIENT_ID` | `docs-pipeline-ui` | Auth on | Public OIDC client. Production shared client: `bharat-vistaar` |
 | `VITE_KEYCLOAK_IDP_HINT` | `google` | Optional | Identity-provider hint for SSO pop-up (`google`, etc.) |
 
+### Runtime config in the production UI image
+
+`ui/Dockerfile.prod` builds one image for every environment. At container start, `/docker-entrypoint.d/40-runtime-config.sh` writes `/knowledge-provider/config.js` (`window.__ENV__`) from the env vars below. The UI reads `window.__ENV__` first and falls back to the build-time `VITE_*` value. To supply a hand-written `config.js` instead, mount it at `/usr/share/nginx/html/knowledge-provider/config.js`; the entrypoint leaves it alone.
+
+| Container env | Default in image | Replaces build-time |
+|---------------|------------------|---------------------|
+| `API_BASE` | `/knowledge-provider-api` | `VITE_API_BASE` |
+| `AUTH_ENABLED` | `false` | `VITE_AUTH_ENABLED` |
+| `KEYCLOAK_URL` | `''` | `VITE_KEYCLOAK_URL` |
+| `KEYCLOAK_REALM` | `''` | `VITE_KEYCLOAK_REALM` |
+| `KEYCLOAK_CLIENT_ID` | `''` (UI falls back to `docs-pipeline-ui`) | `VITE_KEYCLOAK_CLIENT_ID` |
+| `KEYCLOAK_IDP_HINT` | `''` | `VITE_KEYCLOAK_IDP_HINT` |
+| `DOCUMENT_VALIDITY_ENABLED` | `true` | `VITE_DOCUMENT_VALIDITY_ENABLED` |
+
+`VITE_BASE` (default `/knowledge-provider/`) stays a build arg: asset URLs and the router basename are fixed at build. Compose maps the root `.env` `VITE_*` values onto these container vars.
+
 ### Frontend auth notes
 
 - Login UI is ported from **vistaar-platform** (`/login`, hero panel, “Continue with SSO” pop-up).
