@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fetchJson } from '../lib/pipelineUi'
 import { DocumentClassificationPanel } from './DocumentOpsView'
 
+vi.mock('../components/SourcePdfPreview', () => ({ default: () => null }))
+
 vi.mock('../lib/pipelineUi', async (importOriginal) => ({
   ...(await importOriginal()),
   fetchJson: vi.fn(),

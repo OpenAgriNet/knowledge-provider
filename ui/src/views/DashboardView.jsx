@@ -112,7 +112,7 @@ export default function DashboardView() {
           onClick={() => navigate('/documents')}
         />
         <StatCard
-          label="Total States"
+          label="Total instances"
           value={formatCount(byInstance.length)}
           icon={<Globe2 className="h-4 w-4" />}
         />

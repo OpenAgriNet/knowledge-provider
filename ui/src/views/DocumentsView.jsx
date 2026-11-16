@@ -7,21 +7,23 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Skeleton } from '../components/ui/skeleton'
 import { StageBadge } from '../components/StageBadge'
 import { InstanceBadge } from '../components/InstanceBadge'
-import { fetchAllDocuments, formatCompactDateTime, getDocumentListLabel, getDocumentMetaLabel, getStageLabel } from '../lib/pipelineUi'
+import { fetchAllDocuments, fetchJson, formatCompactDateTime, getDocumentListLabel, getDocumentMetaLabel, getStageLabel } from '../lib/pipelineUi'
+import { formatInstanceLabel } from '../lib/instanceLabels'
 import { useAuth } from '../auth/AuthProvider'
 import { Search, FileText, AlertTriangle, RefreshCw, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react'
 
 const PAGE_SIZE = 10
+const ALL_PROVIDERS = '__all__'
 
 export default function DocumentsView() {
   const navigate = useNavigate()
-  const { hasPermission, isSuperAdmin, instances } = useAuth()
+  const { hasPermission, isSuperAdmin, isGlobalViewer, instances } = useAuth()
   const canUpload = hasPermission('upload')
   const [documents, setDocuments] = useState([])
+  const [readableProviders, setReadableProviders] = useState([])
   const [query, setQuery] = useState('')
   const [stageFilter, setStageFilter] = useState('all')
-  const [authFilter, setAuthFilter] = useState('all')
-  const [instanceFilter, setInstanceFilter] = useState('all')
+  const [instanceFilter, setInstanceFilter] = useState(ALL_PROVIDERS)
   const [showFailed, setShowFailed] = useState(false)
   const [showReindex, setShowReindex] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -37,8 +39,12 @@ export default function DocumentsView() {
     setLoading(true)
     setError('')
     try {
-      const docs = await fetchAllDocuments()
+      const [docs, directory] = await Promise.all([
+        fetchAllDocuments(),
+        fetchJson('/providers/readable').catch(() => null),
+      ])
       setDocuments(docs)
+      setReadableProviders(directory?.providers ?? [])
     } catch (loadError) {
       setError(loadError.message)
     } finally {
@@ -48,44 +54,42 @@ export default function DocumentsView() {
 
   const stageOptions = useMemo(() => ['all', ...new Set(documents.map(doc => doc.stage))], [documents])
   const instanceOptions = useMemo(() => {
-    const fromDocs = documents.map((d) => (d.instance || '').trim().toLowerCase()).filter(Boolean)
-    return ['all', ...new Set(fromDocs)]
-  }, [documents])
+    const fromDocs = documents.map((d) => (d.instance || 'default').trim().toLowerCase())
+    return [...new Set([...readableProviders, ...fromDocs])].sort()
+  }, [documents, readableProviders])
+  const selectedInstance = instanceOptions.includes(instanceFilter) ? instanceFilter : ALL_PROVIDERS
 
   const filtered = useMemo(() => {
     return documents.filter(doc => {
       const q = query.trim().toLowerCase()
       if (q && ![doc.filename, getDocumentListLabel(doc), doc.workflow_id].some(v => `${v || ''}`.toLowerCase().includes(q))) return false
       if (stageFilter !== 'all' && doc.stage !== stageFilter) return false
-      if (authFilter === 'authoritative' && !doc.authoritative) return false
-      if (authFilter === 'legacy' && doc.authoritative) return false
-      if (instanceFilter !== 'all') {
+      if (selectedInstance !== ALL_PROVIDERS) {
         const code = (doc.instance || 'default').trim().toLowerCase()
-        if (code !== instanceFilter) return false
+        if (code !== selectedInstance) return false
       }
       if (showFailed && !doc.failed && doc.stage !== 'failed') return false
       if (showReindex && !doc.reindex_required) return false
       return true
     })
-  }, [documents, query, stageFilter, authFilter, instanceFilter, showFailed, showReindex])
+  }, [documents, query, stageFilter, selectedInstance, showFailed, showReindex])
 
   useEffect(() => {
     setPage(1)
-  }, [query, stageFilter, authFilter, instanceFilter, showFailed, showReindex])
+  }, [query, stageFilter, instanceFilter, showFailed, showReindex])
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
   const paginated = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
   const activeFilters = [
     stageFilter !== 'all' && `Stage: ${getStageLabel(stageFilter, { compact: true })}`,
-    authFilter !== 'all' && `Type: ${authFilter}`,
-    instanceFilter !== 'all' && `State: ${instanceFilter.toUpperCase()}`,
+    selectedInstance !== ALL_PROVIDERS && `Instance: ${formatInstanceLabel(selectedInstance) ?? 'Default instance'}`,
     showFailed && 'Failed only',
     showReindex && 'Reindex required',
   ].filter(Boolean)
-  const scopeHint = isSuperAdmin
-    ? 'All states (super admin)'
+  const scopeHint = isSuperAdmin || isGlobalViewer
+    ? 'All instances'
     : instances?.length
-      ? `States: ${instances.map((i) => String(i).toUpperCase()).join(', ')}`
+      ? `Instances: ${instances.map((i) => formatInstanceLabel(i) ?? 'Default instance').join(', ')}`
       : null
 
   return (
@@ -132,30 +136,18 @@ export default function DocumentsView() {
                     {stageOptions.filter(s => s !== 'all').map(s => <SelectItem key={s} value={s}>{getStageLabel(s, { compact: true })}</SelectItem>)}
           </SelectContent>
         </Select>
-        <Select value={authFilter} onValueChange={setAuthFilter}>
-          <SelectTrigger className="w-[160px]">
-            <SelectValue placeholder="Authority" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All</SelectItem>
-            <SelectItem value="authoritative">Authoritative</SelectItem>
-            <SelectItem value="legacy">Legacy</SelectItem>
-          </SelectContent>
-        </Select>
-        {isSuperAdmin && instanceOptions.length > 1 ? (
-          <Select value={instanceFilter} onValueChange={setInstanceFilter}>
-            <SelectTrigger className="w-[140px]">
-              <SelectValue placeholder="State" />
+        {instanceOptions.length > 0 ? (
+          <Select value={selectedInstance} onValueChange={setInstanceFilter}>
+            <SelectTrigger aria-label="Instance" className="w-[180px]">
+              <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All states</SelectItem>
-              {instanceOptions
-                .filter((s) => s !== 'all')
-                .map((code) => (
-                  <SelectItem key={code} value={code}>
-                    {code === 'bv' ? 'BV (portal)' : code.toUpperCase()}
-                  </SelectItem>
-                ))}
+              <SelectItem value={ALL_PROVIDERS}>All accessible instances</SelectItem>
+              {instanceOptions.map((code) => (
+                <SelectItem key={code} value={code}>
+                  {formatInstanceLabel(code) ?? 'Default instance'}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
         ) : null}
@@ -177,8 +169,7 @@ export default function DocumentsView() {
             className="text-xs text-primary hover:underline"
             onClick={() => {
               setStageFilter('all')
-              setAuthFilter('all')
-              setInstanceFilter('all')
+              setInstanceFilter(ALL_PROVIDERS)
               setShowFailed(false)
               setShowReindex(false)
               setQuery('')
@@ -195,9 +186,8 @@ export default function DocumentsView() {
             <thead>
               <tr className="border-b border-border text-left">
                 <th className="px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">Document</th>
-                <th className="px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">State</th>
+                <th className="px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">Instance</th>
                 <th className="px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">Stage</th>
-                <th className="px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">Type</th>
                 <th className="px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">Pages</th>
                 <th className="px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">Chunks</th>
                 <th className="px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">Status</th>
@@ -211,7 +201,6 @@ export default function DocumentsView() {
                     <td className="px-4 py-3"><Skeleton className="h-4 w-48" /><Skeleton className="h-3 w-24 mt-1.5" /></td>
                     <td className="px-4 py-3"><Skeleton className="h-5 w-10 rounded-full" /></td>
                     <td className="px-4 py-3"><Skeleton className="h-5 w-20 rounded-full" /></td>
-                    <td className="px-4 py-3"><Skeleton className="h-5 w-16 rounded-full" /></td>
                     <td className="px-4 py-3"><Skeleton className="h-4 w-8" /></td>
                     <td className="px-4 py-3"><Skeleton className="h-4 w-8" /></td>
                     <td className="px-4 py-3"><Skeleton className="h-5 w-16 rounded-full" /></td>
@@ -236,11 +225,6 @@ export default function DocumentsView() {
                       <InstanceBadge instance={doc.instance} />
                     </td>
                     <td className="px-4 py-3"><StageBadge stage={doc.stage} compact /></td>
-                    <td className="px-4 py-3">
-                      <Badge variant={doc.authoritative ? 'default' : 'secondary'}>
-                        {doc.authoritative ? 'Auth' : 'Legacy'}
-                      </Badge>
-                    </td>
                     <td className="px-4 py-3 text-muted-foreground">{doc.page_count}</td>
                     <td className="px-4 py-3 text-muted-foreground">{doc.chunk_count}</td>
                     <td className="px-4 py-3">
@@ -262,7 +246,7 @@ export default function DocumentsView() {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={8} className="px-4 py-16 text-center">
+                  <td colSpan={7} className="px-4 py-16 text-center">
                     <Search className="h-8 w-8 mx-auto mb-3 text-muted-foreground/30" />
                     <p className="text-sm text-muted-foreground">
                       {query ? `No documents matching "${query}"` : 'No documents match the current filters.'}
@@ -271,7 +255,7 @@ export default function DocumentsView() {
                       className="text-xs text-primary hover:underline mt-2"
                       onClick={() => {
                         setStageFilter('all')
-                        setAuthFilter('all')
+                        setInstanceFilter(ALL_PROVIDERS)
                         setShowFailed(false)
                         setShowReindex(false)
                         setQuery('')

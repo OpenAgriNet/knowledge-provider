@@ -19,7 +19,7 @@
     "maxChunksPerDoc": 2,
     "useE5Prefix": true,
     "excludeReference": true,
-    "queryExpansionProfile": "gu-v1",
+    "queryExpansionProfile": "none",
     "rerankMode": "none",
     "hybridRrfK": 60
   },
@@ -145,14 +145,8 @@
         {
           "key": "queryExpansionProfile",
           "label": "Query expansion",
-          "type": "select",
-          "help": "Optional expansion profile applied before retrieval.",
-          "options": [
-            { "value": "none", "label": "none" },
-            { "value": "basic", "label": "basic" },
-            { "value": "advanced", "label": "advanced" },
-            { "value": "gu-v1", "label": "gu-v1" }
-          ]
+          "type": "text",
+          "help": "Name of a configured expansion profile. Use none to disable expansion."
         },
         {
           "key": "rerankMode",

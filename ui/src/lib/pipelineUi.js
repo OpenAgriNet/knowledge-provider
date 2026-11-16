@@ -199,7 +199,7 @@ export const DEFAULT_SEARCH_SETTINGS = {
   maxChunksPerDoc: 2,
   useE5Prefix: true,
   excludeReference: true,
-  queryExpansionProfile: 'gu-v1',
+  queryExpansionProfile: 'none',
   rerankMode: 'none',
   hybridRrfK: 60
 }
@@ -254,12 +254,11 @@ export function isUTC(value) {
 }
 
 /**
- * Convert any timestamp value to IST (Asia/Kolkata), formatted as
- * "dd-mm-yyyy hh:mm" (24-hour). Values that `isUTC` identifies as UTC are
+ * Format timestamps in the browser's timezone. Values that `isUTC` identifies as UTC are
  * corrected before parsing so `new Date()` can't misread them as local
  * time; values with an explicit non-UTC offset are respected as-is.
  */
-export function toIST(value) {
+export function formatTimestamp(value) {
   if (!value) return null
   let date
   if (value instanceof Date) {
@@ -271,8 +270,7 @@ export function toIST(value) {
   }
   if (Number.isNaN(date.getTime())) return null
 
-  const parts = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Asia/Kolkata',
+  const parts = new Intl.DateTimeFormat(undefined, {
     day: '2-digit',
     month: '2-digit',
     year: 'numeric',
@@ -289,12 +287,12 @@ export function toIST(value) {
 
 export function formatDateTime(value) {
   if (!value) return 'Unknown'
-  return toIST(value) || 'Unknown'
+  return formatTimestamp(value) || 'Unknown'
 }
 
 export function formatCompactDateTime(value) {
   if (!value) return 'Not available'
-  return toIST(value) || 'Not available'
+  return formatTimestamp(value) || 'Not available'
 }
 
 export function formatCount(value) {
@@ -313,6 +311,7 @@ export function summarizeAvailableAction(action) {
     mark_reindex_required: 'Mark re-ingest',
     clear_reindex_required: 'Clear re-ingest',
     inspect_runtime: 'Inspect runtime',
+    retry_upload_start: 'Retry start',
     reconcile_document: 'Reconcile',
     disable_document: 'Remove',
     restore_document: 'Restore',
@@ -444,7 +443,7 @@ function stripMarkdown(value) {
 }
 
 export function getSearchResultTitle(result) {
-  return result?.name_en || result?.name || result?.filename || result?.document || 'Search Result'
+  return result?.name || result?.name_en || result?.filename || result?.document || 'Search Result'
 }
 
 export function getSearchResultSnippet(result) {

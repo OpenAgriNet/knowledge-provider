@@ -22,6 +22,7 @@ import {
 } from 'lucide-react'
 import { useAuth } from '../auth/AuthProvider'
 import DocumentHeaderSummary from '../components/DocumentHeaderSummary'
+import DocumentRevisionPanel from '../components/DocumentRevisionPanel'
 import PipelineStepper from '../components/PipelineStepper'
 import PagePager from '../components/PagePager'
 import SourcePdfPreview from '../components/SourcePdfPreview'
@@ -64,6 +65,12 @@ function getChunkEmptyMessage(doc) {
   if (stage === 'chunking') return 'Content sections are being prepared for this document.'
   if (stage === 'failed') return 'Content is blocked because processing failed.'
   return 'No content sections are available for this document yet.'
+}
+
+function hasPageTranslation(page) {
+  return Boolean(page.edited_translation || page.translated_markdown || Object.values(page.translations || {}).some(
+    translation => translation.edited_translation || translation.translated_markdown,
+  ))
 }
 
 function EmptyPanel({ icon: Icon, title, subtitle, compact = false }) {
@@ -229,6 +236,18 @@ export function DocumentClassificationPanel({ doc, workflowId, canClassify, onSa
           </Button>
         )}
       </div>
+      {doc.crop_subjects?.length ? (
+        <div className="space-y-1">
+          <p className="text-[10px] text-muted-foreground">Crop details</p>
+          <ul className="space-y-1 text-xs">
+            {doc.crop_subjects.map(({ subjectId, descriptor }, index) => (
+              <li key={index} className="break-all">
+                {[descriptor?.name, descriptor?.code, subjectId].filter(Boolean).join(' · ')}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       {DOCUMENT_VALIDITY_ENABLED && canClassify && validityError ? (
         <p className="text-xs text-destructive">{validityError}</p>
       ) : null}
@@ -332,20 +351,21 @@ function stageWantsRuntime(stage) {
 export default function DocumentOpsView() {
   const { workflowId } = useParams()
   const navigate = useNavigate()
-  const { hasPermission } = useAuth()
-  const canReview = hasPermission('review')
-  const canPipeline = hasPermission('pipeline')
-  const canAdmin = hasPermission('admin')
+  const { hasPermissionForInstance } = useAuth()
+  const [doc, setDoc] = useState(null)
+  const canReview = hasPermissionForInstance('review', doc?.instance)
+  const canPipeline = hasPermissionForInstance('pipeline', doc?.instance)
+  const canAdmin = hasPermissionForInstance('admin', doc?.instance)
   // State View has search only — no create/edit/delete/upload/approve.
   const canEdit = canReview
   const isViewOnly = !canEdit && !canPipeline && !canAdmin
   const canRunAction = (action) => {
+    if (action === 'retry_upload_start') return hasPermissionForInstance('upload', doc?.instance)
     if (isViewOnly) return false
     const needed = ACTION_PERMISSION[action]
-    return needed ? hasPermission(needed) : canReview
+    return needed ? hasPermissionForInstance(needed, doc?.instance) : canReview
   }
   const [searchParams] = useSearchParams()
-  const [doc, setDoc] = useState(null)
   const [pages, setPages] = useState([])
   const [chunks, setChunks] = useState([])
   const [indexChunks, setIndexChunks] = useState([])
@@ -356,13 +376,17 @@ export default function DocumentOpsView() {
   const [runtime, setRuntime] = useState(null)
   const [stageIo, setStageIo] = useState(null)
   const [panelErrors, setPanelErrors] = useState({})
-  const [activeTab, setActiveTab] = useState('ocr')
+  const [activeTab, setActiveTab] = useState(() => searchParams.get('tab') === 'chunks' ? 'chunks' : 'ocr')
   const [loading, setLoading] = useState(true)
   const [currentPage, setCurrentPage] = useState(1)
   const [message, setMessage] = useState('')
   const [pageEdits, setPageEdits] = useState({})
   const [chunkEdits, setChunkEdits] = useState({})
+  const [chunkTagEdits, setChunkTagEdits] = useState({})
+  const [chunkTagNotice, setChunkTagNotice] = useState('')
   const [translationEdits, setTranslationEdits] = useState({})
+  const [requestedTranslation, setRequestedTranslation] = useState('')
+  const [translationSaving, setTranslationSaving] = useState(false)
   const [auditFilter, setAuditFilter] = useState('all')
   const [auditExpanded, setAuditExpanded] = useState(new Set())
   const [auditLogs, setAuditLogs] = useState([])
@@ -728,7 +752,9 @@ export default function DocumentOpsView() {
     setMessage('')
     const stageBeforeAction = doc?.stage
     try {
-      if (action === 'mark_reindex_required') {
+      if (action === 'retry_upload_start') {
+        await fetchJson(`/upload/${encodeURIComponent(workflowId)}/start`, { method: 'POST' })
+      } else if (action === 'mark_reindex_required') {
         await fetchJson(`/documents/${workflowId}/mark-reindex-required`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -777,20 +803,34 @@ export default function DocumentOpsView() {
     }
   }
 
-  async function saveTranslation(pageNumber, text) {
+  function discardTranslationDraft(key, savedText) {
+    setTranslationEdits(edits => {
+      if (savedText !== undefined && edits[key] !== savedText) return edits
+      const next = { ...edits }
+      delete next[key]
+      return next
+    })
+  }
+
+  async function saveTranslation(pageNumber, language, draftKey, text) {
+    setTranslationSaving(true)
     try {
       await fetchJson(`/documents/${workflowId}/pages/${pageNumber}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ edited_translation: text, translation_reviewed: true })
+        body: JSON.stringify({
+          ...(text !== undefined && { edited_translation: text }),
+          translation_reviewed: true,
+          ...(language && { translation_language: language }),
+        })
       })
       setMessage('Translation saved')
-      const next = { ...translationEdits }
-      delete next[pageNumber]
-      setTranslationEdits(next)
+      if (text !== undefined) discardTranslationDraft(draftKey, text)
       await reloadAfterMutation()
     } catch (err) {
       setMessage(err.message)
+    } finally {
+      setTranslationSaving(false)
     }
   }
 
@@ -806,7 +846,7 @@ export default function DocumentOpsView() {
   const reviewedPages = useMemo(() => pages.filter(p => p.is_reviewed).length, [pages])
   const reviewedChunks = useMemo(() => chunks.filter(c => c.is_reviewed).length, [chunks])
   const translatedPages = useMemo(
-    () => pages.filter(p => p.translation_reviewed || p.translated_markdown || p.edited_translation).length,
+    () => pages.filter(hasPageTranslation).length,
     [pages]
   )
   const currentPageRecord = useMemo(
@@ -824,9 +864,18 @@ export default function DocumentOpsView() {
   const filteredAudit = auditFilter === 'all' ? auditLogs : auditLogs.filter(e => e.action_type === auditFilter)
   const auditOptions = getAuditActionOptions(auditLogs)
   const currentPageLanguage = currentPageRecord?.detected_language || currentPageRecord?.language_detected || ''
-  const translationEmptySubtitle = String(currentPageLanguage || '').toLowerCase().startsWith('en')
-    ? 'No sections detected to translate on this page'
-    : 'This page was not detected as needing translation'
+  const translations = currentPageRecord?.translations || {}
+  const translationLanguages = Object.keys(translations).sort()
+  const translationLanguage = Object.hasOwn(translations, requestedTranslation)
+    ? requestedTranslation
+    : currentPageRecord?.translation_target_language || translationLanguages[0] || ''
+  const currentTranslation = translations[translationLanguage] || {
+    edited_translation: currentPageRecord?.edited_translation,
+    translated_markdown: currentPageRecord?.translated_markdown,
+    provider: currentPageRecord?.translation_provider,
+    model: currentPageRecord?.translation_model,
+    is_reviewed: currentPageRecord?.translation_reviewed,
+  }
   const currentPageOcrText = currentPageRecord
     ? (currentPageRecord.ocr_markdown ?? currentPageRecord.original_markdown ?? '')
     : ''
@@ -839,7 +888,9 @@ export default function DocumentOpsView() {
   const currentPageTranslationSourceText = currentPageRecord
     ? (currentPageRecord.edited_markdown || currentPageOcrText)
     : ''
-  const translationText = currentPageRecord ? (translationEdits[currentPage] ?? (currentPageRecord.edited_translation || currentPageRecord.translated_markdown || '')) : ''
+  const translationDraftKey = `${workflowId}:${currentPage}:${translationLanguage}`
+  const translationDraft = translationEdits[translationDraftKey]
+  const translationText = translationDraft ?? (currentTranslation.edited_translation || currentTranslation.translated_markdown || '')
   const isOcrPending = !currentPageRecord && (doc?.stage === 'registered' || doc?.stage === 'ocr_processing')
   const canApproveTranslation = canReview && doc?.stage === 'translation_review'
   const canApproveChunks = canReview && doc?.stage === 'chunk_review'
@@ -966,6 +1017,7 @@ export default function DocumentOpsView() {
             hasPages={pages.length > 0 || Boolean(doc.page_count)}
             hasChunks={chunks.length > 0 || Boolean(doc.chunk_count)}
             networkPublish={doc.network_publish}
+            automaticRelease={Boolean(doc.current_job?.config?.release_network_id)}
           />
           <div className="flex shrink-0 flex-wrap items-center gap-1.5 xl:justify-end">
             {visibleActions.slice(0, 4).map(action => (
@@ -1022,7 +1074,9 @@ export default function DocumentOpsView() {
             )}
           </div>
           <div className="min-h-0 flex-1 overflow-hidden">
-            <SourcePdfPreview workflowId={workflowId} currentPage={currentPage} />
+            {doc.canonical_input_type === 'structured_text' || doc.source_type === 'webhook'
+              ? <p className="p-3 text-xs text-muted-foreground">Structured input. Open Content to inspect the text chunks.</p>
+              : <SourcePdfPreview workflowId={workflowId} currentPage={currentPage} />}
           </div>
         </aside>
 
@@ -1049,6 +1103,12 @@ export default function DocumentOpsView() {
                 >
                   <FileCode className="mr-1.5 h-3.5 w-3.5" />
                   Content
+                </TabsTrigger>
+                <TabsTrigger
+                  value="revisions"
+                  className="h-10 shrink-0 rounded-none border-b-2 border-transparent px-3 text-xs data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none"
+                >
+                  <FileText className="mr-1.5 h-3.5 w-3.5" />Revisions
                 </TabsTrigger>
                 <TabsTrigger
                   value="index"
@@ -1259,20 +1319,26 @@ export default function DocumentOpsView() {
                   </div>
                 </div>
 
-                {(currentPageLanguage || currentPageRecord?.translation_provider || translationEdits[currentPage] !== undefined) && (
+                {(currentPageLanguage || translationLanguage || currentTranslation.provider || translationDraft !== undefined) && (
                   <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2">
                     <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
                       {currentPageLanguage && (
-                        <span>Language: <strong className="text-foreground">{String(currentPageLanguage).toUpperCase()}</strong></span>
+                        <span>Source language <strong className="text-foreground">{currentPageLanguage}</strong></span>
                       )}
-                      {currentPageRecord?.translation_provider && (
-                        <>
-                          <span>·</span>
-                          <span>Provider: {currentPageRecord.translation_provider}</span>
-                          <span>·</span>
-                          <span>Model: {currentPageRecord.translation_model}</span>
-                        </>
+                      {translationLanguages.length > 0 && (
+                        <label className="flex items-center gap-2">
+                          Translation language
+                          <select
+                            className="h-8 rounded-md border border-input bg-background px-2 text-foreground"
+                            value={translationLanguage}
+                            onChange={event => setRequestedTranslation(event.target.value)}
+                          >
+                            {translationLanguages.map(language => <option key={language} value={language}>{language}</option>)}
+                          </select>
+                        </label>
                       )}
+                      {currentTranslation.provider && <span>Provider {currentTranslation.provider}</span>}
+                      {currentTranslation.model && <span>Model {currentTranslation.model}</span>}
                     </div>
                     {canEdit && (
                       <div className="flex items-center gap-2">
@@ -1280,23 +1346,23 @@ export default function DocumentOpsView() {
                           variant="ghost"
                           size="sm"
                           className="h-8"
-                          onClick={() => {
-                            const next = { ...translationEdits }
-                            delete next[currentPage]
-                            setTranslationEdits(next)
-                          }}
+                          disabled={translationSaving || translationDraft === undefined}
+                          onClick={() => discardTranslationDraft(translationDraftKey)}
                         >
                           <RotateCcw className="mr-1 h-3.5 w-3.5" />Reset
                         </Button>
-                        <Button size="sm" className="h-8" disabled={!canReview} onClick={() => saveTranslation(currentPage, translationText)}>
-                          <Save className="mr-1 h-3.5 w-3.5" />Save
+                        <Button size="sm" className="h-8"
+                          disabled={!canReview || translationSaving || !translationText.trim()
+                            || (translationDraft === undefined && currentTranslation.is_reviewed)}
+                          onClick={() => saveTranslation(currentPage, translationLanguage, translationDraftKey, translationDraft)}>
+                          <Save className="mr-1 h-3.5 w-3.5" />{translationSaving ? 'Saving…' : translationDraft === undefined ? 'Mark reviewed' : 'Save'}
                         </Button>
                       </div>
                     )}
                   </div>
                 )}
 
-                {canEdit && translationEdits[currentPage] !== undefined && (
+                {canEdit && translationDraft !== undefined && (
                   <div className="shrink-0 border-b border-border px-4 py-2">
                     <div className="reindex-banner text-xs">
                       <AlertTriangle className="h-3.5 w-3.5 text-warning" />
@@ -1306,7 +1372,7 @@ export default function DocumentOpsView() {
                 )}
 
                 <div className="px-3 py-3 sm:px-4">
-                  {currentPageRecord && (currentPageRecord.translated_markdown || currentPageRecord.edited_translation) ? (
+                  {(currentTranslation.translated_markdown || currentTranslation.edited_translation) ? (
                     <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
                       <div className="flex min-w-0 flex-col">
                         <div className="mb-1.5 flex items-center justify-between gap-2">
@@ -1317,7 +1383,7 @@ export default function DocumentOpsView() {
                             {currentPageRecord?.edited_markdown ? 'reviewed · read-only' : 'read-only'}
                           </span>
                         </div>
-                        <div className="min-h-[12rem] rounded-md border border-border bg-muted/30 p-3 font-mono text-sm leading-relaxed whitespace-pre-wrap text-muted-foreground">
+                        <div lang={currentPageLanguage || undefined} className="min-h-[12rem] rounded-md border border-border bg-muted/30 p-3 font-mono text-sm leading-relaxed whitespace-pre-wrap text-muted-foreground">
                           {currentPageTranslationSourceText || '(No text yet)'}
                         </div>
                       </div>
@@ -1332,11 +1398,14 @@ export default function DocumentOpsView() {
                         </div>
                         <div className={`rounded-md border border-input bg-background ${canEdit ? 'focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2' : 'bg-muted/20'}`}>
                           <Textarea
+                            aria-label="Translated text"
+                            lang={translationLanguage || undefined}
                             value={translationText}
                             readOnly={!canEdit}
                             onChange={e => {
                               if (!canEdit) return
-                              setTranslationEdits({ ...translationEdits, [currentPage]: e.target.value })
+                              const text = e.target.value
+                              setTranslationEdits(edits => ({ ...edits, [translationDraftKey]: text }))
                             }}
                             className="min-h-[12rem] resize-y border-0 bg-transparent font-mono text-sm leading-relaxed shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
                           />
@@ -1349,7 +1418,6 @@ export default function DocumentOpsView() {
                         compact
                         icon={Layers}
                         title={sortedPages.length ? `No translation for page ${currentPage}` : 'No translation yet'}
-                        subtitle={translationEmptySubtitle}
                       />
                     </div>
                   )}
@@ -1362,7 +1430,7 @@ export default function DocumentOpsView() {
                       currentPage={currentPage}
                       onChange={setCurrentPage}
                       getStatus={(p) => (
-                        (p.translation_reviewed || p.translated_markdown || p.edited_translation)
+                        hasPageTranslation(p)
                           ? 'accent'
                           : 'pending'
                       )}
@@ -1484,6 +1552,32 @@ export default function DocumentOpsView() {
                               }}
                               className={`text-xs font-mono min-h-[60px] resize-y ${!canEdit ? 'bg-muted/20' : ''}`}
                             />
+                            {chunkTagNotice && <p role="status" className="mt-2 text-xs">{chunkTagNotice}</p>}
+                            <div className="mt-2 flex flex-wrap items-end gap-2">
+                              <label className="flex-1 text-xs">
+                                Chunk tags (comma separated)
+                                <Input value={chunkTagEdits[chunk.chunk_number] ?? (chunk.tags || []).join(', ')}
+                                  readOnly={!canEdit} onChange={event => {
+                                    const value = event.target.value
+                                    setChunkTagEdits(current => ({ ...current, [chunk.chunk_number]: value }))
+                                  }} />
+                              </label>
+                              {canEdit && <Button type="button" size="sm" variant="outline" onClick={async () => {
+                                try {
+                                  const raw = chunkTagEdits[chunk.chunk_number] ?? (chunk.tags || []).join(', ')
+                                  const tags = raw.split(',').map(tag => tag.trim()).filter(Boolean)
+                                  const saved = await fetchJson(`/documents/${workflowId}/chunks/${chunk.chunk_number}`, {
+                                    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ tags }),
+                                  })
+                                  setChunkTagEdits(current => ({ ...current, [chunk.chunk_number]: saved.tags.join(', ') }))
+                                  setChunkTagNotice(`Chunk ${chunk.chunk_number}: tags saved. Reindex to update search.`)
+                                } catch (error) {
+                                  setChunkTagNotice(error.message)
+                                }
+                              }}>Save tags</Button>}
+                            </div>
+
                           </div>
                         </div>
                       ))}
@@ -1500,6 +1594,11 @@ export default function DocumentOpsView() {
                     />
                   )}
                 </div>
+              </TabsContent>
+
+              <TabsContent value="revisions" className="m-0 data-[state=inactive]:hidden">
+                <DocumentRevisionPanel key={workflowId} workflowId={workflowId} initialRevisionId={searchParams.get('revision')}
+                  canRelease={hasPermissionForInstance('approve_ingestion', doc.instance)} />
               </TabsContent>
 
               {/* Index State */}
