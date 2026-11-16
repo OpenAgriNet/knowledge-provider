@@ -112,3 +112,23 @@ def test_api_startup_failure_is_logged_and_flushed(monkeypatch, calls, caplog):
     assert failed.levelname == "ERROR" and isinstance(failed.exc_info[1], RuntimeError)
     assert calls == ["reset"]
 
+
+
+def test_api_startup_logs_the_bucket_it_creates(monkeypatch, caplog):
+    minio = MagicMock(bucket_exists=lambda _b: False)
+    monkeypatch.setattr(api, "validate_network_provider_config", lambda: None)
+    monkeypatch.setattr(api, "load_auth_config", lambda: SimpleNamespace(disabled=True))
+    monkeypatch.setattr(api, "validate_auth_config", lambda _cfg: None)
+    monkeypatch.setattr(api.db, "init_db", lambda: None)
+    monkeypatch.setattr(api.Client, "connect", AsyncMock(return_value=MagicMock()))
+    monkeypatch.setattr(api, "Minio", lambda *a, **k: minio)
+    monkeypatch.setenv("MINIO_ACCESS_KEY", "key")
+    monkeypatch.setenv("MINIO_SECRET_KEY", "secret")
+    monkeypatch.setenv("MINIO_BUCKET", "fresh-bucket")
+
+    with caplog.at_level("INFO"):
+        asyncio.run(api._start_services())
+
+    minio.make_bucket.assert_called_once_with("fresh-bucket")
+    [created] = [r for r in caplog.records if r.getMessage() == "api startup: created MinIO bucket"]
+    assert created.bucket == "fresh-bucket"
