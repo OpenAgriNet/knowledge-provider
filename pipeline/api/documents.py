@@ -7,7 +7,8 @@ from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 
-from .. import db, document_validity
+from .. import db
+from ..documents import document_validity
 from ..auth.deps import CurrentUser, RequireUpload
 from ..auth.tenancy import assert_document_instance_access, normalize_instance
 from ..instances import prod_stage_disabled

@@ -28,10 +28,10 @@ from .activities import (
     run_ocr_and_store,
     update_document_state,
 )
-from .activity_logging import ActivityLogging
+from .temporal.activities.logging import ActivityLogging
 from .advisory_start import backfill_on_start
 from .network_group import validate_network_provider_config
-from .observability import configure_logs, reset_logs
+from .telemetry.logs import configure_logs, reset_logs
 from .workflows import (
     AdvisoryIndexWorkflow,
     AdvisoryPromoteWorkflow,

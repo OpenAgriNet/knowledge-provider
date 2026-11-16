@@ -16,7 +16,8 @@ from collections import Counter
 
 from fastapi import APIRouter, HTTPException
 
-from .. import db, document_validity
+from .. import db
+from ..documents import document_validity
 from ..auth.deps import RequireSearch
 
 router = APIRouter()

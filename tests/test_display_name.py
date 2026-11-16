@@ -6,33 +6,33 @@ CHUNK = {"chunk_number": 1, "original_text": "Cotton pest advice", "token_count"
 class TestNormalize:
     @pytest.mark.unit
     def test_trims_surrounding_whitespace(self):
-        from pipeline.display_name import normalize
+        from pipeline.documents.display_name import normalize
 
         assert normalize("  PM Kisan Guidelines  ") == "PM Kisan Guidelines"
 
     @pytest.mark.unit
     def test_none_means_not_given(self):
-        from pipeline.display_name import normalize
+        from pipeline.documents.display_name import normalize
 
         assert normalize(None) is None
 
     @pytest.mark.unit
     @pytest.mark.parametrize("value", ["", "   "])
     def test_rejects_blank(self, value):
-        from pipeline.display_name import normalize
+        from pipeline.documents.display_name import normalize
 
         with pytest.raises(ValueError, match="cannot be blank"):
             normalize(value)
 
     @pytest.mark.unit
     def test_accepts_the_maximum_length(self):
-        from pipeline.display_name import MAX_LENGTH, normalize
+        from pipeline.documents.display_name import MAX_LENGTH, normalize
 
         assert normalize("a" * MAX_LENGTH) == "a" * MAX_LENGTH
 
     @pytest.mark.unit
     def test_rejects_over_the_maximum_length(self):
-        from pipeline.display_name import MAX_LENGTH, normalize
+        from pipeline.documents.display_name import MAX_LENGTH, normalize
 
         with pytest.raises(ValueError, match="150"):
             normalize("a" * (MAX_LENGTH + 1))
@@ -45,7 +45,7 @@ class TestEditable:
         ["registered", "ocr_review", "translation_review", "chunk_review", "ready_for_ingestion", "failed"],
     )
     def test_editable_before_dev_ingest(self, stage):
-        from pipeline.display_name import ensure_editable
+        from pipeline.documents.display_name import ensure_editable
 
         ensure_editable({"stage": stage, "ingested_at": None})
 
@@ -55,14 +55,14 @@ class TestEditable:
         ["ingesting", "approval_for_prod", "ingesting_prod", "publishing_to_network", "completed"],
     )
     def test_locked_once_dev_ingest_starts(self, stage):
-        from pipeline.display_name import DisplayNameLocked, ensure_editable
+        from pipeline.documents.display_name import DisplayNameLocked, ensure_editable
 
         with pytest.raises(DisplayNameLocked):
             ensure_editable({"stage": stage, "ingested_at": None})
 
     @pytest.mark.unit
     def test_locked_when_ever_ingested(self):
-        from pipeline.display_name import DisplayNameLocked, ensure_editable
+        from pipeline.documents.display_name import DisplayNameLocked, ensure_editable
 
         with pytest.raises(DisplayNameLocked):
             ensure_editable({"stage": "failed", "ingested_at": "2026-11-01T10:00:00"})

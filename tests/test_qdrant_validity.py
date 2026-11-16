@@ -11,7 +11,7 @@ import pytest
 from pydantic import ValidationError
 from qdrant_client.http import models as qmodels
 
-from pipeline.document_validity import parse_day
+from pipeline.documents.document_validity import parse_day
 from pipeline.vector_store.qdrant_store import (
     PAYLOAD_FIELDS,
     QdrantVectorStore,

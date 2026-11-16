@@ -23,7 +23,8 @@ from minio import Minio
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
-from . import document_validity, scheme_catalog
+from . import scheme_catalog
+from .documents import document_validity
 from .auth.tenancy import group_for_instance
 from .catalog_builder import normalize_document_kind
 from .chunking import chunk_pages, load_chunking_config

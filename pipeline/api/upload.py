@@ -7,8 +7,9 @@ from typing import Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 
-from .. import db, document_validity
-from .. import display_name as display_name_rules
+from .. import db
+from ..documents import document_validity
+from ..documents import display_name as display_name_rules
 from ..auth.deps import RequireUpload
 from ..auth.tenancy import assert_document_instance_access, normalize_instance
 from ..instances import prod_stage_disabled

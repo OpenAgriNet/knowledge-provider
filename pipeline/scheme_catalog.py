@@ -14,8 +14,9 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from . import db, document_validity
-from . import display_name as display_name_rules
+from . import db
+from .documents import document_validity
+from .documents import display_name as display_name_rules
 
 SCHEME_CODE_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 

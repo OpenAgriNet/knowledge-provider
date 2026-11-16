@@ -41,7 +41,7 @@ from slowapi.util import get_remote_address
 from temporalio.client import Client, WorkflowFailureError
 
 from .. import db, scheme_catalog
-from .. import display_name as display_name_rules
+from ..documents import display_name as display_name_rules
 from ..advisory_start import start_advisory_index, start_advisory_promote
 from ..auth.config import load_auth_config, validate_auth_config
 from ..auth.deps import (
@@ -103,7 +103,7 @@ from ..models import (
 )
 from ..network_constants import RESULT_REJECTED, catalog_type_for_kind
 from ..network_group import validate_network_provider_config
-from ..observability import configure_logs, reset_logs
+from ..telemetry.logs import configure_logs, reset_logs
 from ..workflows import (
     ChunkingOnlyWorkflow,
     DocumentPipelineWorkflow,

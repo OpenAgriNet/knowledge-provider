@@ -4,7 +4,7 @@ import pytest
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter, SimpleLogRecordProcessor
 
-from pipeline import observability
+from pipeline.telemetry import logs as observability
 
 
 @pytest.fixture

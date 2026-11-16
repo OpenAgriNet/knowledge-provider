@@ -11,7 +11,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
 from qdrant_client.http.exceptions import UnexpectedResponse
 
-from ..document_validity import Clock, system_clock, today
+from ..documents.document_validity import Clock, system_clock, today
 from .embeddings import embed_passages, embed_query, get_vector_size
 
 logger = logging.getLogger(__name__)
