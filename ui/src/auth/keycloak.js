@@ -755,7 +755,7 @@ export function getKeycloakSetupHints() {
       'Direct access grants: enabled, with Direct grant flow = email-otp-direct-grant',
       'PKCE: S256',
       'Backend needs KEYCLOAK_CLIENT_ID + KEYCLOAK_CLIENT_SECRET for the same client',
-      'Production UI is under /docs-pipeline/*',
+      'Production UI is under /knowledge-provider/*',
     ],
   }
 }
