@@ -2,7 +2,9 @@
 
 [![codecov](https://codecov.io/gh/OpenAgriNet/knowledge-provider/graph/badge.svg?token=2TKM2CR2AC)](https://codecov.io/gh/OpenAgriNet/knowledge-provider)
 
-This repository contains a review-driven document ingestion pipeline built around Temporal workflows, FastAPI, Postgres, MinIO, and Qdrant. It is designed for teams that need to normalize heterogeneous files, extract structured text, review and correct outputs, generate chunks, and publish searchable records into a vector index.
+Knowledge Provider turns files, pushed JSON and approved URLs into searchable documents. Temporal runs processing, PostgreSQL stores the document and revision history, object storage keeps originals and artifacts, and Qdrant serves search.
+
+The sample environment enables `KP_INDEX_ONLY=true`. New documents run through extraction, optional translation, chunking and indexing without approval. Upload, submissions and search use the same `VECTOR_DB_COLLECTION_NAME`. This mode does not release documents to a network.
 
 The system is intentionally operational, not just algorithmic. Documents move through explicit stages, every major output can be persisted as an artifact, and the operator UI is designed to inspect and manage the pipeline rather than hide it.
 
@@ -20,7 +22,7 @@ At a high level, the pipeline supports:
 - optional translation for non-English content
 - chunk generation
 - manual review and correction of pages, translations, and chunks
-- indexing of approved chunks into Qdrant
+- indexing of searchable chunks into Qdrant
 - operational inspection of workflow, artifacts, audit history, and index state
 
 The system is suitable for:
@@ -193,7 +195,7 @@ Document-level view of what has been pushed to the vector index.
 
 ### Postgres
 
-Postgres is the canonical metadata and review-state store. Its schema is in `migrations/` and described in `docs/POSTGRES_SCHEMA.md`; the api and worker apply pending migrations at startup. Moving an existing SQLite deployment over is a one-off run of `scripts/migrate_sqlite_to_postgres.py` (see the `migrate-sqlite` compose profile).
+Postgres is the canonical metadata and review-state store. Its schema is in `migrations/` and described in `docs/POSTGRES_SCHEMA.md`; the api and worker apply pending migrations at startup. The migration rehearsal kit lives beside the legacy backup under `bh-prod-data/migrations/` in the OpenAgriNet workspace.
 
 It owns:
 
@@ -290,7 +292,19 @@ General behavior:
 ## Repository Layout
 
 ```text
-pipeline/        FastAPI app, Temporal workflows, activities, models, database logic
+pipeline/
+  api/           FastAPI routes and application startup
+  auth/          Keycloak authentication and instance permissions
+  documents/     Document models, format handling and validity
+  intake/        Webhooks, mapping, URL fetching and scheduled intake
+  metadata/      Knowledge metadata, language and schema packs
+  db/            PostgreSQL queries organized by the records they own
+  network/       Publication, admission, Registry and catalog adapters
+  search/        Passage projection, index identity and query expansion
+  temporal/      Workflows, registered activities and worker startup
+  telemetry/     OpenTelemetry logging
+  object_storage/, ocr/, translation/, chunking/, vector_store/
+                 Storage and processing implementations
 ui/              React operator console
 scripts/         Operational and maintenance scripts
 docs/            Supporting design and operational notes
@@ -314,25 +328,11 @@ Default local ports from `docker-compose.yml`:
 - MinIO console: `9001`
 - Keycloak: `8082` (relative path `/auth`; only used when auth is enabled)
 
-## Running The Stack
+## Run locally
 
-### Prerequisites
+Use `docker compose up -d --build` with the credentials and service settings in [ENV.md](ENV.md). The standard setup uses embedded PDF text and local embeddings. Add an OCR provider for scanned documents.
 
-- Docker and Docker Compose
-- an OCR provider API key exposed as `MISTRAL_API_KEY`
-- enough local disk for Postgres, MinIO artifacts, and Qdrant state
-
-### Start
-
-```bash
-docker compose up -d --build
-```
-
-### Stop
-
-```bash
-docker compose down
-```
+For an API and worker connected to existing services, use the [short settings starter](.env.example). For the older single-stack Compose deployment, keep its deployment settings and consult [ENV.md](ENV.md).
 
 ### Logs in ClickHouse (optional)
 
@@ -363,10 +363,8 @@ Important runtime variables include:
 - `MISTRAL_API_KEY`
 - `TEMPORAL_HOST`
 - `VECTOR_DB_URL`
-- `MINIO_ENDPOINT`
-- `MINIO_ACCESS_KEY`
-- `MINIO_SECRET_KEY`
-- `MINIO_BUCKET`
+- `OBJECT_STORE_ENDPOINT` and `OBJECT_STORE_BUCKET`
+- `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` for static S3 credentials
 - `DATABASE_URL`
 - `TRANSLATION_PROVIDER`
 - `TRANSLATION_MODEL`
@@ -377,24 +375,22 @@ Important runtime variables include:
 - `DOCUMENT_METADATA_CSV_PATH`
 - `DOCUMENT_DESCRIPTIONS_JSONL_PATH`
 - `CORS_ORIGINS`
-- `ALLOWED_FILE_PATHS`
 
-Authentication (all optional; see the Authentication section — off by default):
+Authentication is enabled by default. Configure an issuer and audience for the API.
 
-- `AUTH_DISABLED` (default `true` — no login; set `false` to require Keycloak JWTs)
+- `AUTH_DISABLED=true` requires `KP_RUNTIME_PROFILE=local` and is reserved for isolated local tests.
 - `KEYCLOAK_ISSUER`
 - `KEYCLOAK_JWKS_URL`
 - `KEYCLOAK_AUDIENCE` (default `docs-pipeline-api`)
 - `DEFAULT_INSTANCE`
-- `KEYCLOAK_PORT`, `KEYCLOAK_ADMIN`, `KEYCLOAK_ADMIN_PASSWORD`, `KEYCLOAK_DB_PASSWORD`, `KEYCLOAK_DB_DATA_PATH`
+- `KEYCLOAK_ISSUER`, `KEYCLOAK_AUDIENCE`, `KEYCLOAK_CLIENT_ID`, and `KEYCLOAK_CLIENT_SECRET`
 - UI (Vite, build/runtime): `VITE_AUTH_ENABLED` (default `false`), `VITE_KEYCLOAK_URL`, `VITE_KEYCLOAK_REALM`, `VITE_KEYCLOAK_CLIENT_ID` (default `docs-pipeline-ui`)
 
-See `.env.example` for the full annotated list.
+[`.env.example`](.env.example) is the short starter for API and worker processes connected to existing services. [ENV.md](ENV.md) lists optional settings.
 
 Optional metadata files:
 
 - `DOCUMENT_METADATA_CSV_PATH`
-  - optional manifest-style metadata enrichment file
 - `DOCUMENT_DESCRIPTIONS_JSONL_PATH`
   - optional per-document descriptions enrichment file
 
@@ -419,9 +415,9 @@ This keeps browser calls same-origin and avoids hardcoded environment-specific d
 
 ## Authentication (Keycloak)
 
-Auth is **off by default** — a plain `docker compose up` runs with `AUTH_DISABLED=true`, which accepts a synthetic local admin so existing deploys and local development keep working with no login. Enabling it is opt-in and needs no code changes, only config.
+Authentication is enabled by default. Only the isolated local profile can bypass login for disposable tests.
 
-When enabled, the API validates a Keycloak-issued Bearer JWT (RS256, checked against the realm JWKS, `iss`, and optional audience). **Preferred multi-state model** uses Keycloak groups in a `groups` claim (`/states/{STATE}/contributor`, `/global/super-admin`) — see [`docs/architecture-pipeline-rbac.md`](docs/architecture-pipeline-rbac.md) and importable realm JSON under `keycloak/import/`. Realm roles + `instances` claims still work as a legacy fallback.
+The API validates the Keycloak issuer, signature, and audience. Provider membership comes from the configured Keycloak group root, such as `/providers/{CODE}/contributor`. Deployments with legacy group paths can pin their existing root. Realm roles and `instances` claims remain compatibility inputs.
 
 Product roles map to API permissions, and group-derived (or claim) instances scope access per tenant:
 
@@ -432,24 +428,11 @@ Product roles map to API permissions, and group-derived (or claim) instances sco
 | `content_curator` | upload, review, pipeline, search |
 | `viewer` | search |
 
-The stack ships a Keycloak service (`keycloak` + `keycloak-db`) in `docker-compose.yml`, listening on `:8082` under relative path `/auth`.
+The default Compose stack exposes Keycloak at `http://localhost:8081/auth`. It shares the PostgreSQL server with the pipeline and Temporal and uses its own database and role. Set up your realm before opening the console. [Database and migration settings](ENV.md#shared-postgresql-in-docker)
 
-### Enable auth (recommended order)
+### Configure passwordless sign-in
 
-1. **Bring the stack up as usual** (`AUTH_DISABLED=true`): `docker compose up -d`. Keycloak starts alongside the app.
-2. **Import a realm**: place a realm export at `keycloak/import/<realm>.json` (imported on first start into the empty `keycloak-db` volume). It defines the four roles above and the clients `docs-pipeline-api` (bearer-only), `docs-pipeline-ui` (public, PKCE), and `docs-pipeline-test-cli` (direct-access, for token testing), plus `instances`/`envs` claim mappers.
-3. **Create users**: `python scripts/keycloak_bootstrap_docs_pipeline.py` — idempotent; creates users with a realm role and multivalued `instances` / `envs` attributes (reads admin credentials from the environment).
-4. **Point the app at the issuer.** Set in `.env`:
-   - `KEYCLOAK_ISSUER` = the exact URL browsers use to reach Keycloak (e.g. `https://auth.example.com/auth/realms/<realm>`). This **must** equal the `iss` claim in issued tokens or every token is rejected.
-   - `KEYCLOAK_JWKS_URL` = in-network certs endpoint (e.g. `http://keycloak:8080/auth/realms/<realm>/protocol/openid-connect/certs`).
-   - UI: `VITE_AUTH_ENABLED=true`, `VITE_KEYCLOAK_URL` (e.g. `https://auth.example.com/auth`), `VITE_KEYCLOAK_REALM`, `VITE_KEYCLOAK_CLIENT_ID=docs-pipeline-ui`.
-5. **Flip it on**: set `AUTH_DISABLED=false` and recreate the app services: `docker compose up -d --no-deps api worker ui`.
-
-### Behind a reverse proxy
-
-If Keycloak sits behind a TLS-terminating proxy (so browsers hit `https://auth.example.com` while Keycloak listens on plain HTTP), set `KC_PROXY=edge` on the `keycloak` service and forward `Host` + `X-Forwarded-Proto` so the issuer is built as `https://…`. Keep `KEYCLOAK_ISSUER` equal to that public URL. JWKS can stay on the in-network `http://keycloak:8080/...` form.
-
-> Do not flip `AUTH_DISABLED=false` before the UI is sending `Authorization: Bearer` (i.e. `VITE_AUTH_ENABLED=true` and the issuer configured) — otherwise the UI's API calls will 401.
+The console redirects to Keycloak. Keycloak authenticates the user with a passkey or an organization's passwordless identity provider, then returns a PKCE authorization code to the console. The API exchanges that code using the confidential client and validates the returned access tokens on protected routes. Follow the [Keycloak setup and transition guide](docs/KEYCLOAK_PASSWORDLESS.md) to configure the client, enroll users, and verify the callback.
 
 ## Operator UI
 
@@ -482,9 +465,9 @@ The API is organized around a few major groups.
 
 ### Ingestion
 
-- `POST /documents`
-- `POST /upload` — optional `display_name` form field (trimmed, 1–150 chars): the Display Name farmers see as the answer source. Omitted, chunks fall back to the manifest title, then the filename.
-- `POST /documents/batch`
+- `POST /documents` processes an object already registered to the provider.
+- `POST /upload` accepts an optional `display_name` as the source title. The filename supplies the default title. Send descriptions and localized labels in `knowledge_metadata`.
+- `POST /upload/batch` accepts multiple files and returns a result for each.
 - `PATCH /documents/{workflow_id}/scheme-metadata` — also accepts `display_name`; `409` once the document has been published to Dev.
 
 ### Document Listing And Summary
@@ -500,6 +483,7 @@ The API is organized around a few major groups.
 
 - `GET /documents/{workflow_id}/pages`
 - `PATCH /documents/{workflow_id}/pages/{page_number}`
+  Send `translation_language` with `edited_translation`, `translation_reviewed`, or `translation_notes` to update one existing language. Omitting the language uses the page's default translation. The audit entry records the affected language.
 - `POST /documents/{workflow_id}/pages/{page_number}/reset`
 
 ### Translation Review
@@ -586,7 +570,7 @@ pytest
 Useful quick checks:
 
 ```bash
-python3 -m py_compile pipeline/*.py
+python3 -m compileall -q pipeline
 cd ui && npm run build
 ```
 

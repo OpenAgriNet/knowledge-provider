@@ -15,8 +15,9 @@ FULL realm export. Only full RealmRepresentation exports belong here.
     Admin Console → Realm settings → Partial import → Skip existing
 
 docs-pipeline-realm.json
-  Older local-dev realm export (legacy roles). Prefer partial import +
-  bootstrap script for the multi-state model.
+  Local-dev realm export with legacy roles and a passkey browser flow.
+  Configure the console client and enrollment mail using
+  docs/KEYCLOAK_PASSWORDLESS.md. Existing realms need an explicit flow update.
 
 Bootstrap (idempotent groups + roles + groups claim mapper)
 ----------------------------------------------------------
@@ -28,5 +29,14 @@ Bootstrap (idempotent groups + roles + groups claim mapper)
 App behaviour
 -------------
 SSO JWT carries groups; API maps them to instances + roles.
-UI profile panel shows role capabilities.
-See: docs/keycloak-tenant-roles.md
+The Users screen shows Viewer for users with read-only access to every
+provider. New assignments use the realm role global_viewer and group
+/global/global-viewer.
+
+Existing realms can leave members in /global/bh-viewer during rollout. The
+API reads that group as global_viewer and includes the older is_bh_viewer
+field in /auth/me for callers that still need it. To move a member, save
+their Viewer access again in the Users screen. This joins the new global
+group, removes the previous global group and keeps provider-scoped group
+memberships. Ask the user to sign out and back in if their session still
+has the previous group claim.

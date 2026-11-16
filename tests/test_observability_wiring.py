@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from pipeline import worker
+from pipeline.temporal import worker
 from pipeline.api import api
 
 
@@ -37,12 +37,12 @@ def test_worker_resets_logs_when_it_fails(monkeypatch, calls):
 def test_api_lifespan_configures_logs_first_and_resets_them_on_shutdown(monkeypatch, calls, caplog):
     monkeypatch.setattr(api, "configure_logs", lambda: calls.append("configure"))
     monkeypatch.setattr(api, "reset_logs", lambda: calls.append("reset"))
-    monkeypatch.setattr(api, "validate_network_provider_config", lambda: calls.append("validate"))
+    monkeypatch.setattr(api, "validate_network_adapters", lambda: calls.append("validate"))
     monkeypatch.setattr(api, "load_auth_config", lambda: SimpleNamespace(disabled=True))
     monkeypatch.setattr(api, "validate_auth_config", lambda _cfg: None)
     monkeypatch.setattr(api.db, "init_db", lambda: None)
     monkeypatch.setattr(api.Client, "connect", AsyncMock(return_value=MagicMock()))
-    monkeypatch.setattr(api, "Minio", lambda *a, **k: MagicMock(bucket_exists=lambda _b: True))
+    monkeypatch.setattr(api, "open_object_store", lambda config: MagicMock(bucket_exists=lambda _b: True))
 
     async def run():
         async with api.lifespan(api.app):
@@ -82,7 +82,7 @@ def test_worker_logs_startup_and_hands_its_interceptors_to_temporal(monkeypatch,
             return None
 
     monkeypatch.setenv("TRANSLATION_PROVIDER", "none")
-    monkeypatch.setattr(worker, "validate_network_provider_config", lambda: None)
+    monkeypatch.setattr(worker, "validate_network_adapters", lambda: None)
     monkeypatch.setattr(worker.db, "init_db", lambda: None)
     monkeypatch.setattr(worker.Client, "connect", AsyncMock(return_value=MagicMock()))
     monkeypatch.setattr(worker, "Worker", FakeWorker)
@@ -92,6 +92,16 @@ def test_worker_logs_startup_and_hands_its_interceptors_to_temporal(monkeypatch,
 
     assert built["interceptors"] is worker.INTERCEPTORS
     assert any(r.getMessage().startswith("worker started queue=ocr-pipeline") for r in caplog.records)
+
+
+def test_worker_fails_startup_without_the_configured_translation_endpoint(monkeypatch):
+    monkeypatch.setattr(worker, "validate_network_adapters", lambda: None)
+    monkeypatch.setattr(worker, "installed_formats", lambda: None)
+    monkeypatch.setattr(worker, "configured_translation_type", lambda: "openai_compatible")
+    monkeypatch.setattr(worker, "configured_translation_endpoint", lambda: "")
+
+    with pytest.raises(RuntimeError, match="TRANSLATION_BASE_URL is required"):
+        asyncio.run(worker._run())
 
 
 def test_api_startup_failure_is_logged_and_flushed(monkeypatch, calls, caplog):
