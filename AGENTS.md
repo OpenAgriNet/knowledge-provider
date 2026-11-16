@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A review-driven document ingestion pipeline (product name "Bharat Vistaar Docs Pipeline"): Temporal workflows + FastAPI + Postgres + MinIO + Qdrant. Documents move through explicit stages (OCR → review → translate → review → chunk → review → ingest DEV → Super Admin promote to PROD), with every major output persisted as an inspectable artifact rather than hidden.
+Knowledge Provider receives files, pushed JSON, and content fetched from approved URLs. FastAPI exposes intake and management, Temporal runs processing, and PostgreSQL stores documents and revisions. Each network selects a revision independently. Qdrant holds the search projection.
 
 Full narrative docs (read these before deep architectural changes, don't re-derive):
 - `README.md` — what the system does, API surface, supported inputs, auth model
@@ -53,44 +53,36 @@ Interactive API docs once running: `http://localhost:8001/docs`.
 ### Everything lives in `pipeline/`, not split into microservices
 
 `pipeline/api/` layout:
-- `api.py` — the FastAPI app and most routes. `__init__.py` only re-exports `app`.
-- `search.py` — `POST /search` as an `APIRouter`.
-- `documents.py` — collection-level `/documents` routes (`POST /documents`, `POST /documents/batch`, `GET /documents`, `/summary`, `/cohorts`) as an `APIRouter` with prefix `/documents`; reads shared state (`temporal_client`, `limiter`, helpers) from `api.py` at call time. Per-document `/documents/{workflow_id}` routes stay in `api.py`.
-- `upload.py` — `POST /upload` (multipart file + optional `display_name`) as an `APIRouter`; same call-time access to `api.py` state (`minio_client`, `MINIO_BUCKET`, `temporal_client`). Remaining resources move out the same way; see `TODO(api-split)` in `api.py`.
+- `api.py` composes the app and exports runtime dependencies. `__init__.py` re-exports `app`.
+- `application.py` constructs FastAPI and its middleware. `runtime.py` owns service startup and shutdown.
+- `routers/` holds feature handlers: documents and reviews, upload and crawl, search and catalog, provider and Registry management, authentication, and operations.
+- `document_helpers.py`, `file_helpers.py`, `audit_helpers.py`, and `index_helpers.py` hold shared handler helpers.
+- `request_logging.py` and `rate_limiting.py` configure request diagnostics and limits.
 
 Rules:
-- Add a new endpoint to its resource's router file if one exists, else near its siblings in `api.py`.
+- Add new endpoints to their feature router under `routers/`. Register new routers in `api.py`.
 - Update `tests/test_api_routes.py` whenever a route is added, removed or renamed.
-- Patch module globals (e.g. `temporal_client`) on `pipeline.api.api`, not the package.
+- Patch runtime dependencies (for example, `temporal_client`, `object_store`, and startup factories) on `pipeline.api.api`, not the package. Routers and startup read those overrides at call time.
+- Shared helper exports remain available on `pipeline.api.api` for existing callers and tests.
 - Walk routes with `tests/route_inventory.py`, not `app.routes`: FastAPI hides included routers there.
 
-Core modules (all under `pipeline/`):
-- `api/` — FastAPI app and routers (see layout above)
-- `workflows.py` — Temporal workflow definitions (`DocumentPipelineWorkflow` is the main one; also `ReingestionWorkflow`, `PromoteToProdWorkflow`, `TranslationOnlyWorkflow`, `OcrOnlyWorkflow`, `ChunkingOnlyWorkflow`)
-- `activities.py` — Temporal activities invoked by the workflows (OCR, translate, chunk, ingest, state updates)
-- `worker.py` — Temporal worker process; registers workflows/activities on task queue `ocr-pipeline`
-- `db.py` — Postgres access layer (psycopg3 sync connection pool); Postgres is the **canonical** metadata/review-state store (documents, workflows, pages, chunks, artifacts, audit log, settings), not just a cache. Documents and jobs come back as flat dicts keyed by `workflow_id` (the document's main Temporal workflow id); every function also accepts the document UUID. Schema: `migrations/` (applied at api/worker startup by `migrate.py`), described in `docs/POSTGRES_SCHEMA.md`
-- `document_repository.py` — `DocumentRepository`, a domain layer over `db.py` for document reads; `db.py` stays one-function-per-query with no domain knowledge
-- `network_constants.py` — fixed values sent on the network (catalog/resource ids, topics, languages, Beckn version). The file v2 edits when the AI layer starts deriving them
-- `catalog_builder.py` — pure builder mapping a document's knowledge kind (`advisory`/`scheme`) to the single `OnDemand` Beckn catalog announced for that kind; takes the resolved provider and prefixes catalog/resource ids for a Group; returns `None` for any other kind. No env, no I/O
-- `network_provider.py` — pure provider resolution for Publish to Network: one provider per instance — id (overrides, then `{instance}.{network_id}` template) and name — plus each Knowledge Kind's catalog name. `network_group.py` builds its `ProviderNaming` from env and the overrides file; `catalog_builder.py` takes the resolved provider
-- `document_validity.py` — pure module owning Document Validity: the period a document's chunks answer searches in, the upload-day start with no end by default, and the clock injection point. Shared by `api/api.py` (stamping the default at upload), `scheme_catalog.py` (validating a reviewer's edit), `activities.py` (stamping chunk payloads) and `vector_store/qdrant_store.py` (filtering at search time). `db.py` stores the dates it is handed and defaults nothing
-- `discovery_publish_service.py` — `DiscoveryPublishService`: owns the Publish to Network env vars and the HTTP call. Deliberately Temporal-free
-- `models.py` — Pydantic models, including `DocumentStage` enum and `PIPELINE_STAGES` (the stepper-UI stage list)
-- `config.py` — `Config` dataclass reading env vars, with defaults
-- `observability.py` — bridges root-logger `INFO`+ lines to OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set (ClickHouse/HyperDX); no-op otherwise. See ADR 0007
-- `instances.py` — tenant instance code ↔ human name mapping; `bv` = Bharat Vistaar platform-wide, others are state codes matching Keycloak group paths (`/states/MH/...` → `mh`). A tenant code is an `instances` row (name = code); a document's `instance` is derived through `documents.catalog_id → catalogs.instance_id`, there is no `documents.instance` column
-- `scheme_catalog.py` — scheme catalog behind the pull-based `/catalog/v1/*` API, served from the computed `catalog_status` view (one row per document; `catalogs` rows are `(instance, type)`, `documents` carry `code`/`name`/`aliases`)
-- `ocr/`, `translation/`, `chunking/`, `vector_store/` — pluggable provider packages, each with a `base.py` protocol/ABC and a `service.py` (or equivalent) that dispatches to the configured provider
-- `auth/` — Keycloak JWT validation, group-based tenancy/permissions, email-OTP flow, admin user management
+Core packages under `pipeline/`
+
+- `temporal/workflows/` owns workflow definitions and retry policies. `temporal/activities/` owns the I/O activities. Run `python -m pipeline.worker` to start the worker on `ocr-pipeline`. Preserve registered workflow names, activity names, and patch markers so saved histories can replay.
+- `db/` owns PostgreSQL queries. Its public interface remains `pipeline.db`. Add queries to the module that owns the affected record. Documents and jobs return application-shaped records keyed by workflow ID or document UUID. See [the schema guide](docs/POSTGRES_SCHEMA.md).
+- `documents/` owns content models, format admission, dates, text cleanup and the document repository. `intake/` receives pushed content, fetches URLs and runs scheduled pulls. `metadata/` owns schema packs, language variants and metadata normalization.
+- `network/` owns connection configuration, admission and release policy. Its `adapters/` package owns protocol dispatch for Beckn and other implementations. `network/catalog/` owns catalog projection and its deployment profile.
+- `search/` owns passage projection, projection identity and query expansion. `vector_store/` owns Qdrant transport and embedding providers.
+- `telemetry/logs.py` exports structured logs to OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
+- `ocr/`, `translation/`, `chunking/`, `object_storage/` and `vector_store/` contain implementation interfaces and factories. `auth/` validates Keycloak tokens, resolves instance membership, and administers identities.
 
 ### Provider pattern
 
-`ocr/`, `translation/`, `chunking/`, `vector_store/` each define a `base.py` protocol and one-or-more concrete implementations selected by env var (e.g. `OCR_PROVIDER`, `TRANSLATION_PROVIDER`, `CHUNKING_PROVIDER`) via a `service.py` factory. Adding a new provider means implementing the base protocol and registering it in that package's service dispatcher — not touching `activities.py` call sites.
+`ocr/`, `translation/`, `chunking/`, `vector_store/` each define a `base.py` protocol and one-or-more concrete implementations selected by env var (e.g. `OCR_PROVIDER`, `TRANSLATION_PROVIDER`, `CHUNKING_PROVIDER`) via a `service.py` factory. Adding a new provider means implementing the base protocol and registering it in that package's service dispatcher — without changing Temporal activity call sites.
 
 ### Temporal workflow model
 
-`DocumentPipelineWorkflow` pauses at review stages via Temporal **signals** and resumes on operator action (the approve-* API endpoints send the signal). Stage order (`DocumentStage` in `models.py` / `PIPELINE_STAGES`):
+`DocumentPipelineWorkflow` pauses at review stages via Temporal **signals** and resumes on operator action (the approve-* API endpoints send the signal). Stage order (`DocumentStage` in `documents/models.py` / `PIPELINE_STAGES`):
 
 ```
 registered → ocr_processing → ocr_review → translation_processing → translation_review
@@ -98,11 +90,11 @@ registered → ocr_processing → ocr_review → translation_processing → tran
   → approval_for_prod → ingesting_prod → completed   (or → failed at any point)
 ```
 
-`approval_for_prod`/`ingesting_prod` are **PROD-only stages** (`PROD_ONLY_STAGES` in `models.py`); with `DISABLE_PROD_SETTING=true` a document goes straight from `ingesting` to `completed`. That flag is read only at workflow *start* and passed in as an argument — never read inside a running workflow, since that would break Temporal replay determinism if flipped mid-flight (see the docstring in `instances.py`).
+`approval_for_prod`/`ingesting_prod` are **PROD-only stages** (`PROD_ONLY_STAGES` in `documents/models.py`); with `DISABLE_PROD_SETTING=true` a document goes straight from `ingesting` to `completed`. That flag is read only at workflow *start* and passed in as an argument — never read inside a running workflow, since that would break Temporal replay determinism if flipped mid-flight (see the docstring in `network/release_policy.py`).
 
-### DEV vs PROD dual indexing
+### Revisions and networks
 
-`ingest_document_from_db` (activity) writes the **DEV** index via `pipeline/vector_store` (`VectorStore` protocol in `base.py`, `QdrantVectorStore` the only implementation). A separate Super-Admin-only approval gate (`approve-prod` / `request-prod-ready` endpoints, `PromoteToProdWorkflow`) triggers `promote_document_to_prod_qdrant`, which promotes into the **PROD** index — a *different* Qdrant collection/deployment (`PROD_VECTOR_DB_*` env vars), reached by constructing a `QdrantVectorStore` directly rather than through the `VectorStore` protocol. DEV and PROD are both Qdrant; they're just two separate indexes, not two backends.
+PostgreSQL freezes document content in a revision. Release staging holds destination details. Each document and network has its own release pointer. A managed publication activates that pointer after indexing and a matching network receipt. A legacy approval path remains for deployments that use the older publishing settings.
 
 ### Storage responsibilities (don't blur these)
 
@@ -111,9 +103,9 @@ registered → ocr_processing → ocr_review → translation_processing → tran
 - **Temporal** — orchestration/retries/review-gate signaling only; not a content store.
 - **Qdrant** — downstream search projections of approved chunk state; never the place to edit content.
 
-### Auth (optional, off by default)
+### Authentication
 
-`AUTH_DISABLED=true` by default — no login, a synthetic local admin is used. When enabled (`AUTH_DISABLED=false`), the API validates Keycloak RS256 JWTs against realm JWKS. Preferred model is Keycloak **groups** (`/states/{STATE}/contributor`, `/global/super-admin`); realm roles + `instances` claims are a legacy fallback. `pipeline/auth/` holds `jwt.py` (validation), `groups.py`/`tenancy.py` (state scoping), `permissions.py` (role→permission mapping), `email_otp.py` (OTP login flow), `keycloak_admin.py` (admin API calls). See `docs/architecture-pipeline-rbac.md` for the full role table and login flow before changing anything here.
+Keycloak authentication is required by default. `AUTH_DISABLED=true` is limited to the local runtime profile. Keycloak owns people, service accounts, and provider membership. The console uses the configured Keycloak browser flow with PKCE. Use [Keycloak passwordless setup](docs/KEYCLOAK_PASSWORDLESS.md) for console sign-in.
 
 ### UI (`ui/`)
 
@@ -121,4 +113,4 @@ React 18 + Vite + Tailwind v4 + Radix UI operator console (not a plain upload fo
 
 ### Scripts (`scripts/`)
 
-Operational tools, not one-off hacks — e.g. `list_failed_workflows.py`, `terminate_stuck_workflows.py`, `keycloak_bootstrap_docs_pipeline.py`, `drop_legacy_marqo_columns.py`, `backfill_provider_id.py` (sets `provider_id` on existing DEV/PROD chunks; dry run unless `--apply`), `migrate_sqlite_to_postgres.py`. Check here before writing a new maintenance script — an equivalent likely exists.
+Operational tools, not one-off hacks — e.g. `list_failed_workflows.py`, `terminate_stuck_workflows.py`, `keycloak_bootstrap_docs_pipeline.py`, `drop_legacy_marqo_columns.py`, `backfill_provider_id.py` (sets `provider_id` on existing DEV/PROD chunks; dry run unless `--apply`). The legacy migration kit is in the workspace beside the backup. Check here before writing a new maintenance script — an equivalent likely exists.

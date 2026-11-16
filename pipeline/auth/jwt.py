@@ -28,7 +28,7 @@ def clear_jwks_cache() -> None:
     _jwks_clients.clear()
 
 
-def _extract_roles(claims: dict[str, Any]) -> list[str]:
+def _extract_roles(claims: dict[str, Any], client_id: str | None) -> list[str]:
     roles: set[str] = set()
     realm = claims.get("realm_access") or {}
     for role in realm.get("roles") or []:
@@ -36,17 +36,12 @@ def _extract_roles(claims: dict[str, Any]) -> list[str]:
             roles.add(role.strip())
 
     resource_access = claims.get("resource_access") or {}
-    if isinstance(resource_access, dict):
-        for client_data in resource_access.values():
-            if not isinstance(client_data, dict):
-                continue
+    if client_id and isinstance(resource_access, dict):
+        client_data = resource_access.get(client_id)
+        if isinstance(client_data, dict):
             for role in client_data.get("roles") or []:
                 if isinstance(role, str) and role.strip():
                     roles.add(role.strip())
-
-    for role in claims.get("roles") or []:
-        if isinstance(role, str) and role.strip():
-            roles.add(role.strip())
 
     return sorted(roles)
 
@@ -65,7 +60,9 @@ def _extract_string_list(claims: dict[str, Any], *keys: str) -> list[str]:
     return []
 
 
-def claims_to_user(claims: dict[str, Any]) -> AuthUser:
+def claims_to_user(
+    claims: dict[str, Any], *, authoritative_groups: bool = False, client_id: str | None = None,
+) -> AuthUser:
     """Map Keycloak JWT claims → AuthUser.
 
     Preferred source of tenant + role is the ``groups`` claim (full paths):
@@ -74,7 +71,7 @@ def claims_to_user(claims: dict[str, Any]) -> AuthUser:
     Fallback (legacy tokens): realm roles + multivalued ``instances`` /
     ``tenants`` user attributes.
     """
-    raw_realm_roles = _extract_roles(claims)
+    raw_realm_roles = [] if authoritative_groups else _extract_roles(claims, client_id)
     group_paths = extract_groups_claim(claims)
     group_access = parse_group_paths(group_paths)
 
@@ -96,7 +93,7 @@ def claims_to_user(claims: dict[str, Any]) -> AuthUser:
     # Instances: prefer group-derived states; fall back to attribute claims.
     if group_access.is_super_admin:
         instances: list[str] = []
-    elif group_access.state_roles:
+    elif authoritative_groups or group_access.state_roles:
         instances = group_access.instances
     else:
         instances = [
@@ -119,11 +116,11 @@ def claims_to_user(claims: dict[str, Any]) -> AuthUser:
     )
 
 
-def decode_and_validate_token(token: str, config: AuthConfig) -> AuthUser:
-    if not config.keycloak_issuer or not config.keycloak_jwks_url:
+def decode_verified_claims(token: str, config: AuthConfig) -> dict[str, Any]:
+    if not config.keycloak_issuer or not config.keycloak_jwks_url or not config.keycloak_audience:
         raise HTTPException(
             401,
-            "Auth is enabled but KEYCLOAK_ISSUER / KEYCLOAK_JWKS_URL are not configured",
+            "Keycloak token verification is not configured",
         )
 
     try:
@@ -134,19 +131,21 @@ def decode_and_validate_token(token: str, config: AuthConfig) -> AuthUser:
             "issuer": config.keycloak_issuer,
             "leeway": config.jwt_leeway_seconds,
             "options": options,
+            "audience": config.keycloak_audience,
         }
-        if config.keycloak_audience:
-            decode_kwargs["audience"] = config.keycloak_audience
-        else:
-            options["verify_aud"] = False
 
         claims = jwt.decode(token, signing_key.key, **decode_kwargs)
     except jwt.PyJWTError as exc:
-        raise HTTPException(401, f"Invalid token: {exc}") from exc
+        raise HTTPException(401, "Invalid authentication token") from exc
     except Exception as exc:
-        raise HTTPException(401, f"Unable to validate token: {exc}") from exc
+        raise HTTPException(401, "Unable to validate authentication token") from exc
 
-    user = claims_to_user(claims)
+    return claims
+
+
+def decode_and_validate_token(token: str, config: AuthConfig) -> AuthUser:
+    claims = decode_verified_claims(token, config)
+    user = claims_to_user(claims, client_id=config.keycloak_audience)
     if not user.user_id:
         raise HTTPException(401, "Token missing subject")
     return user

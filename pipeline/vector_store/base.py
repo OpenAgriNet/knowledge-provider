@@ -57,8 +57,16 @@ class VectorStore(Protocol):
         valid_on: Optional[str] = None,
         instance: Optional[str] = None,
         provider_id: Optional[str] = None,
+        crop_subject_ids: Optional[list[str]] = None,
+        allowed_instances: Optional[list[str]] = None,
+        strict_language: Optional[str] = None,
+        applicability: Optional[dict[str, list[str]]] = None,
+        excluded_revision_ids: Optional[list[str]] = None,
+        document_workflow_id: Optional[str] = None,
     ) -> dict[str, Any]:
         """`apply_validity` keeps only chunks whose validity period covers
         `valid_on` (default: the store's today). `instance` limits results to
-        one group's chunks; None means every group."""
+        one group's chunks. `allowed_instances` intersects that filter with
+        the caller's provider scope. `strict_language` requires an exact
+        available language tag before ranking."""
         ...

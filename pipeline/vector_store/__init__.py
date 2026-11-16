@@ -8,7 +8,7 @@ from .base import VectorStore
 
 
 def get_default_index_name() -> str:
-    return os.environ.get("VECTOR_DB_COLLECTION_NAME") or "documents-index"
+    return (os.environ.get("VECTOR_DB_COLLECTION_NAME") or "").strip() or "documents-index"
 
 
 def get_vector_store() -> VectorStore:

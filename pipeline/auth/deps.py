@@ -14,6 +14,7 @@ from fastapi import Depends, HTTPException, Request
 from .. import db
 from .config import load_auth_config
 from .jwt import claims_to_user, decode_and_validate_token
+from .keycloak_admin import current_user_group_paths
 from .models import AuthUser, local_bypass_user
 from .permissions import Permission
 
@@ -114,6 +115,15 @@ async def get_current_user(request: Request) -> AuthUser:
             raise HTTPException(401, "Missing Bearer token")
         # JWKS fetch/refresh is sync and can block; keep the event loop free.
         user = await asyncio.to_thread(decode_and_validate_token, token, config)
+        if config.verify_live_groups:
+            groups = await asyncio.to_thread(current_user_group_paths, user.user_id)
+            user = claims_to_user({
+                "sub": user.user_id,
+                "preferred_username": user.username,
+                "email": user.email,
+                "envs": user.envs,
+                "groups": groups,
+            }, authoritative_groups=True)
 
     if request.method in _WRITE_METHODS and user.user_id:
         await asyncio.to_thread(_sync_user_row, user)

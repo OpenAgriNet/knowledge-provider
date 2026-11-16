@@ -1,18 +1,18 @@
-# Postgres Schema — knowledge-provider
+# Knowledge Provider PostgreSQL schema
 
-Postgres schema behind `pipeline/db.py`. A document is content and metadata. A workflow is one run of processing against a document. A document belongs to a catalog (a provider instance plus a resource type) and is identified there by its `code`. Source file and vector index state are stored as JSONB on the document. Translations are stored as JSONB on each page.
+PostgreSQL stores provider ownership, documents, processing runs, and network releases. A provider owns each document. The combination of provider, kind, and code identifies it within that provider. Each network independently selects a frozen document revision. The legacy catalog API derives catalog membership from the provider and kind. Documents store source and working index metadata as JSONB, and pages store translations as JSONB.
 
-The schema is created by `migrations/0001_initial_schema.sql` and applied by the api and worker at startup (`pipeline/migrate.py`). `pipeline/db.py` is the only code that reads or writes it. The previous SQLite store is described in `docs/SQLITE_SCHEMA.md` (legacy) and is moved over once by `scripts/migrate_sqlite_to_postgres.py`.
+At startup, the API and worker call `pipeline/migrate.py` to create the active schema or apply later numbered migrations. Use the migration kit beside the legacy backup to import SQLite data or apply archived pre-release upgrades.
 
 ## Conventions
 
-- Every table has a primary key `id`, a UUID v4 (`DEFAULT gen_random_uuid()`, built in from Postgres 13).
+- Entity tables generally use UUID primary keys. Join and checkpoint tables can use keys formed from their owning records.
 - A foreign key is named `<referenced table, singular>_id` (for example `document_id`). A role prefix is added when the role matters (`uploaded_by_user_id`, `started_by_user_id`).
 - Text identifiers other systems rely on (`documents.code`, `temporal_workflow_id`) are ordinary columns, not keys.
 - `created_at` and `updated_at` are the last two columns of a table. `updated_at` is maintained by one shared trigger. Append-only or short-lived tables skip `updated_at`, as noted per table.
 - Timestamps are `TIMESTAMPTZ` (UTC), booleans are `BOOLEAN`, JSON is `JSONB`, lists of strings are `TEXT[]`.
 - JSONB columns have a `CHECK` that the value is an object (or array). Value rules inside them live in Pydantic models, not in the database.
-- There are no database enums. Every value set (stages, workflow types and statuses, audit entity types) is plain `TEXT`, validated in code by `pipeline/models.py`; open sets (`artifact_type`, `action_type`) are `TEXT` too.
+- There are no database enums. `pipeline/documents/models.py` validates the plain `TEXT` value sets for stages, workflow types and statuses, and audit entity types. Open sets such as `artifact_type` and `action_type` also use `TEXT`.
 - Counts have `CHECK >= 0`. Slugs and identifiers have pattern `CHECK`s.
 
 ### Shared trigger
@@ -30,7 +30,7 @@ END $$ LANGUAGE plpgsql;
 
 ### Value sets (plain `TEXT`, validated in code)
 
-| Column(s) | Python type (`pipeline/models.py`) | Values |
+| Column(s) | Python type (`pipeline/documents/models.py`) | Values |
 |---|---|---|
 | `workflows.current_stage`, `workflow_artifacts.stage` | `DocumentStage` | `registered`, `ocr_processing`, `ocr_review`, `translation_processing`, `translation_review`, `chunking`, `chunk_review`, `ready_for_ingestion`, `ingesting`, `publishing_to_network`, `approval_for_prod`, `ingesting_prod`, `completed`, `failed` |
 | `workflows.workflow_type` | `WorkflowType` | `pipeline`, `ocr_only`, `ocr_retry`, `translation_retry`, `chunking_retry`, `reingest`, `promote_prod` |
@@ -41,36 +41,33 @@ The database does not check these values, so adding one needs no migration. Raw 
 
 ## Tables
 
-| # | Table | Purpose |
-|---|---|---|
-| 1 | `instances` | Provider tenant nodes (`/states/MH`, `/global`), mirrored from Keycloak |
-| 2 | `users` | People who upload, review and act, mirrored from Keycloak |
-| 3 | `catalogs` | One row per provider instance and resource type (scheme, advisory, video) |
-| 4 | `documents` | One row per document. Content, metadata, source file, index state |
-| 5 | `workflows` | One row per processing run of a document. Stage, status, config |
-| 6 | `workflow_artifacts` | Files each workflow produces, stored in MinIO |
-| 7 | `pages` | OCR layer and translations of each page |
-| 8 | `chunks` | Chunked text and review state |
-| 9 | `audit_logs` | Append-only action history |
-| 10 | `search_settings` | Single-row search configuration |
-| 11 | `email_otps` | Email OTP login codes |
-| 12 | `webhook_records` | Records pushed to `POST /webhook` |
-| — | `schema_migrations` | Applied migration files (created by the runner, not by a migration) |
-| — | `catalog_status` (view) | One row per document with its catalog status. `/catalog/v1/*` serves the scheme type |
-| — | `document_current_workflow` (view) | Latest workflow of each document |
+The grouped baseline creates 25 application tables plus its migration ledger. Keycloak and Temporal use their own databases on the same PostgreSQL server. Startup applies [the shared extension and trigger](../migrations/bootstrap/00_shared.sql) followed by the domain files in the order shown below. The migration kit owns `legacy_import_evidence` and creates it only when it imports old data. `webhook_records` and `email_otps` are absent from a clean install.
 
-Relationships:
+| Bootstrap file | Tables | Purpose |
+|---|---|---|
+| [Instances and access](../migrations/bootstrap/10_instances_access.sql) | `instances`, `users`, `email_sign_in_limits` | Ownership, actor attribution and email send cooldown. Keycloak owns credentials and group membership. |
+| [Documents](../migrations/bootstrap/20_documents_processing.sql) | `documents`, `pages`, `chunks`, `document_revisions` | Editable content and frozen snapshots. |
+| [Workflows](../migrations/bootstrap/25_workflows.sql) | `workflows`, `workflow_artifacts`, `document_current_workflow` | Processing history, object references and the revision-to-workflow foreign key. |
+| [Intake and source evidence](../migrations/bootstrap/30_intake_source_evidence.sql) | `provider_source_settings`, `webhook_sources`, `webhook_mapping_versions`, `webhook_deliveries`, `source_intake_receipts`, `scheduled_source_pulls` | Provider settings, pinned mappings, delivery and document evidence, and restartable cursors. |
+| [Search, audit and catalog](../migrations/bootstrap/40_search_audit_catalog.sql) | `audit_logs`, `search_settings`, `catalogs` | Action history, shared search configuration and catalog identifiers used by document reads and catalog routes. |
+| [Network and Registry](../migrations/bootstrap/50_network_registry.sql) | `network_release_staging`, `network_releases`, `publication_deliveries`, `schema_pack_versions`, `registry_operator_subjects`, `registry_operator_proposals`, `registry_operator_decisions` | Release state, delivery receipts, schema bundles and proposal decisions. |
+| Migration ledger | `schema_migrations` | Baseline and later applied migrations. |
+
+The views `catalog_status`, `document_current_workflow`, and `legacy_document_catalog_types` store no rows of their own.
+
+Document ownership and processing relationships
 
 ```
 instances 1 ── * users            (users.instance_id, nullable)
-instances 1 ── * catalogs 1 ── * documents 1 ── * workflows 1 ── * workflow_artifacts
+instances 1 ── * documents 1 ── * workflows 1 ── * workflow_artifacts
                                    │
                                    ├── * pages
                                    └── * chunks
 instances 1 ── * audit_logs       (audit_logs.instance_id, snapshot, SET NULL)
+instances 1 ── * catalogs         (legacy compatibility)
 ```
 
-Dependency order for creation: `instances`, `users`, `catalogs`, `documents`, `workflows`, `workflow_artifacts`, `pages`, `chunks`, `audit_logs`, `search_settings`, `email_otps`, `webhook_records`, views.
+Release staging, source receipts, and scheduled cursors survive worker restarts. A source receipt holds replay evidence. The worker commits `last_page_policy_conflicts` with the scheduled page cursor and receipts.
 
 ---
 
@@ -148,7 +145,7 @@ Unique: `(instance_id, type)`.
 Pydantic (`CatalogMetadata`) validates the keys; the database only checks for an object.
 
 Notes
-- `type` stores the schema name, and code asks `pipeline/network_constants.py` what it means (`catalog_type_for_kind`, `kind_for_catalog_type`) instead of comparing `openagrinet:*` strings. The mapping is a placeholder: `scheme` is `openagrinet:AgricultureResource`, `advisory` is `openagrinet:KnowledgeAdvisory`, `video` is `openagrinet:VideoResource` (see ADR 0003 and ADR 0006).
+- `type` stores the schema name. `pipeline/network/network_constants.py` defines `catalog_type_for_kind` and `kind_for_catalog_type`. The mappings are `scheme` to `openagrinet:AgricultureResource`, `advisory` to `openagrinet:KnowledgeAdvisory`, and `video` to `openagrinet:VideoResource`. See ADR 0003 and ADR 0006.
 - Every instance gets one catalog per supported type when the instance row is created (`upsert_instance` calls `ensure_instance_catalogs` in the same transaction). Startup (`init_db`) runs `sync_catalogs_for_all_instances`, so a type added to `KIND_TO_CATALOG_TYPE` reaches existing instances. Upload keeps `get_or_create_catalog` as a fallback for a catalog that is missing. Names are `<INSTANCE> <kind> catalog`, for example `MH scheme catalog`.
 - Computed catalog values (status, chunk count, network visibility, `promoted_at`) come from the `catalog_status` view, not stored here.
 
@@ -156,15 +153,16 @@ Notes
 
 ## 4. `documents`
 
-One row per document: one resource (a scheme, an advisory) in one catalog, identified there by `code`.
+One row per document, classified by its own kind and owned by a provider.
 
-Unique: `(catalog_id, code)`.
+Unique: `(provider_id, kind, code)`.
 
 | Column | Type | Constraints / Default | Purpose |
 |---|---|---|---|
 | id | UUID | PRIMARY KEY, DEFAULT gen_random_uuid() | Document ID. |
-| catalog_id | UUID | NOT NULL, FK → `catalogs(id)` ON DELETE RESTRICT | Catalog (provider instance + type) the document belongs to. |
-| code | TEXT | NOT NULL, CHECK `^[a-z0-9]+(-[a-z0-9]+)*$` | Short code (`pm-kmy`) that catalog consumers see. Unique within the catalog. |
+| provider_id | UUID | NOT NULL, FK → `instances(id)` ON DELETE RESTRICT | Provider that owns the document. |
+| kind | TEXT | NOT NULL, nonblank | Document classification. Legacy catalog IDs are derived for compatibility. |
+| code | TEXT | NOT NULL, CHECK `^[a-z0-9]+(-[a-z0-9]+)*$` | Short code. Unique within its provider and kind. |
 | name | TEXT | NOT NULL | Display name. |
 | aliases | TEXT[] | NOT NULL DEFAULT '{}', CHECK no empty string | Ordered alternate names used to match queries. The first one is the prompt hint. |
 | source | JSONB | NOT NULL, CHECK object, CHECK `source->>'fingerprint' ~ '^[0-9a-f]{32}$'` | The uploaded file. See shape below. |
@@ -173,7 +171,7 @@ Unique: `(catalog_id, code)`.
 | created_at | TIMESTAMPTZ | NOT NULL DEFAULT now() | Row created. |
 | updated_at | TIMESTAMPTZ | NOT NULL DEFAULT now() | Last change (trigger). |
 
-Indexes: `(created_at DESC)`, `(catalog_id, (source->>'fingerprint'))`, plus the unique `(catalog_id, code)`.
+Indexes include `(created_at DESC)`, `(provider_id, (source->>'fingerprint'))`, and the unique key `(provider_id, kind, code)`.
 
 ### `source`
 
@@ -231,12 +229,11 @@ Column default: `'{"index_status": {}, "catalog_visible": true, "network_visible
 
 ### Notes
 - A document's stage is the `current_stage` of its latest workflow. List and filter queries join the `document_current_workflow` view.
-- The API's `instance` is derived: `documents.catalog_id → catalogs.instance_id → instances.name`. There is no `documents.instance` column, and tenant filters join `instances`.
-- The API's `document_kind` is derived from `catalogs.type` through the map in `network_constants.py`. `scheme_code`, `scheme_name` and `scheme_aliases` are `code`, `name` and `aliases`.
+- The API's `instance` comes from `documents.provider_id → instances.name`. Migration 0007 backfills this reference. Migration 0008 backfills the kind and removes the catalog foreign key.
+- The document's kind is stored in `documents.kind`. The legacy catalog view maps known kinds to their catalog types. `scheme_code`, `scheme_name` and `scheme_aliases` are `code`, `name` and `aliases`.
 - `chunk_count` and `page_count` are counted from `chunks` and `pages`; they are not stored.
-- A new document needs a `document_kind` and a `code`. Upload gets the catalog from the tenant and the kind (seeded with the instance; created when missing). A document's kind is fixed after upload, so there is no kind change. `DuplicateDocumentCode` is raised when the code is taken in that catalog.
+- A new document needs a `document_kind` and a `code`. A document's kind is fixed after upload. `DuplicateDocumentCode` is raised when that provider already uses the code for that kind.
 - Re-uploading an existing code updates the same document: a new workflow starts, `source` is replaced, pages and chunks are cleared and `reindex_required` is set (`reset_document_for_reupload`). Earlier workflows and artifacts stay as history.
-- Changing a document's kind moves it to the same instance's catalog of the new type (`update_document_fields(document_kind=...)`).
 - SQL does not check types inside the JSONB columns. The insert path writes the default metadata keys, and Pydantic validates `source`, `metadata` and each `index_status` entry.
 - Each document keeps its own `source`. There is no unique key on the fingerprint.
 - Identifier lookup (`find_document_by_doc_identifier`) matches `documents.id`, `workflows.temporal_workflow_id`, `source->>'fingerprint'`, `source->>'original_filename'`, an index `doc_id` and the legacy `md5(source->>'fingerprint')`.
@@ -483,28 +480,11 @@ Notes
 
 ---
 
-## 11. `email_otps`
+## 11. Retired email challenges
 
-Server-side email-OTP login codes. Short-lived.
+Migration `0015` retires the legacy `email_otps` table. It waits for outstanding challenges to expire by refusing the migration while any unexpired row remains. The SQLite importer counts old challenges without copying their hashes. Keycloak authenticates console users. Migration `0018` adds `email_sign_in_limits` for the one-minute send cooldown. It stores an HMAC of the normalized address and the next allowed send time. The API removes expired rows as it handles new requests. Keycloak holds the one-time code and attempt counter.
 
-Unique: `email`; index on `(expires_at)`.
-
-| Column | Type | Constraints / Default | Purpose |
-|---|---|---|---|
-| id | UUID | PRIMARY KEY, DEFAULT gen_random_uuid() | Row ID. |
-| email | TEXT | NOT NULL UNIQUE, CHECK `email = lower(email)` | Address the code was requested for. One live code per email. |
-| code_hash | TEXT | NOT NULL | Hash of the one-time code. The plain code is never stored. Random for unknown accounts. |
-| expires_at | TIMESTAMPTZ | NOT NULL | When the code stops being valid. |
-| attempts | INTEGER | NOT NULL DEFAULT 0, CHECK ≥ 0 | Failed verifications. Reset to 0 on resend. |
-| last_sent_at | TIMESTAMPTZ | NOT NULL DEFAULT now() | When the code was last sent. Used for the resend cooldown. |
-
-Notes
-- No `created_at` or `updated_at`: rows are overwritten on each send.
-- `email` is deliberately not an FK to `users`. A row is written for every request, even for unknown addresses (anti-enumeration, `email_otp.py:276-310`).
-- Periodic cleanup (`DELETE FROM email_otps WHERE expires_at < now() - interval '1 day'`) is not scheduled yet. The endpoint is unauthenticated, so unverified rows stay until it is.
-- `verify_otp` increments attempts atomically: `UPDATE ... SET attempts = attempts + 1 WHERE email = $1 RETURNING attempts`, or `SELECT ... FOR UPDATE`.
-- Code constants (length 6, TTL 300 s, resend cooldown 30 s, max 5 attempts) stay in code.
-- Optional: make the table `UNLOGGED`. Losing it in a crash only forces users to request a new code.
+The same migration moves the first raw JSON item observed on legacy crawl replay into four optional columns on `source_intake_receipts`. It preserves the original payload, receipt identity, digest, and observation time. Stop older API and worker processes before upgrading their schema.
 
 ---
 
@@ -515,8 +495,8 @@ Computed from `documents`, `catalogs`, `instances`, `workflows` and `document_cu
 | Column | Type | How it is computed |
 |---|---|---|
 | document_id | UUID | `documents.id`. |
-| catalog_id | UUID | `documents.catalog_id`. |
-| instance_id | UUID | `catalogs.instance_id`. |
+| catalog_id | UUID | Matching legacy catalog, if present. |
+| instance_id | UUID | `documents.provider_id`. |
 | instance_name | TEXT | `instances.name`. |
 | type | TEXT | `catalogs.type`. |
 | code | TEXT | `documents.code`. |
@@ -532,44 +512,41 @@ Computed from `documents`, `catalogs`, `instances`, `workflows` and `document_cu
 
 ---
 
-## 12. `webhook_records`
+## Retired shared-key advisory intake
 
-Records pushed to `POST /webhook` (`x-api-key` = `WEBHOOK_API_KEY`). Carried over from the previous store unchanged; not part of the instances and catalogs model.
+The migration kit archives old webhook rows in `legacy_import_evidence`. Its archived PostgreSQL upgrade `0022` retains the full original row, keyed by source and external ID, and removes `webhook_records`. The SQLite importer also preserves raw legacy rows in the archive. Current webhook processing uses `webhook_sources`, `webhook_mapping_versions`, `webhook_deliveries`, and `source_intake_receipts` for delivery and document history.
 
-Unique: `(source, external_id)`; index on `(source, status)`.
-
-| Column | Type | Constraints / Default | Purpose |
-|---|---|---|---|
-| id | UUID | PRIMARY KEY, DEFAULT gen_random_uuid() | Record ID. |
-| source | TEXT | NOT NULL DEFAULT 'webhook' | Sender. |
-| external_id | TEXT | NOT NULL | `contentID`, else `id`, else `slug`, else a hash of the payload. |
-| title | TEXT | | From the payload. |
-| slug | TEXT | | From the payload. |
-| status | TEXT | | From the payload. |
-| is_published | BOOLEAN | | From `isPublished`. |
-| category | TEXT | | From `domainName`. |
-| payload | JSONB | NOT NULL, CHECK object | The full record. |
-| payload_hash | TEXT | | SHA-256 of the canonical payload; an upsert with the same hash writes nothing. |
-| indexed_hash | TEXT | | `payload_hash` last written to the DEV collection (migration 0002). |
-| promoted_hash | TEXT | | `payload_hash` last written to the PROD collection (migration 0002). |
-| created_at | TIMESTAMPTZ | NOT NULL DEFAULT now() | The payload's `createdAt` when it has one. |
-| updated_at | TIMESTAMPTZ | NOT NULL DEFAULT now() | The payload's `updatedAt` when it has one. |
-
-The payload's own timestamps are stored as given, so these two columns are not maintained by the shared trigger.
+New deliveries keep their exact request bytes in object storage. The nullable `webhook_deliveries.raw_storage_uri` points to that object. Older rows retain the parsed JSON, which cannot recover the original formatting or key order.
 
 ---
 
+## Revisions and network releases
+
+`document_revisions` freezes the content and its checksum. `network_release_staging` associates a revision with a network, collection, provider identity, and the release generation observed when indexing began. The release worker compares that generation before changing the active pointer in `network_releases`. Search checks the active pointer and excludes staged, superseded, and withdrawn revisions.
+
+The worker records a delivery intent under the network and transaction ID in `publication_deliveries`. It stores the publisher's receipt before writing the exchange artifact or activating the revision. A retry reuses a recorded receipt and the exchange artifact ID. If the worker loses the response before saving it, a retry may send another request with the same transaction ID.
+
+## Schema pack versions
+
+`schema_pack_versions` stores each approved bundle under its network ID, capability, and SHA-256 digest. Installing a new digest keeps earlier versions available. The upload and structured intake paths validate supplied pack attributes against the selected digest. The revision snapshot retains the selection and attributes for later validation.
+
+Prepare a local JSON or YAML manifest with `capability`, `version`, `entrypoint`, `component`, and `files`. The `files` object maps each schema's HTTPS identifier to a path under the manifest directory, including every referenced dependency. The validator resolves references from those files without fetching remote schemas.
+
+Run `uv run python -m scripts.install_schema_pack manifest.json` to print the checked digest. Add `--install-for-network NETWORK_ID` to register the bundle in PostgreSQL. With `--verify-registry`, the command also checks the capability, version, and entrypoint against the configured network's active Registry entry. Supply the resulting `network_id`, `capability`, `digest`, and `attributes` in the `schema_pack` object inside `knowledge_metadata`.
+
+A Beckn catalog profile can also pin its outbound schema. Add a `schema_pack` object containing `capability` and `digest` to the kind's projection. For managed publication, the worker checks the catalog's `@type` and validates its resource attributes against that pack on the destination network before sending the catalog.
+
 ## `schema_migrations`
 
-Created by the runner, not by a migration file: `version` (the `NNNN` prefix, primary key), `name` (the file name) and `applied_at`. The runner takes a session advisory lock, so concurrent api and worker starts apply each file once, and runs each file in its own transaction.
+The runner creates the ledger with `version` (the `NNNN` prefix and primary key), `name`, and `applied_at`. It installs all six bootstrap files and records one `0022` baseline marker in the same transaction. A pre-release database already at `0022` keeps its existing ledger. The runner takes a session advisory lock across startup and commits each later migration in its own transaction.
 
 ---
 
 ## Implementation notes
 
-- **Identifiers.** `db.py` functions take a `workflow_id` argument that may be the document UUID, a Temporal workflow id, the fingerprint, the filename, an index `doc_id` or the legacy `md5(fingerprint)` doc id (`find_document_by_doc_identifier`). Documents, jobs and artifacts come back as flat dicts; `id` is the UUID and `workflow_id` is the Temporal workflow id of the document's main run (the earliest `pipeline` or `ocr_only` workflow). The API rewrites `/documents/{id}/...` to that workflow id before routing, because handlers signal and query Temporal with it.
+- **Identifiers.** `pipeline.db` accepts the document UUID, Temporal workflow ID, fingerprint, filename, index `doc_id` or legacy `md5(fingerprint)` doc ID through `find_document_by_doc_identifier`. Documents, jobs and artifacts come back as flat dicts. `id` is the UUID and `workflow_id` is the Temporal workflow ID of the document's main run, the earliest `pipeline` or `ocr_only` workflow. The API rewrites `/documents/{id}/...` to the workflow ID before routing because handlers use it to signal and query Temporal.
 - **Jobs.** The API's "jobs" and "runs" are `workflows` rows; job ids and artifact ids are the UUIDs of `workflows` and `workflow_artifacts`. `latest_job_id`, `original_artifact_id` and `normalized_artifact_id` are derived by join, not stored.
-- **Instance.** The API returns an `instance` string on documents, runs, queue rows and audit entries. It is the lowercase `instances.name` reached through `catalogs`; filters compare `lower(instances.name)`.
+- **Instance.** The API returns an `instance` string on documents, runs, queue rows and audit entries. Document queries join `documents.provider_id` to `instances.id` and compare `lower(instances.name)`.
 - **Catalog version.** `/catalog/v1/version` counts `audit_logs` rows with `entity_type = 'catalog'` and `action_type = 'catalog_version_bump'`, so it only grows. `updated_at` is the newest such row.
 - **Document stage.** The stage a document shows is `document_current_workflow.current_stage`; `update_document_stage` writes to that workflow.
 - **Page translations.** `save_pages` keeps stored translations unless the page carries `translations` (replaces them) or flat `translated_*` fields (merged into `translation_target_language`). A page whose OCR text changed loses its translations.

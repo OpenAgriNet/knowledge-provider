@@ -12,7 +12,7 @@ from temporalio.worker import Worker
 
 from pipeline.temporal.activities import logging as activity_logging
 
-LOGGER = "pipeline.temporal.activities.logging"
+LOGGER = "pipeline.activity_logging"
 
 
 def _interceptor(next_result=None, error=None):

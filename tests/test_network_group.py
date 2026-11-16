@@ -2,9 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from pipeline.instances import INSTANCE_NAMES
-from pipeline.network_group import (
-    DEFAULT_PROVIDER_CONFIG_OVERRIDE_PATH,
+from pipeline.network.network_group import (
     PROVIDER_CONFIG_OVERRIDE_PATH_ENV,
     NetworkProviderConfigError,
     load_provider_id_overrides,
@@ -27,6 +25,7 @@ def _default_env(monkeypatch):
         PROVIDER_CONFIG_OVERRIDE_PATH_ENV,
     ):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("DISCOVERY_NETWORK_ID", raising=False)
     monkeypatch.setenv("NETWORK_SENDER_ID", "provider.oan.dev")
 
 
@@ -86,10 +85,9 @@ class TestLoadProviderIdOverrides:
         assert load_provider_id_overrides() == {"ka": "ka.example.com"}
 
     @pytest.mark.unit
-    def test_unset_path_uses_the_bundled_empty_default(self, monkeypatch):
+    def test_unset_path_means_no_overrides(self, monkeypatch):
         monkeypatch.delenv(PROVIDER_CONFIG_OVERRIDE_PATH_ENV, raising=False)
 
-        assert DEFAULT_PROVIDER_CONFIG_OVERRIDE_PATH.is_file()
         assert load_provider_id_overrides() == {}
 
     @pytest.mark.unit
@@ -119,8 +117,8 @@ class TestLoadProviderNaming:
     def test_defaults(self):
         naming = load_provider_naming()
 
-        assert naming.shared_instance == "bv"
-        assert naming.shared_name == "Bharat Vistaar"
+        assert naming.shared_instance == "default"
+        assert naming.shared_name == "Default"
         assert naming.network_id == "provider.oan.dev"
         assert naming.id_template == "{instance}.{network_id}"
         assert naming.group_catalog_name_template == "{group_name} {catalog_name}"
@@ -211,8 +209,8 @@ class TestLoadProviderNaming:
             load_provider_naming()
 
     @pytest.mark.unit
-    def test_every_known_instance_is_checked_at_boot(self, monkeypatch):
-        monkeypatch.setitem(INSTANCE_NAMES, "ladakh_ut", "Ladakh")
+    def test_configured_portal_identity_is_checked_at_boot(self, monkeypatch):
+        monkeypatch.setenv("PORTAL_INSTANCE", "invalid_code")
 
         with pytest.raises(NetworkProviderConfigError, match="provider id"):
             load_provider_naming()
@@ -241,7 +239,7 @@ class TestBootRefusesMalformedProviderMap:
     @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_worker_does_not_start(self, broken_map, monkeypatch):
-        import pipeline.worker as worker
+        import pipeline.temporal.worker as worker
 
         async def never_connect(*args, **kwargs):
             raise AssertionError("worker connected to Temporal despite a bad provider map")
@@ -269,7 +267,7 @@ class TestBootRefusesMalformedProviderMap:
 class TestProviderFor:
     @pytest.fixture(autouse=True)
     def _naming(self):
-        from pipeline.network_provider import ProviderNaming
+        from pipeline.network.network_provider import ProviderNaming
 
         self.naming = ProviderNaming(
             shared_instance="bv",

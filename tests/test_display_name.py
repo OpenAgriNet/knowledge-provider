@@ -70,42 +70,38 @@ class TestEditable:
 
 class TestNameOnRecords:
     @pytest.mark.unit
-    def test_display_name_becomes_name_en(self):
-        from pipeline.activities import _prepare_records
+    def test_display_name_is_the_primary_label(self):
+        from pipeline.search.passage_projection import _prepare_records
 
-        records = _prepare_records("doc-1", "scan_0042.pdf", [CHUNK], display_name="PM Kisan Guidelines")
+        record, = _prepare_records("doc-1", "scan_0042.pdf", [CHUNK], display_name="Reviewer Title")
 
-        assert records[0]["name_en"] == "PM Kisan Guidelines"
-
-    @pytest.mark.unit
-    def test_display_name_beats_the_manifest_title(self, monkeypatch):
-        import pipeline.activities as activities
-
-        monkeypatch.setattr(activities, "_get_doc_metadata", lambda filename: {"title_en": "Manifest Title"})
-
-        records = activities._prepare_records("doc-1", "scan.pdf", [CHUNK], display_name="Reviewer Name")
-
-        assert records[0]["name_en"] == "Reviewer Name"
+        assert record["name"] == "Reviewer Title"
+        assert "name_en" not in record
+        assert "title_gu" not in record
 
     @pytest.mark.unit
-    def test_manifest_title_used_when_no_display_name(self, monkeypatch):
-        import pipeline.activities as activities
+    def test_primary_and_localized_display_fields_are_projected(self):
+        from pipeline.search.passage_projection import _prepare_records
 
-        monkeypatch.setattr(activities, "_get_doc_metadata", lambda filename: {"title_en": "Manifest Title"})
+        record, = _prepare_records(
+            "doc-1", "scan.pdf", [CHUNK], name="Primary title",
+            knowledge_metadata={
+                "description": "Primary description",
+                "localized": {"fr-CA": {"title": "Titre", "description": "Description en français"}},
+            },
+        )
 
-        records = activities._prepare_records("doc-1", "scan.pdf", [CHUNK], display_name=None)
-
-        assert records[0]["name_en"] == "Manifest Title"
+        assert record["name"] == "Primary title"
+        assert record["description"] == "Primary description"
+        assert record["knowledge_metadata"]["localized"]["fr-ca"]["title"] == "Titre"
 
     @pytest.mark.unit
-    def test_filename_stem_used_when_nothing_else(self, monkeypatch):
-        import pipeline.activities as activities
+    def test_filename_stem_used_when_nothing_else(self):
+        from pipeline.search.passage_projection import _prepare_records
 
-        monkeypatch.setattr(activities, "_get_doc_metadata", lambda filename: {})
+        record, = _prepare_records("doc-1", "scan_0042.pdf", [CHUNK])
 
-        records = activities._prepare_records("doc-1", "scan_0042.pdf", [CHUNK])
-
-        assert records[0]["name_en"] == "scan_0042"
+        assert record["name"] == "scan_0042"
 
 
 class _RecordsBuilt(Exception):
@@ -115,7 +111,7 @@ class _RecordsBuilt(Exception):
 class TestIngestPathsCarryTheDisplayName:
     @pytest.fixture
     def captured(self, monkeypatch):
-        import pipeline.activities as activities
+        from pipeline.temporal.activities import indexing as activities
         import pipeline.db as db
 
         seen = {}
@@ -127,14 +123,17 @@ class TestIngestPathsCarryTheDisplayName:
         monkeypatch.setattr(activities, "_prepare_records", capture)
         monkeypatch.setattr(db, "get_chunks", lambda *a, **k: [CHUNK])
         monkeypatch.setattr(
-            db, "get_document", lambda workflow_id: {"name": "PM Kisan Guidelines", "instance": "mh"}
+            db, "get_document", lambda workflow_id: {
+                "id": "00000000-0000-0000-0000-000000000001",
+                "name": "PM Kisan Guidelines", "instance": "mh"
+            }
         )
         return seen
 
     @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_dev_ingest(self, captured):
-        from pipeline.activities import ingest_document_from_db
+        from pipeline.temporal.activities.indexing import ingest_document_from_db
 
         with pytest.raises(_RecordsBuilt):
             await ingest_document_from_db("wf-1", "doc-1", "doc.pdf")
@@ -146,10 +145,10 @@ class TestIngestPathsCarryTheDisplayName:
     async def test_prod_promotion(self, captured, monkeypatch):
         from unittest.mock import MagicMock
 
-        import pipeline.activities as activities
+        from pipeline.temporal.activities import indexing as activities
 
         monkeypatch.setenv("PROD_VECTOR_DB_URL", "http://localhost:6333")
-        monkeypatch.setattr(activities, "get_qdrant_client", lambda *a, **k: MagicMock(), raising=False)
+        monkeypatch.setattr("pipeline.vector_store.qdrant_store.get_qdrant_client", lambda *a, **k: MagicMock())
 
         with pytest.raises(_RecordsBuilt):
             await activities.promote_document_to_prod_qdrant("wf-1", "doc-1", "doc.pdf")
@@ -159,7 +158,7 @@ class TestIngestPathsCarryTheDisplayName:
     @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_prepare_for_ingestion(self, captured):
-        from pipeline.activities import prepare_for_ingestion
+        from pipeline.temporal.activities.indexing import prepare_for_ingestion
 
         with pytest.raises(_RecordsBuilt):
             await prepare_for_ingestion("doc-1", "doc.pdf", [CHUNK], workflow_id="wf-1")

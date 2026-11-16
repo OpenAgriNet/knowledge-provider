@@ -14,9 +14,11 @@ store can build a search filter from it without any of them re-deriving it.
 those fields at search time; `pipeline/api/api.py` validates approver input here.
 """
 
+import os
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Callable, Optional
+from zoneinfo import ZoneInfo
 
 # Operators think in calendar dates, not instants - a period is stored,
 # exchanged and filtered as a plain `YYYY-MM-DD` day.
@@ -37,9 +39,8 @@ class DocumentValidityError(ValueError):
 
 
 def system_clock() -> datetime:
-    """The real clock. Local rather than UTC: a period is a calendar date an
-    operator picked, so "today" should mean their today."""
-    return datetime.now()
+    """Evaluate applicability dates in the deployment's configured timezone."""
+    return datetime.now(ZoneInfo(os.environ.get("KNOWLEDGE_TIMEZONE", "UTC")))
 
 
 @dataclass(frozen=True)

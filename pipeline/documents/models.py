@@ -1,0 +1,727 @@
+"""
+Data models for the OCR pipeline.
+These are used for Temporal workflow state and API responses.
+"""
+
+from datetime import datetime
+from enum import Enum
+from typing import Annotated, Any, Optional
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
+
+from pipeline.metadata.crop_metadata import CropSubjects
+from pipeline.metadata.knowledge_metadata import KnowledgeMetadata
+from pipeline.metadata.localization import normalize_language_tag
+
+
+class DocumentStage(str, Enum):
+    """Document processing stages."""
+    REGISTERED = "registered"
+    OCR_PROCESSING = "ocr_processing"
+    OCR_REVIEW = "ocr_review"                    # Waiting for user to review/approve OCR
+    TRANSLATION_PROCESSING = "translation_processing"  # Translating non-English content
+    TRANSLATION_REVIEW = "translation_review"    # Waiting for user to review translations
+    CHUNKING = "chunking"
+    CHUNK_REVIEW = "chunk_review"                # Waiting for user to review/approve chunks
+    READY_FOR_INGESTION = "ready_for_ingestion"  # Final review before ingestion
+    INGESTING = "ingesting"                      # Ingesting into DEV vector index
+    PUBLISHING_TO_NETWORK = "publishing_to_network"  # Publishing catalog to the discovery network
+    APPROVAL_FOR_PROD = "approval_for_prod"      # Waiting for superadmin prod promotion
+    INGESTING_PROD = "ingesting_prod"            # Promoting / ingesting into PROD vector index
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class WorkflowType(str, Enum):
+    """``workflows.workflow_type``: kind of processing run. Stored as TEXT."""
+    PIPELINE = "pipeline"
+    OCR_ONLY = "ocr_only"
+    OCR_RETRY = "ocr_retry"
+    TRANSLATION_RETRY = "translation_retry"
+    CHUNKING_RETRY = "chunking_retry"
+    REINGEST = "reingest"
+    PROMOTE_PROD = "promote_prod"
+
+
+class WorkflowStatus(str, Enum):
+    """``workflows.status``. Stored as TEXT."""
+    RUNNING = "running"
+    WAITING_REVIEW = "waiting_review"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class AuditEntityType(str, Enum):
+    """``audit_logs.entity_type``. Stored as TEXT."""
+    DOCUMENT = "document"
+    PAGE = "page"
+    CHUNK = "chunk"
+    SETTING = "setting"
+    CATALOG = "catalog"
+
+
+# Pipeline stage order for stepper UI
+PIPELINE_STAGES = [
+    ("registered", "Registered", "Document uploaded"),
+    ("ocr_processing", "OCR", "Extracting text"),
+    ("ocr_review", "OCR Review", "Review extracted text"),
+    ("translation_processing", "Translation", "Translating content"),
+    ("translation_review", "Translation Review", "Review translations"),
+    ("chunking", "Chunking", "Creating chunks"),
+    ("chunk_review", "Chunk Review", "Review chunks"),
+    ("ready_for_ingestion", "Pre-Ingestion", "Final review before DEV ingest"),
+    ("ingesting", "Ingesting in Dev", "Uploading to DEV vector index"),
+    ("approval_for_prod", "Approval for Prod", "Superadmin approval to promote to PROD"),
+    ("ingesting_prod", "Ingesting to Prod", "Promoting vectors into PROD index"),
+    ("publishing_to_network", "Publish to Network", "Publishing catalog to the discovery network"),
+    ("completed", "Completed", "Processing complete"),
+]
+
+# Stages that only exist when PROD promotion is enabled. With
+# DISABLE_PROD_SETTING=true a document goes straight from `ingesting` to
+# `completed` and never enters these. publishing_to_network is now PROD-only
+# too: it only runs after a successful promote_document_to_prod_qdrant, so a
+# document never reaches the network without first promoting to PROD.
+PROD_ONLY_STAGES = frozenset({"approval_for_prod", "ingesting_prod", "publishing_to_network"})
+
+
+class PageData(BaseModel):
+    """A page of OCR'd content."""
+    page_number: int
+    original_markdown: str
+    edited_markdown: Optional[str] = None
+    is_reviewed: bool = False
+    reviewer_notes: Optional[str] = None
+
+    # Translation fields
+    detected_language: Optional[str] = None  # e.g., "hi", "gu", "en"
+    translated_markdown: Optional[str] = None
+    edited_translation: Optional[str] = None
+    translation_reviewed: bool = False
+    translation_notes: Optional[str] = None
+
+    @property
+    def markdown(self) -> str:
+        """Get the best available markdown (edited > original)."""
+        return self.edited_markdown if self.edited_markdown else self.original_markdown
+
+    @property
+    def final_text(self) -> str:
+        """Get the final text for chunking (translated if available, else original)."""
+        if self.edited_translation:
+            return self.edited_translation
+        if self.translated_markdown:
+            return self.translated_markdown
+        return self.markdown
+
+    @property
+    def needs_translation(self) -> bool:
+        """Check if page needs translation (non-English detected)."""
+        return self.detected_language and self.detected_language != "en"
+
+
+class ChunkData(BaseModel):
+    """A text chunk."""
+    chunk_number: int
+    original_text: str
+    edited_text: Optional[str] = None
+    token_count: int
+    page_start: int = 1  # First page this chunk appears on
+    page_end: int = 1    # Last page this chunk appears on
+    source_page_numbers_json: Optional[str] = None
+    source_spans_json: Optional[str] = None
+    section_title: Optional[str] = None
+    content_type: Optional[str] = None
+    is_reference: bool = False
+    chunking_provider: Optional[str] = None
+    chunking_model: Optional[str] = None
+    chunking_config_json: Optional[str] = None
+    chunking_run_id: Optional[str] = None
+    chunk_version: int = 1
+    is_reviewed: bool = False
+    is_excluded: bool = False
+    reviewer_notes: Optional[str] = None
+    tags: list[str] = Field(default_factory=list)
+
+    @property
+    def text(self) -> str:
+        return self.edited_text if self.edited_text else self.original_text
+
+    @property
+    def page_range(self) -> str:
+        """Human-readable page range."""
+        if self.page_start == self.page_end:
+            return f"Page {self.page_start}"
+        return f"Pages {self.page_start}-{self.page_end}"
+
+
+class DocumentState(BaseModel):
+    """Complete state of a document in the pipeline."""
+    # Identity
+    document_id: str
+    filename: str
+    filepath: str
+
+    # Status
+    stage: DocumentStage = DocumentStage.REGISTERED
+    error_message: Optional[str] = None
+
+    # Content
+    pages: list[PageData] = []
+    chunks: list[ChunkData] = []
+
+    # Timestamps
+    created_at: datetime = datetime.utcnow()
+    ocr_completed_at: Optional[datetime] = None
+    ocr_approved_at: Optional[datetime] = None
+    chunking_completed_at: Optional[datetime] = None
+    chunks_approved_at: Optional[datetime] = None
+    ingested_at: Optional[datetime] = None
+
+
+# =============================================================================
+# API Request/Response Models
+# =============================================================================
+
+class RegisterRequest(BaseModel):
+    filepath: str
+
+
+class PageUpdate(BaseModel):
+    edited_markdown: Optional[str] = None
+    is_reviewed: Optional[bool] = None
+    reviewer_notes: Optional[str] = None
+    edited_translation: Optional[str] = None
+    translation_reviewed: Optional[bool] = None
+    translation_notes: Optional[str] = None
+    translation_language: Optional[str] = None
+
+    @field_validator("translation_language")
+    @classmethod
+    def normalize_translation_language(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        tag = normalize_language_tag(value)
+        if tag is None:
+            raise ValueError("translation_language must be a BCP 47 language tag")
+        return tag
+
+    @model_validator(mode="after")
+    def check_translation_edit(self) -> "PageUpdate":
+        if self.translation_language and all(value is None for value in (
+            self.edited_translation, self.translation_reviewed, self.translation_notes,
+        )):
+            raise ValueError("translation_language requires a translation edit")
+        return self
+
+
+class ChunkUpdate(BaseModel):
+    tags: Optional[list[Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128)]]] = Field(default=None, max_length=16)
+    edited_text: Optional[str] = None
+    is_reviewed: Optional[bool] = None
+    is_excluded: Optional[bool] = None
+    reviewer_notes: Optional[str] = None
+
+
+class ApprovalRequest(BaseModel):
+    approved: bool = True
+    notes: Optional[str] = None
+
+
+class DocumentSummary(BaseModel):
+    crop_subjects: CropSubjects = Field(default_factory=list)
+    knowledge_metadata: dict = Field(default_factory=dict)
+
+    @field_serializer("crop_subjects")
+    def serialize_crop_subjects(self, subjects: CropSubjects) -> list[dict]:
+        return [subject.model_dump(exclude_none=True) for subject in subjects]
+
+    id: Optional[str] = None  # documents.id (UUID); canonical identifier in API paths
+    document_id: str
+    canonical_document_id: Optional[str] = None
+    workflow_id: str  # The Temporal workflow ID (use this for API calls)
+    filename: str
+    name: Optional[str] = None  # documents.name
+    source_filename: Optional[str] = None
+    source_manifest_name: Optional[str] = None
+    source_file_fingerprint: Optional[str] = None
+    authoritative: bool = False
+    instance: str = "default"  # tenant code of the document's catalog
+    stage: DocumentStage
+    page_count: int
+    chunk_count: int
+    error_message: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    reindex_required: bool = False
+    reindex_reason: Optional[str] = None
+    available_actions: list[str] = []
+    uploaded_by_user_id: Optional[str] = None
+    uploaded_by_username: Optional[str] = None
+    uploaded_by_email: Optional[str] = None
+    uploaded_by_roles: list[str] = []
+    # Catalog placement: kind comes from the catalog type, code/name/aliases are
+    # the document's own (a scheme's code feeds the Master Catalog).
+    kind: Optional[str] = None  # scheme | advisory
+    code: Optional[str] = None
+    aliases: list[str] = []
+    tool_routing: Optional[str] = None
+    catalog_visible: bool = True
+    network_visible: bool = True
+    prod_ready_requested_at: Optional[str] = None
+    prod_ready_requested_by_username: Optional[str] = None
+    # Period this document's chunks are searchable in. Stamped on upload and
+    # editable alongside the document type; NULL on documents uploaded before
+    # validity existed.
+    valid_from: Optional[str] = None
+    valid_to: Optional[str] = None
+
+
+class SchemeMetadataUpdate(BaseModel):
+    """PATCH /documents/{id}/scheme-metadata body.
+
+    `valid_from`/`valid_to` are `YYYY-MM-DD` and travel with the document type
+    because that is the one form a reviewer fills in before ingestion - the
+    period is part of classifying a document, not a separate errand. Omitting
+    both leaves the stored period alone; the dates are validated in
+    `document_validity.parse_period` so a bad period comes back as the same
+    400 other bad input does, not a Pydantic 422.
+    """
+    code: Optional[str] = None
+    name: Optional[str] = None
+    aliases: Optional[list[str]] = None
+    tool_routing: Optional[str] = None  # qdrant | legacy | both
+    catalog_visible: Optional[bool] = None
+    network_visible: Optional[bool] = None
+    valid_from: Optional[str] = None
+    valid_to: Optional[str] = None
+    display_name: Optional[str] = None
+
+
+class DocumentArtifact(BaseModel):
+    id: str
+    workflow_id: str
+    job_id: Optional[str] = None
+    artifact_type: str
+    stage: Optional[str] = None
+    storage_uri: str
+    mime_type: Optional[str] = None
+    filename: Optional[str] = None
+    size_bytes: Optional[int] = None
+    metadata_json: Optional[str] = None
+    created_at: str
+
+
+class DocumentJob(BaseModel):
+    id: str
+    workflow_id: str
+    job_type: str
+    temporal_workflow_id: Optional[str] = None
+    temporal_run_id: Optional[str] = None
+    status: str
+    current_stage: Optional[str] = None
+    started_at: str
+    completed_at: Optional[str] = None
+    error_message: Optional[str] = None
+    config_json: Optional[str] = None
+
+
+class DocumentIndexStatus(BaseModel):
+    workflow_id: str
+    index_name: str
+    doc_id: Optional[str] = None
+    chunk_count_indexed: int = 0
+    last_indexed_at: Optional[str] = None
+    last_verified_at: Optional[str] = None
+    schema_version: Optional[str] = None
+    status: str = "unknown"
+    details_json: Optional[str] = None
+
+
+PUBLISH_SKIPPED_DISABLED = "disabled"
+PUBLISH_SKIPPED_UNMAPPED_KIND = "unmapped_kind"
+
+
+class NetworkPublishOutcome(BaseModel):
+    status: str
+    reason_code: Optional[str] = None
+    reason: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class DocumentDetail(DocumentSummary):
+    filepath: str
+    translated_count: int = 0
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    ocr_completed_at: Optional[str] = None
+    translation_completed_at: Optional[str] = None
+    chunks_completed_at: Optional[str] = None
+    ingested_at: Optional[str] = None
+    source_type: Optional[str] = None
+    canonical_input_type: Optional[str] = None
+    stop_after_ocr: bool = False
+    original_artifact_id: Optional[str] = None
+    normalized_artifact_id: Optional[str] = None
+    latest_job_id: Optional[str] = None
+    current_job: Optional[dict[str, Any]] = None
+    artifacts: list[DocumentArtifact] = []
+    index_status: list[DocumentIndexStatus] = []
+    network_publish: Optional[NetworkPublishOutcome] = None
+
+
+class DocumentGraph(BaseModel):
+    workflow_id: str
+    document: DocumentDetail
+    jobs: list[DocumentJob]
+    artifacts: list[DocumentArtifact]
+    index_status: list[DocumentIndexStatus]
+    stage_io: dict[str, Any]
+    runtime: dict[str, Any]
+
+
+class InstanceDocumentCount(BaseModel):
+    instance: str
+    count: int
+    success: int = 0
+    failed: int = 0
+    dev_approval: int = 0
+
+
+class DocumentCohortsResponse(BaseModel):
+    total_documents: int
+    authoritative_documents: int
+    legacy_documents: int
+    completed_documents: int = 0
+    review_queue: int
+    failed_documents: int
+    by_stage: dict[str, int]
+    by_instance: list[InstanceDocumentCount] = []
+    needs_reindex: int
+    running_jobs: int = 0
+
+
+class OperationQueueEntry(BaseModel):
+    workflow_id: str
+    filename: str
+    stage: str
+    job_id: Optional[str] = None
+    job_type: Optional[str] = None
+    job_status: Optional[str] = None
+    started_at: Optional[str] = None
+    error_message: Optional[str] = None
+    available_actions: list[str] = []
+
+
+class OperationQueueResponse(BaseModel):
+    items: list[OperationQueueEntry]
+    total: int
+
+
+class BulkWorkflowActionRequest(BaseModel):
+    workflow_ids: list[str]
+    dry_run: bool = False
+
+
+class BulkWorkflowActionResult(BaseModel):
+    workflow_id: str
+    ok: bool
+    action: str
+    message: str
+
+
+class BulkWorkflowActionResponse(BaseModel):
+    action: str
+    dry_run: bool = False
+    requested: int
+    succeeded: int
+    failed: int
+    results: list[BulkWorkflowActionResult]
+
+
+class ReindexStateRequest(BaseModel):
+    reason: Optional[str] = None
+
+
+# =============================================================================
+# Audit Log Models
+# =============================================================================
+
+class AuditLogEntry(BaseModel):
+    """A single audit log entry."""
+    id: str
+    workflow_id: str
+    document_id: str
+    action_type: str  # stage_change, page_edit, chunk_edit, approval, page_reset, chunk_reset
+    entity_type: Optional[str] = None  # page, chunk, document
+    entity_id: Optional[int] = None  # page_number or chunk_number
+    field_name: Optional[str] = None
+    old_value: Optional[str] = None  # JSON string
+    new_value: Optional[str] = None  # JSON string
+    metadata: Optional[str] = None  # JSON string
+    timestamp: str
+    actor: Optional[str] = None  # display label, e.g. "user@x.com (superadmin)"
+    actor_user_id: Optional[str] = None
+    actor_username: Optional[str] = None
+    actor_email: Optional[str] = None
+    actor_roles: Optional[str] = None  # comma-separated roles
+    # Split identity/role so the UI need not re-parse ``actor``.
+    actor_display: Optional[str] = None
+    actor_role: Optional[str] = None
+    is_system: bool = False
+    # Document context — joined from documents. Without these declared, FastAPI
+    # strips them from the response and the UI can only show a raw doc_id hash.
+    filename: Optional[str] = None
+    name: Optional[str] = None
+    instance: Optional[str] = None
+    uploaded_by_username: Optional[str] = None
+    uploaded_by_email: Optional[str] = None
+
+
+class AuditLogResponse(BaseModel):
+    """Response for audit log listing."""
+    logs: list[AuditLogEntry]
+    total: int
+    limit: int
+    offset: int
+
+
+# =============================================================================
+# Settings Models
+# =============================================================================
+
+class SearchSettings(BaseModel):
+    """Search configuration settings."""
+    searchMethod: str = "HYBRID"  # TENSOR, LEXICAL, HYBRID
+    limit: int = 12
+    alpha: float = 0.6  # 0=lexical, 1=semantic
+    rankingMethod: str = "rrf"  # rrf, normalize_linear
+    showHighlights: bool = True
+    efSearch: int = 256
+    indexName: str = "documents-index"
+    candidateCap: int = 120
+    candidateMultiplier: int = 10
+    maxChunksPerDoc: int = 2
+    useE5Prefix: bool = True
+    excludeReference: bool = True
+    queryExpansionProfile: str = "none"
+    rerankMode: str = "none"
+    hybridRrfK: int = 60
+
+
+class SearchSettingsUpdate(BaseModel):
+    """Request to update search settings."""
+    searchMethod: Optional[str] = None
+    limit: Optional[int] = None
+    alpha: Optional[float] = None
+    rankingMethod: Optional[str] = None
+    showHighlights: Optional[bool] = None
+    efSearch: Optional[int] = None
+    indexName: Optional[str] = None
+    candidateCap: Optional[int] = None
+    candidateMultiplier: Optional[int] = None
+    maxChunksPerDoc: Optional[int] = None
+    useE5Prefix: Optional[bool] = None
+    excludeReference: Optional[bool] = None
+    queryExpansionProfile: Optional[str] = None
+    rerankMode: Optional[str] = None
+    hybridRrfK: Optional[int] = None
+
+
+class SettingEntry(BaseModel):
+    """A single setting entry."""
+    key: str
+    value: str
+    description: Optional[str] = None
+    updated_at: str
+
+
+class SettingsAuditResponse(BaseModel):
+    """Response for settings audit log listing."""
+    logs: list[AuditLogEntry]
+    total: int
+    limit: int
+    offset: int
+
+
+# =============================================================================
+# JSONB column models
+#
+# The database only checks that these columns hold a JSON object; the value
+# rules live here. ``db.py`` validates every value through these models before
+# it writes one.
+# =============================================================================
+
+class DocumentSource(BaseModel):
+    """``documents.source``: facts about the uploaded file."""
+    model_config = ConfigDict(extra="forbid")
+
+    fingerprint: str = Field(pattern=r"^[0-9a-f]{32}$")
+    original_filename: Optional[str] = None
+    storage_uri: Optional[str] = None
+    source_type: Optional[str] = None  # spreadsheet | document | unknown
+    canonical_input_type: Optional[str] = None  # spreadsheet | pdf
+
+
+class IndexState(BaseModel):
+    """One entry of ``documents.index_status`` (keys ``dev`` / ``prod``)."""
+    model_config = ConfigDict(extra="forbid")
+
+    status: str = "unknown"  # unknown | indexed | missing
+    index_name: Optional[str] = None
+    doc_id: Optional[str] = None
+    chunk_count_indexed: int = Field(default=0, ge=0)
+    last_indexed_at: Optional[str] = None
+    last_verified_at: Optional[str] = None
+    schema_version: Optional[str] = None
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class ChunkingRun(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_number: int = Field(default=1, ge=1)
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    config: dict[str, Any] = Field(default_factory=dict)
+    created_at: Optional[str] = None
+
+
+class DocumentMetadata(BaseModel):
+    """``documents.metadata``: period, uploader, index state and flag fields."""
+    model_config = ConfigDict(extra="forbid")
+
+    crop_subjects: CropSubjects = Field(default_factory=list)
+    knowledge_metadata: KnowledgeMetadata | None = None
+    valid_from: Optional[str] = None  # YYYY-MM-DD
+    valid_to: Optional[str] = None  # YYYY-MM-DD, None = no end
+    uploaded_by_user_id: Optional[str] = None  # users.id (UUID string)
+    index_status: dict[str, IndexState] = Field(default_factory=dict)  # keys dev / prod
+    catalog_visible: bool = True
+    network_visible: bool = True
+    reindex_required: bool = False
+    reindex_reason: Optional[str] = None
+    chunking: Optional[ChunkingRun] = None
+    # Vector-index keys (doc_id) of earlier file versions still present in an
+    # index, by env (``dev`` / ``prod``). A re-upload changes the fingerprint, so
+    # the old points would otherwise be orphaned; the next ingest/promote and
+    # disable/purge remove them.
+    superseded_doc_ids: dict[str, list[str]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _period_is_ordered(self) -> "DocumentMetadata":
+        if self.valid_from and self.valid_to and self.valid_from > self.valid_to:
+            raise ValueError("valid_from must not be after valid_to")
+        return self
+
+
+class CatalogNetworkState(BaseModel):
+    """``catalogs.metadata.network``: set once the catalog is published."""
+    model_config = ConfigDict(extra="forbid")
+
+    catalog_id: Optional[str] = None
+    last_published_at: Optional[str] = None
+
+
+class CatalogMetadata(BaseModel):
+    """``catalogs.metadata``: Beckn publish information."""
+    model_config = ConfigDict(extra="forbid")
+
+    publish_directives: dict[str, Any] = Field(default_factory=dict)
+    visible_networks: list[str] = Field(default_factory=list)
+    criteria: dict[str, Any] = Field(default_factory=dict)
+    network: Optional[CatalogNetworkState] = None
+
+
+PAGE_LAYOUT_MAX_ITEMS = 128
+PAGE_LAYOUT_ITEM_MAX_CHARS = 256
+
+
+class PositionedPageText(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    text: str = Field(max_length=PAGE_LAYOUT_ITEM_MAX_CHARS)
+    x: float
+    y: float
+    width: float = Field(ge=0)
+    height: float = Field(ge=0)
+
+
+class PageSourceLayout(BaseModel):
+    """Source PDF excerpts in points, measured from the page's top left."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    parser: str
+    width: float = Field(gt=0)
+    height: float = Field(gt=0)
+    text_items: list[PositionedPageText] = Field(max_length=PAGE_LAYOUT_MAX_ITEMS)
+    truncated: bool = False
+    ocr_recommended: bool | None = None
+
+
+class PageMetadata(BaseModel):
+    """``pages.metadata``: OCR review, language and source layout fields."""
+    model_config = ConfigDict(extra="forbid")
+
+    is_reviewed: bool = False
+    reviewer_notes: Optional[str] = None
+    detected_language: Optional[str] = None
+    declared_language: Optional[str] = None
+    source_layout: PageSourceLayout | None = None
+
+
+class PageTranslation(BaseModel):
+    """One language entry of ``pages.translations``."""
+    model_config = ConfigDict(extra="forbid")
+
+    translated_markdown: Optional[str] = None
+    edited_translation: Optional[str] = None
+    is_reviewed: bool = False
+    reviewer_notes: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    translated_at: Optional[str] = None
+
+
+class RetrievalSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    searchMethod: str = Field(default="HYBRID", pattern=r"^(TENSOR|LEXICAL|HYBRID)$")
+    alpha: float = Field(default=0.6, ge=0, le=1)
+    rankingMethod: str = Field(default="rrf", pattern=r"^(rrf|normalize_linear)$")
+    hybridRrfK: int = Field(default=60, ge=1)
+
+
+class CandidateSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    indexName: str = "documents-index"
+    efSearch: int = Field(default=256, ge=1)
+    candidateCap: int = Field(default=120, ge=1)
+    candidateMultiplier: int = Field(default=10, ge=1)
+
+
+class ResultSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    limit: int = Field(default=12, ge=1)
+    maxChunksPerDoc: int = Field(default=2, ge=1)
+    excludeReference: bool = True
+    showHighlights: bool = True
+    rerankMode: str = "none"
+
+
+class QuerySettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    useE5Prefix: bool = True
+    queryExpansionProfile: str = "none"

@@ -39,7 +39,7 @@ def _client_returning(response):
 
 
 def _service(monkeypatch):
-    from pipeline.discovery_publish_service import DiscoveryPublishService
+    from pipeline.network.catalog.discovery_publish_service import DiscoveryPublishService
 
     monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
     monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
@@ -50,7 +50,7 @@ def _service(monkeypatch):
 class TestDiscoveryPublishServiceConfig:
     @pytest.mark.unit
     def test_requires_endpoint_and_sender_id(self, monkeypatch):
-        from pipeline.discovery_publish_service import DiscoveryPublishService
+        from pipeline.network.catalog.discovery_publish_service import DiscoveryPublishService
 
         monkeypatch.delenv("DISCOVERY_SERVICE_ENDPOINT", raising=False)
         monkeypatch.delenv("NETWORK_SENDER_ID", raising=False)
@@ -60,7 +60,7 @@ class TestDiscoveryPublishServiceConfig:
 
     @pytest.mark.unit
     def test_missing_sender_id_alone_raises(self, monkeypatch):
-        from pipeline.discovery_publish_service import DiscoveryPublishService
+        from pipeline.network.catalog.discovery_publish_service import DiscoveryPublishService
 
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
         monkeypatch.delenv("NETWORK_SENDER_ID", raising=False)
@@ -70,7 +70,7 @@ class TestDiscoveryPublishServiceConfig:
 
     @pytest.mark.unit
     def test_explicit_endpoint_overrides_env(self, monkeypatch):
-        from pipeline.discovery_publish_service import DiscoveryPublishService
+        from pipeline.network.catalog.discovery_publish_service import DiscoveryPublishService
 
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://env.example.com")
         monkeypatch.setenv("NETWORK_SENDER_ID", " provider.oan.dev ")
@@ -83,8 +83,26 @@ class TestDiscoveryPublishServiceConfig:
 
 class TestDiscoveryPublishServicePublish:
     @pytest.mark.unit
+    def test_configured_network_receiver_and_audience_are_independent_of_sender(self, monkeypatch):
+        monkeypatch.setenv("DISCOVERY_NETWORK_ID", "oan-prod.local")
+        monkeypatch.setenv("DISCOVERY_RECEIVER_ID", "discovery.oan-prod.local")
+        monkeypatch.setenv("DISCOVERY_VISIBLE_TO", "oan-prod.local, oan-dev.local, oan-dev.local")
+        service = _service(monkeypatch)
+        response = _on_publish_response("cat-oan-knowledge-provider-advisories", "ACCEPTED")
+
+        with patch("pipeline.network.catalog.discovery_publish_service.httpx.Client", return_value=_client_returning(response)):
+            envelope = service.publish("local-transaction", "advisory")["envelope"]
+
+        assert envelope["context"]["senderId"] == "docs-pipeline-bv"
+        assert envelope["context"]["networkId"] == "oan-prod.local"
+        assert envelope["context"]["receiverId"] == "discovery.oan-prod.local"
+        assert envelope["message"]["publishDirectives"][0]["visibleTo"] == [
+            "oan-prod.local", "oan-dev.local",
+        ]
+
+    @pytest.mark.unit
     def test_publish_success_envelope_shape(self, monkeypatch):
-        from pipeline.discovery_publish_service import DiscoveryPublishService
+        from pipeline.network.catalog.discovery_publish_service import DiscoveryPublishService
 
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
         monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
@@ -97,7 +115,7 @@ class TestDiscoveryPublishServicePublish:
         mock_client.__exit__ = MagicMock(return_value=False)
         mock_client.post.return_value = mock_response
 
-        with patch("pipeline.discovery_publish_service.httpx.Client", return_value=mock_client):
+        with patch("pipeline.network.catalog.discovery_publish_service.httpx.Client", return_value=mock_client):
             result = service.publish(transaction_id="txn-123", document_kind="advisory")
 
         mock_client.post.assert_called_once()
@@ -136,7 +154,7 @@ class TestDiscoveryPublishServicePublish:
 
     @pytest.mark.unit
     def test_publish_generates_fresh_message_id_per_call(self, monkeypatch):
-        from pipeline.discovery_publish_service import DiscoveryPublishService
+        from pipeline.network.catalog.discovery_publish_service import DiscoveryPublishService
 
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
         monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
@@ -152,7 +170,7 @@ class TestDiscoveryPublishServicePublish:
         mock_client.__exit__ = MagicMock(return_value=False)
         mock_client.post.return_value = mock_response
 
-        with patch("pipeline.discovery_publish_service.httpx.Client", return_value=mock_client):
+        with patch("pipeline.network.catalog.discovery_publish_service.httpx.Client", return_value=mock_client):
             first = service.publish(transaction_id="txn-shared", document_kind="advisory")
             second = service.publish(transaction_id="txn-shared", document_kind="advisory")
 
@@ -162,7 +180,7 @@ class TestDiscoveryPublishServicePublish:
 
     @pytest.mark.unit
     def test_publish_raises_on_http_error(self, monkeypatch):
-        from pipeline.discovery_publish_service import DiscoveryPublishService
+        from pipeline.network.catalog.discovery_publish_service import DiscoveryPublishService
 
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
         monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
@@ -178,13 +196,13 @@ class TestDiscoveryPublishServicePublish:
         mock_client.__exit__ = MagicMock(return_value=False)
         mock_client.post.return_value = mock_response
 
-        with patch("pipeline.discovery_publish_service.httpx.Client", return_value=mock_client):
+        with patch("pipeline.network.catalog.discovery_publish_service.httpx.Client", return_value=mock_client):
             with pytest.raises(httpx.HTTPStatusError):
                 service.publish(transaction_id="txn-123", document_kind="advisory")
 
     @pytest.mark.unit
     def test_publish_raises_on_connection_error(self, monkeypatch):
-        from pipeline.discovery_publish_service import DiscoveryPublishService
+        from pipeline.network.catalog.discovery_publish_service import DiscoveryPublishService
 
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
         monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
@@ -195,7 +213,7 @@ class TestDiscoveryPublishServicePublish:
         mock_client.__exit__ = MagicMock(return_value=False)
         mock_client.post.side_effect = httpx.ConnectError("unreachable")
 
-        with patch("pipeline.discovery_publish_service.httpx.Client", return_value=mock_client):
+        with patch("pipeline.network.catalog.discovery_publish_service.httpx.Client", return_value=mock_client):
             with pytest.raises(httpx.ConnectError):
                 service.publish(transaction_id="txn-123", document_kind="advisory")
 
@@ -203,7 +221,7 @@ class TestDiscoveryPublishServicePublish:
 class TestDiscoveryPublishServiceSchemeCatalog:
     @pytest.mark.unit
     def test_scheme_kind_publishes_the_schemes_catalog(self, monkeypatch):
-        from pipeline.discovery_publish_service import DiscoveryPublishService
+        from pipeline.network.catalog.discovery_publish_service import DiscoveryPublishService
 
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
         monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
@@ -219,7 +237,7 @@ class TestDiscoveryPublishServiceSchemeCatalog:
         mock_client.__exit__ = MagicMock(return_value=False)
         mock_client.post.return_value = mock_response
 
-        with patch("pipeline.discovery_publish_service.httpx.Client", return_value=mock_client):
+        with patch("pipeline.network.catalog.discovery_publish_service.httpx.Client", return_value=mock_client):
             result = service.publish(transaction_id="txn-9", document_kind="scheme")
 
         envelope = mock_client.post.call_args.kwargs["json"]
@@ -235,7 +253,7 @@ class TestDiscoveryPublishServiceSkipsUnmappedKinds:
     @pytest.mark.unit
     @pytest.mark.parametrize("kind", ["document", "video", "how_to_faq", "", None])
     def test_no_http_call_is_made(self, monkeypatch, kind):
-        from pipeline.discovery_publish_service import DiscoveryPublishService
+        from pipeline.network.catalog.discovery_publish_service import DiscoveryPublishService
 
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
         monkeypatch.setenv("NETWORK_SENDER_ID", "docs-pipeline-bv")
@@ -243,7 +261,7 @@ class TestDiscoveryPublishServiceSkipsUnmappedKinds:
 
         mock_client = MagicMock()
 
-        with patch("pipeline.discovery_publish_service.httpx.Client", return_value=mock_client):
+        with patch("pipeline.network.catalog.discovery_publish_service.httpx.Client", return_value=mock_client):
             result = service.publish(transaction_id="txn-skip", document_kind=kind)
 
         mock_client.post.assert_not_called()
@@ -262,7 +280,7 @@ class TestDiscoveryPublishServiceResult:
         response = _on_publish_response("cat-oan-knowledge-provider-advisories", status)
 
         with patch(
-            "pipeline.discovery_publish_service.httpx.Client",
+            "pipeline.network.catalog.discovery_publish_service.httpx.Client",
             return_value=_client_returning(response),
         ):
             result = service.publish(transaction_id="txn-v", document_kind="advisory")
@@ -278,7 +296,7 @@ class TestDiscoveryPublishServiceResult:
         )
 
         with patch(
-            "pipeline.discovery_publish_service.httpx.Client",
+            "pipeline.network.catalog.discovery_publish_service.httpx.Client",
             return_value=_client_returning(response),
         ):
             result = service.publish(transaction_id="txn-v", document_kind="advisory")
@@ -303,7 +321,7 @@ class TestDiscoveryPublishServiceResult:
         response.json = MagicMock(return_value=body)
 
         with patch(
-            "pipeline.discovery_publish_service.httpx.Client",
+            "pipeline.network.catalog.discovery_publish_service.httpx.Client",
             return_value=_client_returning(response),
         ):
             result = service.publish(transaction_id="txn-v", document_kind="advisory")
@@ -330,7 +348,7 @@ class TestDiscoveryPublishServiceResult:
         response.json = MagicMock(return_value=body)
 
         with patch(
-            "pipeline.discovery_publish_service.httpx.Client",
+            "pipeline.network.catalog.discovery_publish_service.httpx.Client",
             return_value=_client_returning(response),
         ):
             result = service.publish(transaction_id="txn-v", document_kind="advisory")
@@ -348,7 +366,7 @@ class TestDiscoveryPublishServiceResult:
         response.json = MagicMock(side_effect=ValueError("not json"))
 
         with patch(
-            "pipeline.discovery_publish_service.httpx.Client",
+            "pipeline.network.catalog.discovery_publish_service.httpx.Client",
             return_value=_client_returning(response),
         ):
             result = service.publish(transaction_id="txn-v", document_kind="advisory")
@@ -360,7 +378,7 @@ class TestDiscoveryPublishServiceResult:
     def test_skipped_publish_has_no_result_status(self, monkeypatch):
         service = _service(monkeypatch)
 
-        with patch("pipeline.discovery_publish_service.httpx.Client", return_value=MagicMock()):
+        with patch("pipeline.network.catalog.discovery_publish_service.httpx.Client", return_value=MagicMock()):
             result = service.publish(transaction_id="txn-v", document_kind="video")
 
         assert result["skipped"] is True
@@ -368,7 +386,7 @@ class TestDiscoveryPublishServiceResult:
         assert result["errors"] == []
 
 
-LOGGER_NAME = "pipeline.discovery_publish_service"
+LOGGER_NAME = "pipeline.network.catalog.discovery_publish_service"
 
 
 class TestDiscoveryPublishServiceLogging:
@@ -382,7 +400,7 @@ class TestDiscoveryPublishServiceLogging:
             ok = _client_returning(
                 _on_publish_response("cat-oan-knowledge-provider-advisories", "ACCEPTED")
             )
-            with patch("pipeline.discovery_publish_service.httpx.Client", return_value=ok):
+            with patch("pipeline.network.catalog.discovery_publish_service.httpx.Client", return_value=ok):
                 service.publish(
                     transaction_id="txn-log", document_kind="advisory", workflow_id="wf-log"
                 )
@@ -407,7 +425,7 @@ class TestDiscoveryPublishServiceLogging:
         client.post.side_effect = httpx.ConnectError("connection refused")
 
         with caplog.at_level(logging.ERROR, logger=LOGGER_NAME):
-            with patch("pipeline.discovery_publish_service.httpx.Client", return_value=client):
+            with patch("pipeline.network.catalog.discovery_publish_service.httpx.Client", return_value=client):
                 with pytest.raises(httpx.ConnectError):
                     service.publish(
                         transaction_id="txn-log", document_kind="advisory", workflow_id="wf-log"
@@ -427,7 +445,7 @@ class TestDiscoveryPublishServiceLogging:
 
         with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
             with patch(
-                "pipeline.discovery_publish_service.httpx.Client", return_value=MagicMock()
+                "pipeline.network.catalog.discovery_publish_service.httpx.Client", return_value=MagicMock()
             ):
                 service.publish(
                     transaction_id="txn-log", document_kind="video", workflow_id="wf-log"
@@ -458,18 +476,39 @@ def _default_provider_naming(monkeypatch):
 
 
 def _publish(monkeypatch, kind, group, sender_id="provider.oan.dev"):
-    from pipeline.discovery_publish_service import DiscoveryPublishService
+    from pipeline.network.catalog.discovery_publish_service import DiscoveryPublishService
 
     monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
     monkeypatch.setenv("NETWORK_SENDER_ID", sender_id)
     service = DiscoveryPublishService()
     client = _client_returning(_on_publish_response("any", "ACCEPTED"))
-    with patch("pipeline.discovery_publish_service.httpx.Client", return_value=client):
+    with patch("pipeline.network.catalog.discovery_publish_service.httpx.Client", return_value=client):
         result = service.publish(transaction_id="txn", document_kind=kind, group=group)
     return client.post.call_args.kwargs["json"], result
 
 
 class TestDiscoveryPublishServiceGroupProvider:
+    @pytest.mark.unit
+    def test_publish_uses_the_profile_domain(self, monkeypatch, tmp_path):
+        profile = tmp_path / "catalogs.json"
+        profile.write_text(json.dumps({
+            "maintenance": {
+                "catalog_name": "Maintenance notices",
+                "domain": "maintenance",
+                "catalog_id": "catalog-maintenance",
+                "resource_id": "resource-maintenance",
+                "resource_name": "Maintenance bulletin",
+                "resource_attributes": {"@type": "example:MaintenanceBulletin"},
+            },
+        }))
+        monkeypatch.setenv("BECKN_CATALOG_PROFILE_PATH", str(profile))
+
+        envelope, result = _publish(monkeypatch, "maintenance", None)
+
+        assert result["skipped"] is False
+        assert envelope["context"]["domain"] == "maintenance"
+        assert envelope["message"]["catalogs"][0]["id"] == "catalog-maintenance"
+
     @pytest.mark.unit
     @pytest.mark.parametrize(
         "kind,catalog_id,resource_id,catalog_name",
@@ -510,8 +549,8 @@ class TestDiscoveryPublishServiceGroupProvider:
         assert catalog["id"] == catalog_id
         assert catalog["descriptor"] == {"name": catalog_name}
         assert catalog["provider"] == {
-            "id": "bv.provider.oan.dev",
-            "descriptor": {"code": "bv.provider.oan.dev", "name": "Bharat Vistaar"},
+            "id": "default.provider.oan.dev",
+            "descriptor": {"code": "default.provider.oan.dev", "name": "Default"},
         }
 
     @pytest.mark.unit
@@ -544,7 +583,7 @@ class TestDiscoveryPublishServiceGroupProvider:
 
     @pytest.mark.unit
     def test_unmapped_kind_is_skipped_for_a_group(self, monkeypatch):
-        from pipeline.discovery_publish_service import DiscoveryPublishService
+        from pipeline.network.catalog.discovery_publish_service import DiscoveryPublishService
 
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
         monkeypatch.setenv("NETWORK_SENDER_ID", "provider.oan.dev")
@@ -557,8 +596,8 @@ class TestDiscoveryPublishServiceGroupProvider:
 
     @pytest.mark.unit
     def test_malformed_provider_map_fails_construction(self, monkeypatch, tmp_path):
-        from pipeline.discovery_publish_service import DiscoveryPublishService
-        from pipeline.network_group import NetworkProviderConfigError
+        from pipeline.network.catalog.discovery_publish_service import DiscoveryPublishService
+        from pipeline.network.network_group import NetworkProviderConfigError
 
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
         monkeypatch.setenv("NETWORK_SENDER_ID", "provider.oan.dev")
@@ -569,8 +608,8 @@ class TestDiscoveryPublishServiceGroupProvider:
 
     @pytest.mark.unit
     def test_bad_provider_id_template_fails_construction(self, monkeypatch):
-        from pipeline.discovery_publish_service import DiscoveryPublishService
-        from pipeline.network_group import NetworkProviderConfigError
+        from pipeline.network.catalog.discovery_publish_service import DiscoveryPublishService
+        from pipeline.network.network_group import NetworkProviderConfigError
 
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
         monkeypatch.setenv("NETWORK_SENDER_ID", "provider.oan.dev")
@@ -578,3 +617,31 @@ class TestDiscoveryPublishServiceGroupProvider:
 
         with pytest.raises(NetworkProviderConfigError, match="NETWORK_PROVIDER_ID_TEMPLATE"):
             DiscoveryPublishService()
+
+
+def test_named_publisher_uses_the_requested_network_connection(monkeypatch):
+    from pipeline.network.network_connections import PublishConfigError
+    from pipeline.network.network_publisher import get_network_publisher
+
+    monkeypatch.setenv("NETWORK_CONNECTIONS", "dev,prod")
+    monkeypatch.setenv("NETWORK_CONNECTION_DEFAULT", "dev")
+    for environment in ("dev", "prod"):
+        prefix = f"NETWORK_CONNECTION_{environment.upper()}_"
+        monkeypatch.setenv(prefix + "TYPE", "beckn")
+        monkeypatch.setenv(prefix + "ID", f"oan.{environment}")
+        monkeypatch.setenv(prefix + "DISCOVERY_URL", f"https://{environment}.example.com")
+        monkeypatch.setenv(prefix + "SENDER_ID", f"provider.oan.{environment}")
+    monkeypatch.setenv("NETWORK_CONNECTION_PROD_RECEIVER_ID", "receiver.oan.prod")
+    monkeypatch.setenv("NETWORK_CONNECTION_PROD_VISIBLE_TO", "oan.dev,oan.prod,oan.dev")
+    client = _client_returning(_on_publish_response("unused", "ACCEPTED"))
+    with patch("pipeline.network.catalog.discovery_publish_service.httpx.Client", return_value=client):
+        get_network_publisher("oan.prod").publish("txn", "advisory", "wf", None)
+    args, kwargs = client.post.call_args
+    assert args == ("https://prod.example.com/publish",)
+    assert kwargs["json"]["context"]["networkId"] == "oan.prod"
+    assert kwargs["json"]["context"]["senderId"] == "provider.oan.prod"
+    assert kwargs["json"]["context"]["receiverId"] == "receiver.oan.prod"
+    assert kwargs["json"]["message"]["publishDirectives"][0]["visibleTo"] == ["oan.dev", "oan.prod"]
+
+    with pytest.raises(PublishConfigError, match="no configured connection"):
+        get_network_publisher("oan.unknown")

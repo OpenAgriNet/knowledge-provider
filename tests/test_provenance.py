@@ -6,7 +6,7 @@ import itertools
 import pytest
 from fastapi.testclient import TestClient
 
-from pipeline.activities import prepare_ingestion_records
+from pipeline.search.passage_projection import prepare_ingestion_records
 from pipeline.api import app
 
 _code_seq = itertools.count(1)
@@ -35,7 +35,7 @@ def test_prepare_records_includes_provenance_fields():
         filename="paripatra.pdf",
         chunks=chunks,
         workflow_id="doc-ef226cde5062",
-        name_en="Sample Circular",
+        name="Sample Circular",
     )
 
     assert len(records) == 1
@@ -47,7 +47,7 @@ def test_prepare_records_includes_provenance_fields():
     assert record["page_start"] == 12
     assert record["page_end"] == 13
     assert record["section"] == "Deworming Schedule"
-    assert record["name_en"] == "Sample Circular"
+    assert record["name"] == "Sample Circular"
     assert record["source"] == "docs-pipeline"
     assert record["type"] == "document"
     assert "document_kind" not in record

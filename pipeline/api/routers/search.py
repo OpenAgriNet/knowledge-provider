@@ -1,0 +1,459 @@
+"""Search API: ``POST /search`` and the ranking helpers it owns.
+
+First router split out of ``pipeline/api/api.py``. The vector store is
+imported inside the route (not at module top) on purpose: tests patch
+``pipeline.vector_store.get_vector_store`` and that only takes effect when the
+name is looked up at call time.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import math
+import re
+import unicodedata
+from collections import Counter
+
+from fastapi import APIRouter, HTTPException
+
+from pipeline import db
+from pipeline.documents import document_validity
+from pipeline.auth.deps import RequireSearch
+from pipeline.auth.tenancy import allowed_instances, assert_instance_access
+from pipeline.metadata.crop_metadata import parse_crop_subject_ids
+from pipeline.network.release_policy import managed_release_collections, managed_release_targets
+from pipeline.metadata.knowledge_metadata import KnowledgeFilters
+from pipeline.metadata.localization import localize_search_hit, normalize_language_tag
+from pipeline.search.query_expansion import expand_query
+
+router = APIRouter()
+
+def _normalize_text(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip().lower())
+
+
+def _tokenize(value: str) -> list[str]:
+    text = unicodedata.normalize("NFC", _normalize_text(value))
+    return "".join(
+        character if unicodedata.category(character)[0] in "LMN" or character == "-" else " "
+        for character in text
+    ).split()
+
+
+def _token_overlap_score(query: str, text: str) -> float:
+    query_tokens = set(_tokenize(query))
+    text_tokens = set(_tokenize(text))
+    if not query_tokens or not text_tokens:
+        return 0.0
+    return len(query_tokens & text_tokens) / len(query_tokens)
+
+
+def _metadata_blob(hit: dict) -> str:
+    metadata = hit.get("knowledge_metadata") or {}
+    labels = [*metadata.get("topics", []), *metadata.get("tags", []), *metadata.get("seasons", [])]
+    fields = (
+        str(hit.get(key) or "")
+        for key in (
+            "name",
+            "name_en",
+            "name_gu",
+            "filename",
+            "title_en",
+            "title_gu",
+            "category_tags",
+            "description",
+            "doc_short_description",
+            "doc_llm_description",
+        )
+    )
+    return " ".join([*fields, *labels])
+
+
+def _display_search_hit(hit: dict, requested_language: str | None) -> dict:
+    """Present localized document labels and the legacy search response aliases."""
+    name = hit.get("name")
+    if not name:
+        return hit
+    metadata = hit.get("knowledge_metadata") or {}
+    variants = metadata.get("localized") or {}
+    selected = variants.get(hit.get("text_language"), {}) if requested_language else {}
+    result = dict(hit)
+    result.setdefault("name_en", name)
+    result.setdefault("name_gu", variants.get("gu", {}).get("title") or name)
+    result.setdefault("title_en", variants.get("en", {}).get("title") or "")
+    result.setdefault("title_gu", variants.get("gu", {}).get("title") or "")
+    result.setdefault("doc_language", hit.get("primary_language") or "")
+    result.setdefault("category_tags", ", ".join(metadata.get("tags", [])))
+    result.setdefault("doc_short_description", metadata.get("description") or "")
+    result.setdefault("doc_llm_description", "")
+    result.setdefault("ingestion_status", "")
+    result.setdefault("quality_score", 0.0)
+    result.setdefault("priority_rank", 0.0)
+    if selected.get("title"):
+        result["name"] = selected["title"]
+    if selected.get("description"):
+        result["description"] = selected["description"]
+    return result
+
+
+def _rank_desc(values: list[float]) -> list[int]:
+    order = sorted(range(len(values)), key=lambda idx: values[idx], reverse=True)
+    ranks = [0] * len(values)
+    for pos, idx in enumerate(order, start=1):
+        ranks[idx] = pos
+    return ranks
+
+
+def _bm25lite_scores(query: str, docs: list[str]) -> list[float]:
+    query_tokens = _tokenize(query)
+    if not query_tokens or not docs:
+        return [0.0] * len(docs)
+
+    doc_tokens = [_tokenize(doc) for doc in docs]
+    avg_len = max(1.0, sum(len(tokens) for tokens in doc_tokens) / max(1, len(doc_tokens)))
+    df: Counter[str] = Counter()
+    for tokens in doc_tokens:
+        for token in set(tokens):
+            df[token] += 1
+
+    k1 = 1.2
+    b = 0.75
+    scores: list[float] = []
+    for tokens in doc_tokens:
+        tf = Counter(tokens)
+        dl = len(tokens)
+        norm = k1 * (1 - b + b * dl / avg_len)
+        score = 0.0
+        for term in query_tokens:
+            if term not in tf:
+                continue
+            idf = math.log(1.0 + (len(doc_tokens) - df[term] + 0.5) / (df[term] + 0.5))
+            score += idf * (tf[term] * (k1 + 1.0)) / (tf[term] + norm)
+        scores.append(score)
+    return scores
+
+
+def _rank_hybrid_candidates(query: str, hits: list[dict], alpha: float, method: str, rank_offset: int) -> list[dict]:
+    if len(hits) < 2 or alpha == 1:
+        return hits
+    lexical = _bm25lite_scores(query, [f"{hit.get('text', '')} {_metadata_blob(hit)}" for hit in hits])
+    if not any(lexical):
+        return hits
+    dense = [float(hit.get("_score") or 0) for hit in hits]
+    if method == "normalize_linear":
+        dense_min, dense_max = min(dense), max(dense)
+        dense = [(score - dense_min) / (dense_max - dense_min or 1) for score in dense]
+        lexical = [score / max(lexical) for score in lexical]
+    else:
+        dense = [1 / (rank_offset + rank) for rank in _rank_desc(dense)]
+        lexical = [1 / (rank_offset + rank) if score else 0 for rank, score in zip(_rank_desc(lexical), lexical)]
+    scored = [
+        {**hit, "_hybrid_score": alpha * semantic + (1 - alpha) * keyword}
+        for hit, semantic, keyword in zip(hits, dense, lexical)
+    ]
+    return sorted(scored, key=lambda hit: hit["_hybrid_score"], reverse=True)
+
+
+def _rerank_hits(query: str, hits: list[dict], rerank_mode: str) -> list[dict]:
+    mode = (rerank_mode or "none").strip().lower()
+    if mode in {"", "none"} or not hits:
+        return hits
+
+    raw_scores = [float(hit.get("_score", hit.get("score", 0.0)) or 0.0) for hit in hits]
+    min_score = min(raw_scores)
+    max_score = max(raw_scores)
+    denom = (max_score - min_score) if max_score > min_score else 1.0
+    semantic_scores = [(raw - min_score) / denom for raw in raw_scores]
+    text_scores = [_token_overlap_score(query, str(hit.get("text") or "")) for hit in hits]
+    meta_scores = [_token_overlap_score(query, _metadata_blob(hit)) for hit in hits]
+
+    rescored: list[dict] = []
+    if mode == "bm25lite":
+        docs = [f"{str(hit.get('text') or '')} {_metadata_blob(hit)}".strip() for hit in hits]
+        bm_scores = _bm25lite_scores(query, docs)
+        bm_min = min(bm_scores) if bm_scores else 0.0
+        bm_max = max(bm_scores) if bm_scores else 1.0
+        bm_denom = (bm_max - bm_min) if bm_max > bm_min else 1.0
+        bm_norm = [(score - bm_min) / bm_denom for score in bm_scores]
+        for hit, semantic, bm25, meta in zip(hits, semantic_scores, bm_norm, meta_scores):
+            enriched = dict(hit)
+            enriched["_rerank_score"] = (0.50 * semantic) + (0.40 * bm25) + (0.10 * meta) + (-0.10 if bool(hit.get("is_reference", False)) else 0.0)
+            rescored.append(enriched)
+    elif mode in {"rrf-lite", "rrf_lite", "rrf"}:
+        sem_rank = _rank_desc(semantic_scores)
+        text_rank = _rank_desc(text_scores)
+        meta_rank = _rank_desc(meta_scores)
+        k = 30
+        for idx, hit in enumerate(hits):
+            enriched = dict(hit)
+            enriched["_rerank_score"] = (1.0 / (k + sem_rank[idx])) + (1.0 / (k + text_rank[idx])) + (1.0 / (k + meta_rank[idx]))
+            rescored.append(enriched)
+    else:
+        for hit, semantic, text_score, meta in zip(hits, semantic_scores, text_scores, meta_scores):
+            enriched = dict(hit)
+            enriched["_rerank_score"] = (0.60 * semantic) + (0.30 * max(text_score, meta)) + (0.10 * meta)
+            rescored.append(enriched)
+
+    rescored.sort(key=lambda hit: float(hit.get("_rerank_score", 0.0)), reverse=True)
+    return rescored
+
+
+
+
+def _requested_group(payload: dict) -> str | None:
+    raw = payload.get("group")
+    if raw is not None and not isinstance(raw, str):
+        raise HTTPException(400, "group must be a string")
+    return (raw or "").strip().lower() or None
+
+
+def _requested_provider_id(payload: dict) -> str | None:
+    raw = payload.get("provider_id")
+    if raw is not None and not isinstance(raw, str):
+        raise HTTPException(400, "provider_id must be a string")
+    return (raw or "").strip().lower() or None
+
+
+@router.get("/search/collections")
+async def search_collections(user: RequireSearch):
+    from pipeline.vector_store import get_default_index_name
+
+    try:
+        scopes = managed_release_collections()
+        advisories = managed_release_targets("advisory")
+        schemes = managed_release_targets("scheme")
+    except ValueError as exc:
+        raise HTTPException(503, "Network collections are misconfigured") from exc
+    if not scopes:
+        return [{"label": "Documents", "name": get_default_index_name()}]
+    labels = {collection: "Published schemes" for collection in schemes.values()}
+    labels.update({collection: "Published advisories" for collection in advisories.values()})
+    return [
+        {"label": labels.get(collection, "Published documents"), "name": collection, "network_id": network_id}
+        for collection, network_id in scopes.items()
+    ]
+
+
+@router.post("/search/", include_in_schema=False)
+@router.post("/search")
+async def run_search(payload: dict, user: RequireSearch):
+    """Search passages visible to the caller, optionally within one provider."""
+    from pipeline.vector_store import get_default_index_name, get_vector_store
+
+    settings = db.get_search_settings()
+    from pipeline.network.release_policy import index_only_mode
+
+    index_name = get_default_index_name()
+    if not index_only_mode():
+        index_name = payload.get("index_name") or settings.get("indexName") or index_name
+    raw_query = payload.get("query")
+    if raw_query is not None and not isinstance(raw_query, str):
+        raise HTTPException(422, "query must be text")
+    query = (raw_query or "").strip()
+    if not query:
+        raise HTTPException(400, "query is required")
+    if len(query) > 4096:
+        raise HTTPException(422, "query must be at most 4096 characters")
+
+    requested_language = payload.get("language")
+    language = normalize_language_tag(requested_language)
+    if requested_language is not None and language is None:
+        raise HTTPException(422, "language must be a BCP 47 tag")
+    strict_language = payload.get("strict_language", False)
+    if type(strict_language) is not bool or (strict_language and not language):
+        raise HTTPException(422, "strict_language requires a boolean and a language when true")
+
+    logging.info(
+        "search request user_id=%s index=%s query_length=%s top_k=%s",
+        user.user_id,
+        index_name,
+        len(query),
+        payload.get("top_k"),
+    )
+
+    search_mode = (payload.get("search_mode") or settings.get("searchMethod") or "HYBRID").upper()
+    top_k = max(1, min(int(payload.get("top_k") or settings.get("limit") or 12), 50))
+    candidate_multiplier = max(1, int(payload.get("candidate_multiplier") or settings.get("candidateMultiplier") or 10))
+    requested_candidate_cap = payload.get("candidate_cap")
+    if requested_candidate_cap is None:
+        candidate_cap = min(max(top_k * candidate_multiplier, top_k), int(settings.get("candidateCap") or 120))
+    else:
+        candidate_cap = int(requested_candidate_cap)
+    candidate_cap = max(top_k, min(candidate_cap, 200))
+    max_chunks_per_doc = max(1, int(payload.get("max_chunks_per_doc") or settings.get("maxChunksPerDoc") or 2))
+    use_e5_prefix = bool(payload.get("use_e5_prefix", settings.get("useE5Prefix", True)))
+    exclude_reference = bool(payload.get("exclude_reference", settings.get("excludeReference", True)))
+    alpha = float(payload.get("hybrid_alpha", settings.get("alpha", 0.6)))
+    if not 0 <= alpha <= 1:
+        raise HTTPException(422, "hybrid_alpha must be between 0 and 1")
+    ranking_method = payload.get("ranking_method") or settings.get("rankingMethod") or "rrf"
+    ef_search = int(payload.get("ef_search") or settings.get("efSearch") or 256)
+    query_expansion_profile = payload.get("query_expansion_profile") or settings.get("queryExpansionProfile") or "none"
+    rerank_mode = payload.get("rerank_mode") or settings.get("rerankMode") or "none"
+    hybrid_rrf_k = max(1, min(int(payload.get("hybrid_rrf_k") or settings.get("hybridRrfK") or 60), 1000))
+    # Validity is on by default: a search serving a farmer must not answer from
+    # a document that has expired or has not started. Both overrides are
+    # operator tools - `include_expired` to inspect what an expired document
+    # still holds, `valid_on` to ask what search would have returned on another
+    # day - and the response echoes which day was actually applied.
+    include_expired = bool(payload.get("include_expired", False))
+    valid_on = (payload.get("valid_on") or "").strip() or None
+    if valid_on:
+        try:
+            # Reassigned, not just checked: parse_day returns the canonical
+            # zero-padded form, and the vector store's date range rejects the
+            # `2026-9-3` spelling that strptime happily accepts.
+            valid_on = document_validity.parse_day(valid_on, "valid_on")
+        except document_validity.DocumentValidityError as exc:
+            raise HTTPException(400, str(exc)) from None
+    group = _requested_group(payload)
+    permitted = allowed_instances(user)
+    if permitted is not None and not permitted:
+        raise HTTPException(403, "No provider access")
+    if group is not None:
+        assert_instance_access(user, group)
+    scope_filter = {"allowed_instances": sorted(permitted)} if group is None and permitted is not None else {}
+    provider_id = _requested_provider_id(payload)
+    selected_workflow = payload.get("document_workflow_id")
+    if selected_workflow is not None and (
+        not isinstance(selected_workflow, str) or not 1 <= len(selected_workflow) <= 256
+    ):
+        raise HTTPException(422, "document_workflow_id must be a workflow identifier")
+    try:
+        crop_subject_ids = parse_crop_subject_ids(payload.get("crop_subject_ids"))
+    except ValueError as exc:
+        raise HTTPException(400, "crop_subject_ids must contain at most 32 absolute URI strings") from exc
+    try:
+        applicability = KnowledgeFilters.model_validate(payload.get("applicability", {})).qdrant_values()
+    except ValueError as exc:
+        raise HTTPException(422, "Invalid agriculture applicability filters") from exc
+    try:
+        expanded_query = expand_query(query, query_expansion_profile)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(503, "Search expansion is misconfigured") from exc
+    # Qdrant embeddings apply E5 prefixes internally; don't pre-prefix here.
+    search_query = expanded_query
+
+    store = get_vector_store()
+    backend = store.backend
+    # HYBRID on Qdrant currently maps to dense tensor search (lexical is separate mode).
+    store_mode = "TENSOR" if backend == "qdrant" and search_mode == "HYBRID" else search_mode
+
+    try:
+        release_network = managed_release_collections().get(index_name)
+        exclusions = await asyncio.to_thread(db.inactive_network_revision_ids, release_network, index_name) if release_network else []
+        search_arguments = dict(
+            name=index_name,
+            query=search_query,
+            search_mode=store_mode,
+            exclude_reference=exclude_reference,
+            use_e5_prefix=use_e5_prefix,
+            hybrid_alpha=alpha,
+            ef_search=ef_search,
+            apply_validity=not include_expired,
+            valid_on=valid_on,
+            instance=group,
+            provider_id=provider_id,
+            **({"strict_language": language} if strict_language else {}),
+            **scope_filter,
+            **({"document_workflow_id": selected_workflow} if selected_workflow else {}),
+            **({"crop_subject_ids": crop_subject_ids} if crop_subject_ids else {}),
+            **({"applicability": applicability} if applicability else {}),
+            **({"excluded_revision_ids": exclusions} if exclusions else {}),
+        )
+        result = await asyncio.to_thread(store.search, limit=candidate_cap, **search_arguments)
+        candidates = result.get("hits", [])
+        validate_hits = db.visible_document_hits if index_only_mode() else db.visible_release_hits
+        hits = await asyncio.to_thread(validate_hits, candidates)
+        if (index_only_mode() or release_network) and len(candidates) == candidate_cap and len(hits) < top_k:
+            result = await asyncio.to_thread(store.search, limit=min(candidate_cap * 3, 600), **search_arguments)
+            hits = await asyncio.to_thread(validate_hits, result.get("hits", []))
+    except Exception as error:
+        logging.warning("vector search failed backend=%s error_type=%s", backend, type(error).__name__)
+        raise HTTPException(503, "Vector search is temporarily unavailable") from error
+
+    if language:
+        hits = [
+            localized for hit in hits
+            if (localized := localize_search_hit(hit, language, strict=strict_language)) is not None
+        ]
+    hits = [_display_search_hit(hit, language) for hit in hits]
+    if search_mode == "HYBRID" and backend == "qdrant":
+        hits = _rank_hybrid_candidates(query, hits, alpha, ranking_method, hybrid_rrf_k)
+    hits = _rerank_hits(query, hits, rerank_mode)
+    final_hits = []
+    per_doc_counts: dict[str, int] = {}
+    for hit in hits:
+        doc_key = hit.get("doc_id") or hit.get("filename") or "__unknown__"
+        if per_doc_counts.get(doc_key, 0) >= max_chunks_per_doc:
+            continue
+        per_doc_counts[doc_key] = per_doc_counts.get(doc_key, 0) + 1
+        final_hits.append(hit)
+        if len(final_hits) >= top_k:
+            break
+
+    scheme_candidates = {}
+    query_tokens = set(_tokenize(query))
+    for hit in hits:
+        code = hit.get("scheme_code")
+        workflow_id = hit.get("workflow_id")
+        name = hit.get("scheme_name") or hit.get("name")
+        aliases = hit.get("scheme_aliases") or []
+        if not all(isinstance(item, str) and item for item in (code, workflow_id, name)):
+            continue
+        labels = [code, name, *(alias for alias in aliases if isinstance(alias, str))]
+        # A broad topical query can return many related schemes. Ask the user
+        # to choose when their words refer to more than one actual scheme label.
+        if any((tokens := set(_tokenize(label))) and tokens <= query_tokens for label in labels):
+            scheme_candidates.setdefault(workflow_id, {
+                "workflow_id": workflow_id, "name": name, "code": code, "provider": hit.get("instance"),
+            })
+        if len(scheme_candidates) == 5:
+            break
+    choices = list(scheme_candidates.values()) if len(scheme_candidates) > 1 and not selected_workflow else []
+
+    logging.info(
+        "search response user_id=%s index=%s candidate_count=%s final_count=%s",
+        user.user_id,
+        index_name,
+        len(hits),
+        len(final_hits),
+    )
+
+    return {
+        "effective_config": {
+            "index_name": index_name,
+            "backend": backend,
+            "query": query,
+            "search_mode": search_mode,
+            "store_search_mode": store_mode,
+            "top_k": top_k,
+            "candidate_cap": candidate_cap,
+            "candidate_multiplier": candidate_multiplier,
+            "max_chunks_per_doc": max_chunks_per_doc,
+            "use_e5_prefix": use_e5_prefix,
+            "exclude_reference": exclude_reference,
+            "hybrid_alpha": alpha,
+            "ranking_method": ranking_method,
+            "hybrid_rrf_k": hybrid_rrf_k,
+            "ef_search": ef_search,
+            "query_expansion_profile": query_expansion_profile,
+            "query_expansion_applied": expanded_query != query,
+            "rerank_mode": rerank_mode,
+            "apply_validity": not include_expired,
+            "valid_on": result.get("valid_on"),
+            "group": group,
+            "provider_id": provider_id,
+            "crop_subject_ids": crop_subject_ids,
+            "applicability": applicability,
+            "language": language,
+            "strict_language": strict_language,
+            "filter_string": None,
+        },
+        "candidate_count": len(hits),
+        "final_count": len(final_hits),
+        "hits": final_hits,
+        "scheme_choices": choices,
+        "raw_hits": hits if payload.get("include_raw_hits") else None,
+    }

@@ -1,8 +1,8 @@
 """Instance (tenant / state) access helpers — Keycloak groups + document instances.
 
 Who-sees-what-state comes from the JWT (Keycloak groups). The database only
-stores which instance a *document* belongs to (``instances`` via
-``documents.catalog_id -> catalogs.instance_id``); the document dict carries its
+stores which provider owns a document through
+``documents.provider_id -> instances.id``; the document dict carries its
 tenant code as ``instance``.
 
 Conventions:
@@ -19,17 +19,17 @@ from fastapi import HTTPException
 
 from .models import AuthUser
 
-# Bharat Vistaar portal / platform-wide documents (not a state).
-PORTAL_INSTANCE = "bv"
-
-
 def default_instance() -> str:
     """Fallback instance code for new docs and legacy rows without a value."""
     return (os.environ.get("DEFAULT_INSTANCE") or "default").strip().lower() or "default"
 
 
 def portal_instance() -> str:
-    return (os.environ.get("PORTAL_INSTANCE") or PORTAL_INSTANCE).strip().lower() or PORTAL_INSTANCE
+    return configured_portal_instance() or default_instance()
+
+
+def configured_portal_instance() -> str | None:
+    return os.environ.get("PORTAL_INSTANCE", "").strip().lower() or None
 
 
 def group_for_instance(instance: str | None) -> str | None:
@@ -96,7 +96,7 @@ def resolve_create_instance(user: AuthUser, requested: str | None = None) -> str
     if not allowed:
         raise HTTPException(
             403,
-            "No state assigned. Join a Keycloak group such as /states/MH/admin or /states/MH/view.",
+            "No provider access is assigned. Ask an administrator to grant access in Keycloak.",
         )
 
     if requested_norm:
@@ -109,7 +109,7 @@ def resolve_create_instance(user: AuthUser, requested: str | None = None) -> str
 
     raise HTTPException(
         400,
-        "instance is required when you have multiple states; "
+        "instance is required when you have access to multiple providers; "
         f"choose one of: {', '.join(sorted(allowed))}",
     )
 

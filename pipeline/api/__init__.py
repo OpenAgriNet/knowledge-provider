@@ -1,4 +1,4 @@
-"""HTTP API package. The FastAPI app lives in ``api.py``; per-resource routers sit beside it."""
+"""HTTP application entry point; feature handlers live in ``routers/``."""
 
 from .api import app
 

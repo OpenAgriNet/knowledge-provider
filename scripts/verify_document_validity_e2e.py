@@ -36,9 +36,9 @@ os.environ["HF_HUB_OFFLINE"] = "1"
 
 from datetime import datetime  # noqa: E402
 
-from pipeline import db  # noqa: E402
+from pipeline import db
 from pipeline.documents import document_validity  # noqa: E402
-from pipeline.activities import _prepare_records, _validity_fields_from_doc  # noqa: E402
+from pipeline.search.passage_projection import _prepare_records, _validity_fields_from_doc  # noqa: E402
 from pipeline.vector_store.qdrant_store import QdrantVectorStore  # noqa: E402
 
 db.init_db()

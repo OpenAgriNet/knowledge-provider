@@ -12,12 +12,25 @@ from fastapi.exception_handlers import (
     request_validation_exception_handler,
 )
 from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 logger = logging.getLogger("pipeline.api.requests")
 
 QUIET_PATHS = frozenset({"/health"})
+GOOGLE_CALLBACK_PATH = "/auth/google/callback"
+
+
+def _redact_google_callback(record: logging.LogRecord) -> bool:
+    if isinstance(record.args, tuple) and len(record.args) == 5:
+        path = record.args[2]
+        if isinstance(path, str) and path.split("?", 1)[0] == GOOGLE_CALLBACK_PATH:
+            record.args = (*record.args[:2], GOOGLE_CALLBACK_PATH, *record.args[3:])
+    return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_redact_google_callback)
 
 
 def install(app: FastAPI) -> None:
@@ -30,6 +43,9 @@ def recording(handler: Callable) -> Callable:
     async def record_then_handle(request: Request, exc: Exception):
         request.state.error = _detail(exc)
         request.state.error_cause = exc.__cause__
+        if isinstance(exc, RequestValidationError) and getattr(request.scope.get("route"), "name", None) == "create_source_token":
+            # The default validation response includes input values.
+            return JSONResponse(status_code=422, content={"detail": "A valid service client secret is required."})
         result = handler(request, exc)
         return await result if inspect.isawaitable(result) else result
 
@@ -99,6 +115,8 @@ def _log_response(scope: Scope, code: int, duration_ms: int) -> None:
 
 
 def _uri(scope: Scope) -> str:
+    if scope["path"] == GOOGLE_CALLBACK_PATH:
+        return GOOGLE_CALLBACK_PATH
     query = scope.get("query_string", b"").decode("latin-1")
     return f"{scope['path']}?{query}" if query else scope["path"]
 

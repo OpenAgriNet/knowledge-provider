@@ -101,3 +101,24 @@ def test_group_and_validity_compose_in_the_engine(local_store, test_client):
 
     assert {hit["doc_id"] for hit in current_only["hits"]} == {"mh-current"}
     assert {hit["doc_id"] for hit in with_expired["hits"]} == {"mh-current", "mh-expired"}
+
+
+@pytest.mark.integration
+@pytest.mark.api
+def test_search_offers_ambiguous_schemes_and_filters_the_selected_workflow(local_store, test_client):
+    local_store.upsert(INDEX, [
+        {
+            "doc_id": f"scheme-document-{code}", "workflow_id": f"scheme-workflow-{code}",
+            "instance": "bv", "text": "Water support eligibility information.",
+            "scheme_code": code, "scheme_name": name, "scheme_aliases": ["water support"],
+            "chunk_num": 1, "is_reference": False,
+        }
+        for code, name in [("first", "Water Support North"), ("second", "Water Support South")]
+    ])
+    response = search(test_client, query="Who can apply for water support?", group="bv")
+    assert {choice["code"] for choice in response["scheme_choices"]} == {"first", "second"}
+    response = search(test_client, query="Who can apply for water support?", group="bv", document_workflow_id="scheme-workflow-second")
+    assert response["scheme_choices"] == []
+    assert [hit["workflow_id"] for hit in response["hits"]] == ["scheme-workflow-second"]
+    response = search(test_client, query="Who can apply for water support?", group="mh", document_workflow_id="scheme-workflow-second")
+    assert response["hits"] == []

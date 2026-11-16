@@ -1,3 +1,5 @@
+"""Worker-side activity and workflow logging."""
+
 from __future__ import annotations
 
 import asyncio
@@ -15,7 +17,7 @@ from temporalio.worker import (
     WorkflowInterceptorClassInput,
 )
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("pipeline.activity_logging")
 
 
 class ActivityLogging(Interceptor):

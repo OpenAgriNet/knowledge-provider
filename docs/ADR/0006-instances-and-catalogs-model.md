@@ -1,5 +1,7 @@
 # Providers are instances, catalogs are (instance, type), documents are identified by (catalog, code)
 
+Migrations 0007 and 0008 supersede the document ownership and classification portions of this decision. Documents store their provider and kind directly. The legacy catalog API derives catalog information from those fields.
+
 Context: the first Postgres schema modelled a tenant as a free-text `documents.instance`, a `catalog_entries` table keyed by `(type, code)` with one entry per scheme, and a free-form `document_kind` that had to match the entry's type through a composite foreign key. Review feedback was that the unit published on the network is a provider's catalog, that a provider is a Keycloak group, that each scheme is itself a document, and that database enums and demo flags do not belong in the schema.
 
 Decision:
@@ -12,7 +14,7 @@ Decision:
 - Period, uploader and vector index state moved into `documents.metadata`; counts are derived from `pages` and `chunks`.
 - Database enums are replaced by plain `TEXT`, validated by `pipeline/models.py` (`DocumentStage`, `WorkflowType`, `WorkflowStatus`, `AuditEntityType`).
 - `audit_logs.instance` is replaced by `audit_logs.instance_id` (snapshot, `ON DELETE SET NULL`).
-- No Postgres held the first schema, so `migrations/0001` was rewritten in place instead of adding an ALTER migration. `scripts/migrate_sqlite_to_postgres.py` produces v2 and skips `kind=document` and `is_demo` documents, reporting the counts.
+- No Postgres held the first schema, so `migrations/0001` was rewritten in place instead of adding an ALTER migration. The SQLite importer then produced v2 with per-table outcome counts. The current importer lives in the operator kit beside the backup.
 
 Alternatives considered:
 - **Keep `documents.instance`.** Rejected: the catalog already carries the provider, and two sources of tenant truth drift.

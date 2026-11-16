@@ -77,7 +77,7 @@ class TestGroups:
         instance_id = _instance(db)
         db.get_or_create_catalog(instance_id, "scheme")
         with db.get_connection() as conn:
-            with pytest.raises(psycopg.errors.ForeignKeyViolation):
+            with pytest.raises((psycopg.errors.ForeignKeyViolation, psycopg.errors.RestrictViolation)):
                 conn.execute("DELETE FROM instances WHERE id = %s::uuid", (instance_id,))
 
     @pytest.mark.db
@@ -101,7 +101,7 @@ class TestCatalogs:
     @pytest.mark.db
     @pytest.mark.unit
     def test_a_new_instance_gets_one_catalog_per_supported_type(self, db_connection):
-        from pipeline.network_constants import KIND_TO_CATALOG_TYPE
+        from pipeline.network.network_constants import KIND_TO_CATALOG_TYPE
 
         db = db_connection
         mh = _instance(db, "mh")
@@ -221,15 +221,6 @@ class TestCatalogs:
                     "VALUES (%s::uuid, 'openagrinet:MandiPrice', 'N', '[]'::jsonb)",
                     (instance_id,),
                 )
-
-    @pytest.mark.db
-    @pytest.mark.unit
-    def test_a_catalog_with_documents_cannot_be_deleted(self, db_connection):
-        db = db_connection
-        _doc(db, "wf-held")
-        with db.get_connection() as conn:
-            with pytest.raises(psycopg.errors.ForeignKeyViolation):
-                conn.execute("DELETE FROM catalogs")
 
 
 class TestDocumentIdentity:
@@ -598,7 +589,7 @@ class TestDocumentJsonbShape:
 
     @pytest.mark.db
     @pytest.mark.unit
-    def test_there_are_no_instance_kind_or_demo_columns(self, db_connection):
+    def test_document_ownership_and_kind_are_stored_directly(self, db_connection):
         with db_connection.get_connection() as conn:
             cols = {
                 r["column_name"]
@@ -606,9 +597,9 @@ class TestDocumentJsonbShape:
                     "SELECT column_name FROM information_schema.columns WHERE table_name = 'documents'"
                 ).fetchall()
             }
-        assert {"instance", "document_kind", "is_demo", "catalog_entry_id", "valid_from", "valid_to",
+        assert {"instance", "document_kind", "is_demo", "catalog_entry_id", "catalog_id", "valid_from", "valid_to",
                 "index_status", "uploaded_by_user_id"}.isdisjoint(cols)
-        assert {"catalog_id", "code", "name", "aliases", "source", "is_disabled", "metadata"} <= cols
+        assert {"provider_id", "kind", "code", "name", "aliases", "source", "is_disabled", "metadata"} <= cols
 
     @pytest.mark.db
     @pytest.mark.unit

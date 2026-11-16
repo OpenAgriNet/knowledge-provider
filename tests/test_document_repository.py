@@ -7,7 +7,7 @@ tests pin the None guards that are the repository's own behaviour.
 
 import pytest
 
-from pipeline.document_repository import DocumentRepository
+from pipeline.documents.document_repository import DocumentRepository
 
 
 class FakeDb:
@@ -103,7 +103,7 @@ class TestAgainstRealPostgres:
 class TestGetDocumentGroup:
     @pytest.fixture(autouse=True)
     def _default_no_group_instances(self, monkeypatch):
-        monkeypatch.delenv("PORTAL_INSTANCE", raising=False)
+        monkeypatch.setenv("PORTAL_INSTANCE", "bv")
         monkeypatch.delenv("DEFAULT_INSTANCE", raising=False)
 
     @pytest.mark.unit

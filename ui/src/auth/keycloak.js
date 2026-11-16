@@ -1,61 +1,14 @@
-/**
- * Keycloak / OIDC integration for the docs-pipeline maintainer UI.
- *
- * SSO is a full-page redirect with PKCE, but the authorization code is
- * exchanged for tokens by OUR BACKEND, not in the browser. That is the whole
- * design constraint here: the Keycloak client is confidential, because the
- * email-otp extension refuses public clients — so SSO and email-OTP can only
- * share one client id if the browser never calls the token endpoint.
- *
- * Consequently there is no keycloak-js adapter. It only drives public clients;
- * with a confidential one it can neither exchange a code nor refresh a token.
- * Session storage and renewal (/auth/session/refresh) replace everything it did.
- *
- * When VITE_AUTH_ENABLED is not "true", the app runs fully open.
- */
+// Keycloak authenticates the user. The API exchanges the PKCE authorization
+// code and refreshes tokens using the confidential console client.
 
-import { appPath } from '../basePath'
 import { API_BASE } from '../config'
+import { normalizeProductRole, UserRole } from '../lib/roleCapabilities'
 
 const rawAuthEnabled = import.meta.env.VITE_AUTH_ENABLED
 export const AUTH_ENABLED = String(rawAuthEnabled ?? 'false').toLowerCase() === 'true'
 
-function normalizeKeycloakUrl(url) {
-  return String(url || '').replace(/\/$/, '')
-}
+export const ROUTES = { LOGIN: '/login', HOME: '/' }
 
-const keycloakUrl = normalizeKeycloakUrl(import.meta.env.VITE_KEYCLOAK_URL || '')
-const keycloakRealm = import.meta.env.VITE_KEYCLOAK_REALM || ''
-const keycloakClientId = import.meta.env.VITE_KEYCLOAK_CLIENT_ID || 'docs-pipeline-ui'
-// Empty/unset = show Keycloak login form (username/password + social IdPs).
-// Set VITE_KEYCLOAK_IDP_HINT=google only when you want to skip the form.
-const keycloakIdpHint = String(import.meta.env.VITE_KEYCLOAK_IDP_HINT || '').trim()
-
-export const KEYCLOAK_CONFIG = {
-  url: keycloakUrl,
-  realm: keycloakRealm,
-  clientId: keycloakClientId,
-}
-
-export const isKeycloakConfigured = Boolean(
-  AUTH_ENABLED && keycloakUrl && keycloakRealm && keycloakClientId,
-)
-
-/** React Router paths (relative to APP_BASENAME). */
-export const ROUTES = {
-  LOGIN: '/login',
-  AUTH_SSO_CALLBACK: '/auth/sso-callback',
-  HOME: '/',
-}
-
-/** Full browser path including /docs-pipeline prefix in production. */
-export function absoluteRoute(routePath) {
-  return appPath(routePath)
-}
-
-const AUTH_ERROR_STORAGE_KEY = 'docs-pipeline.authError'
-/** Written by the SSO callback popup; read by the opener as a reliable fallback. */
-export const SSO_RESULT_STORAGE_KEY = 'docs-pipeline.ssoResult'
 /** Persisted Keycloak tokens so a browser refresh keeps the session. */
 const SESSION_STORAGE_KEY = 'docs-pipeline.keycloak.session'
 /**
@@ -65,221 +18,11 @@ const SESSION_STORAGE_KEY = 'docs-pipeline.keycloak.session'
  * unrenewable and discarded rather than half-restored.
  */
 const BACKEND_SESSION = 'backend'
-/** Where the PKCE verifier waits while the browser is away at Keycloak. */
-const PKCE_STORAGE_KEY = 'docs-pipeline.sso.pkce'
-
-const OAUTH_CALLBACK_PARAMS = [
-  'error',
-  'error_description',
-  'error_uri',
-  'state',
-  'iss',
-  'session_state',
-  'code',
-]
-
 const MIN_TOKEN_VALIDITY_SECONDS = 30
-
-export const KEYCLOAK_SSO_MESSAGE = {
-  SUCCESS: 'KEYCLOAK_SSO_SUCCESS',
-  ERROR: 'KEYCLOAK_SSO_ERROR',
-}
 
 let currentToken = null
 let unauthorizedHandler = null
 
-function safeText(value) {
-  if (value == null) return ''
-  if (typeof value === 'string') return value.trim()
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
-  if (value instanceof Error && value.message) return value.message.trim()
-  if (typeof value === 'object') {
-    if (typeof value.error_description === 'string' && value.error_description.trim()) {
-      return value.error_description.trim()
-    }
-    if (typeof value.error === 'string' && value.error.trim()) {
-      return value.error.trim()
-    }
-    if (typeof value.message === 'string' && value.message.trim()) {
-      return value.message.trim()
-    }
-  }
-  return ''
-}
-
-export function getAuthErrorMessage(error, description) {
-  const desc = safeText(description)
-  const err = safeText(error)
-  const normalized = `${err} ${desc}`.toLowerCase()
-
-  if (err === 'access_denied' || normalized.includes('access denied')) {
-    return "Sign-in was cancelled. You can try again when you're ready."
-  }
-  if (err === 'login_required') {
-    return 'Your session has expired. Please sign in again.'
-  }
-  if (normalized.includes('redirect_uri') || normalized.includes('invalid parameter: redirect')) {
-    const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3001'
-    return (
-      `Keycloak rejected the redirect URL. On client "${keycloakClientId}" add Valid Redirect URIs: ` +
-      `${origin}${appPath(ROUTES.LOGIN)} and ${origin}${appPath(ROUTES.AUTH_SSO_CALLBACK)}`
-    )
-  }
-  if (normalized.includes('invalid_client') || normalized.includes('client not found')) {
-    return `Keycloak client "${keycloakClientId}" was not found. Check VITE_KEYCLOAK_CLIENT_ID.`
-  }
-  if (
-    normalized.includes('unauthorized_client') ||
-    normalized.includes('invalid client credentials') ||
-    normalized.includes('invalid_client')
-  ) {
-    return (
-      `Keycloak rejected client "${keycloakClientId}" (not a public browser client or wrong client id). ` +
-      `In Keycloak Admin → Clients → ${keycloakClientId}: set Client authentication = OFF (public), ` +
-      `Standard flow = ON, and PKCE S256. Confidential clients need a secret and cannot be used from the UI.`
-    )
-  }
-  if (
-    normalized.includes('cors') ||
-    normalized.includes('failed to fetch') ||
-    err === 'token_exchange_failed'
-  ) {
-    const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3001'
-    return (
-      `Keycloak token exchange failed. Most common causes: (1) Client authentication must be OFF (public) — ` +
-      `not just Redirect URIs; (2) Web Origins must include "${origin}" or "+" (no path); ` +
-      `(3) Valid Redirect URIs must include exactly ${origin}${appPath(ROUTES.AUTH_SSO_CALLBACK)}.`
-    )
-  }
-  if (desc && desc.toLowerCase() !== 'undefined') {
-    return `Sign-in failed: ${desc}`
-  }
-  if (err && err !== 'authentication_failed' && err.toLowerCase() !== 'undefined') {
-    return `Sign-in failed: ${err}`
-  }
-  return 'Sign-in could not be completed. Please try again.'
-}
-
-export function getStoredAuthError() {
-  return sessionStorage.getItem(AUTH_ERROR_STORAGE_KEY)
-}
-
-export function clearStoredAuthError() {
-  sessionStorage.removeItem(AUTH_ERROR_STORAGE_KEY)
-}
-
-function storeAuthError(message) {
-  sessionStorage.setItem(AUTH_ERROR_STORAGE_KEY, message)
-}
-
-export function clearSsoResult() {
-  try {
-    sessionStorage.removeItem(SSO_RESULT_STORAGE_KEY)
-  } catch {
-    // ignore
-  }
-}
-
-export function writeSsoResult(result) {
-  try {
-    sessionStorage.setItem(
-      SSO_RESULT_STORAGE_KEY,
-      JSON.stringify({ ...result, ts: Date.now() }),
-    )
-  } catch (err) {
-    console.warn('Could not write SSO result to sessionStorage:', err)
-  }
-}
-
-export function readSsoResult() {
-  try {
-    const raw = sessionStorage.getItem(SSO_RESULT_STORAGE_KEY)
-    if (!raw) return null
-    const parsed = JSON.parse(raw)
-    // Ignore stale results older than 2 minutes.
-    if (!parsed?.ts || Date.now() - parsed.ts > 120_000) {
-      sessionStorage.removeItem(SSO_RESULT_STORAGE_KEY)
-      return null
-    }
-    return parsed
-  } catch {
-    return null
-  }
-}
-
-function stripOAuthCallbackParams(url) {
-  for (const param of OAUTH_CALLBACK_PARAMS) {
-    url.searchParams.delete(param)
-  }
-  return `${url.pathname}${url.search}${url.hash}`
-}
-
-/**
- * Detect OAuth callback params in query or hash (Keycloak response modes).
- */
-export function readOAuthCallbackParams(href = window.location.href) {
-  const url = new URL(href)
-  const hash = url.hash.startsWith('#') ? url.hash.slice(1) : url.hash
-  const fromHash = new URLSearchParams(hash)
-  const get = (key) => url.searchParams.get(key) || fromHash.get(key) || null
-  return {
-    error: get('error'),
-    errorDescription: get('error_description'),
-    code: get('code'),
-    state: get('state'),
-    // Prefer query when code is in search — more reliable with SPA routers.
-    responseMode: url.searchParams.has('code') || url.searchParams.has('error') ? 'query' : 'fragment',
-  }
-}
-
-/**
- * Runs before React mounts.
- * - Forwards authorization codes that landed on the wrong path to /auth/sso-callback
- * - On OAuth error params outside the callback route, sends the user to /login
- */
-export function handleOAuthCallbackRedirect() {
-  if (typeof window === 'undefined') return
-
-  const callbackPath = appPath(ROUTES.AUTH_SSO_CALLBACK)
-  const url = new URL(window.location.href)
-  const oauth = readOAuthCallbackParams(url.href)
-
-  // Keycloak sometimes returns to a broader Valid Redirect URI (e.g. /login or /*).
-  // Always complete the code exchange on the dedicated callback route.
-  if (oauth.code && url.pathname !== callbackPath) {
-    const target = new URL(callbackPath, window.location.origin)
-    // Preserve whichever form Keycloak used (query or fragment).
-    if (url.search && url.search.length > 1) {
-      target.search = url.search
-    }
-    if (url.hash && url.hash.length > 1) {
-      target.hash = url.hash
-    }
-    // If params were only in hash, keep hash; if only query, keep query.
-    console.info('[auth] Forwarding OAuth code to SSO callback', {
-      from: url.pathname,
-      to: target.pathname,
-    })
-    window.location.replace(target.pathname + target.search + target.hash)
-    return
-  }
-
-  if (url.pathname === callbackPath) return
-
-  if (!oauth.error) return
-
-  const description = oauth.errorDescription
-  storeAuthError(getAuthErrorMessage(oauth.error, description))
-
-  if (window.location.pathname !== appPath(ROUTES.LOGIN)) {
-    window.location.replace(appPath(ROUTES.LOGIN))
-    return
-  }
-
-  window.history.replaceState(window.history.state, '', stripOAuthCallbackParams(url))
-}
-
-/** Lazily construct the singleton Keycloak instance (null when auth is off). */
 export function setCurrentToken(token) {
   currentToken = token || null
 }
@@ -357,38 +100,7 @@ export function parseJwtPayload(token) {
   }
 }
 
-/** Canonical product roles (must match Keycloak group leaves / realm roles). */
-export const UserRole = {
-  SUPER_ADMIN: 'super_admin',
-  BH_VIEWER: 'bh_viewer',
-  STATE_ADMIN: 'state_admin',
-  STATE_APPROVER: 'state_approver',
-  STATE_CONTRIBUTOR: 'state_contributor',
-  STATE_VIEW: 'state_view',
-}
-
-// Mirrors _ROLE_ALIASES in pipeline/auth/groups.py.
-// NOTE: `contributor` is the WEAKEST upload role, not state_admin.
-const ROLE_ALIASES = {
-  super_admin: UserRole.SUPER_ADMIN,
-  'super-admin': UserRole.SUPER_ADMIN,
-  superadmin: UserRole.SUPER_ADMIN,
-  bh_viewer: UserRole.BH_VIEWER,
-  'bh-viewer': UserRole.BH_VIEWER,
-  bh_view: UserRole.BH_VIEWER,
-  state_admin: UserRole.STATE_ADMIN,
-  'state-admin': UserRole.STATE_ADMIN,
-  admin: UserRole.STATE_ADMIN,
-  state_approver: UserRole.STATE_APPROVER,
-  'state-approver': UserRole.STATE_APPROVER,
-  approver: UserRole.STATE_APPROVER,
-  state_contributor: UserRole.STATE_CONTRIBUTOR,
-  'state-contributor': UserRole.STATE_CONTRIBUTOR,
-  contributor: UserRole.STATE_CONTRIBUTOR,
-  state_view: UserRole.STATE_VIEW,
-  'state-view': UserRole.STATE_VIEW,
-  view: UserRole.STATE_VIEW,
-}
+export { UserRole }
 
 const ROLE_RANK = {
   [UserRole.SUPER_ADMIN]: 100,
@@ -396,15 +108,7 @@ const ROLE_RANK = {
   [UserRole.STATE_APPROVER]: 40,
   [UserRole.STATE_CONTRIBUTOR]: 20,
   [UserRole.STATE_VIEW]: 10,
-  [UserRole.BH_VIEWER]: 5,
-}
-
-function normalizeRoleName(value) {
-  if (!value || typeof value !== 'string') return null
-  const key = value.trim().toLowerCase().replace(/\s+/g, '_').replace(/-/g, '_')
-  if (ROLE_ALIASES[key]) return ROLE_ALIASES[key]
-  if (ROLE_ALIASES[value.trim().toLowerCase()]) return ROLE_ALIASES[value.trim().toLowerCase()]
-  return null
+  [UserRole.GLOBAL_VIEWER]: 5,
 }
 
 /**
@@ -424,7 +128,7 @@ export function parseGroupsClaim(claims) {
   }
 
   let isSuperAdmin = false
-  let isBhViewer = false
+  let isGlobalViewer = false
   const stateRoles = {}
 
   for (let path of paths) {
@@ -435,24 +139,16 @@ export function parseGroupsClaim(claims) {
       isSuperAdmin = true
       continue
     }
-    if (/^\/global\/(bh[_-]?viewer|bh[_-]?view)$/i.test(path)) {
-      isBhViewer = true
+    if (/^\/global\/(global[_-]viewer|bh[_-]?viewer|bh[_-]?view)$/i.test(path)) {
+      isGlobalViewer = true
       continue
     }
 
     const stateMatch = path.match(/^\/states\/([A-Za-z0-9_-]+)\/([A-Za-z0-9_-]+)$/i)
     if (!stateMatch) continue
     const state = stateMatch[1].toLowerCase()
-    const role = normalizeRoleName(stateMatch[2])
-    if (!state || !role) continue
-    if (role === UserRole.SUPER_ADMIN) {
-      isSuperAdmin = true
-      continue
-    }
-    if (role === UserRole.BH_VIEWER) {
-      isBhViewer = true
-      continue
-    }
+    const role = normalizeProductRole(stateMatch[2])
+    if (!state || !role || role === UserRole.SUPER_ADMIN || role === UserRole.GLOBAL_VIEWER) continue
     const current = stateRoles[state]
     if (!current || (ROLE_RANK[role] || 0) > (ROLE_RANK[current] || 0)) {
       stateRoles[state] = role
@@ -461,17 +157,17 @@ export function parseGroupsClaim(claims) {
 
   const roles = new Set()
   if (isSuperAdmin) roles.add(UserRole.SUPER_ADMIN)
-  if (isBhViewer) roles.add(UserRole.BH_VIEWER)
+  if (isGlobalViewer) roles.add(UserRole.GLOBAL_VIEWER)
   Object.values(stateRoles).forEach((r) => roles.add(r))
 
   return {
     groups: [...new Set(paths)].sort(),
     isSuperAdmin,
-    isBhViewer,
+    isGlobalViewer,
     stateRoles,
-    // super_admin and bh_viewer both span every state, so neither is scoped
+    // super_admin and global_viewer both span every state, so neither is scoped
     // by an instance list.
-    instances: isSuperAdmin || isBhViewer ? [] : Object.keys(stateRoles).sort(),
+    instances: isSuperAdmin || isGlobalViewer ? [] : Object.keys(stateRoles).sort(),
     roles: [...roles].sort((a, b) => (ROLE_RANK[b] || 0) - (ROLE_RANK[a] || 0)),
   }
 }
@@ -487,7 +183,7 @@ function collectRolesFromClaims(claims) {
   const realmRoles = claims.realm_access?.roles
   if (Array.isArray(realmRoles)) {
     for (const role of realmRoles) {
-      const canon = normalizeRoleName(role)
+      const canon = normalizeProductRole(role)
       if (canon) roles.add(canon)
       else if (typeof role === 'string' && role.trim()) roles.add(role.trim())
     }
@@ -499,7 +195,7 @@ function collectRolesFromClaims(claims) {
       if (!clientData || typeof clientData !== 'object') continue
       if (Array.isArray(clientData.roles)) {
         for (const role of clientData.roles) {
-          const canon = normalizeRoleName(role)
+          const canon = normalizeProductRole(role)
           if (canon) roles.add(canon)
           else if (typeof role === 'string' && role.trim()) roles.add(role.trim())
         }
@@ -509,7 +205,7 @@ function collectRolesFromClaims(claims) {
 
   if (Array.isArray(claims.roles)) {
     for (const role of claims.roles) {
-      const canon = normalizeRoleName(role)
+      const canon = normalizeProductRole(role)
       if (canon) roles.add(canon)
       else if (typeof role === 'string' && role.trim()) roles.add(role.trim())
     }
@@ -546,6 +242,7 @@ export function profileFromAccessToken(token) {
   const displayName = fullName || composed || preferred || email || ''
   const username = preferred || email || displayName || String(claims.sub || '')
   const groupAccess = parseGroupsClaim(claims)
+  const roles = collectRolesFromClaims(claims)
 
   // Legacy multivalued instances claim when groups are absent
   let instances = groupAccess.instances
@@ -566,12 +263,12 @@ export function profileFromAccessToken(token) {
     username,
     name: displayName || username,
     email,
-    roles: collectRolesFromClaims(claims),
+    roles,
     groups: groupAccess.groups,
     state_roles: groupAccess.stateRoles,
     instances,
     is_super_admin: groupAccess.isSuperAdmin,
-    is_bh_viewer: groupAccess.isBhViewer,
+    is_global_viewer: roles.includes(UserRole.GLOBAL_VIEWER),
     claims,
   }
 }
@@ -599,9 +296,13 @@ export function mergeUserWithJwtProfile(backendUser, token) {
       groups: profile.groups || [],
       state_roles: profile.state_roles || {},
       is_super_admin: Boolean(profile.is_super_admin),
-      is_bh_viewer: Boolean(profile.is_bh_viewer),
+      is_global_viewer: Boolean(profile.is_global_viewer),
       auth_disabled: false,
     }
+  }
+
+  if (backendUser.live_provider_access) {
+    return { ...backendUser, name: profile.name || backendUser.username || backendUser.user_id || '' }
   }
 
   // Prefer JWT identity labels; keep backend permissions (incl. bypass mode).
@@ -632,7 +333,7 @@ export function mergeUserWithJwtProfile(backendUser, token) {
     is_super_admin: Boolean(
       backendUser.is_super_admin ?? profile.is_super_admin,
     ),
-    is_bh_viewer: Boolean(backendUser.is_bh_viewer ?? profile.is_bh_viewer),
+    is_global_viewer: Boolean(backendUser.is_global_viewer ?? backendUser.is_bh_viewer ?? profile.is_global_viewer),
   }
 }
 
@@ -727,38 +428,6 @@ export async function apiFetch(url, options = {}) {
   return response
 }
 
-export function getKeycloakRedirectUri() {
-  return `${window.location.origin}${appPath(ROUTES.LOGIN)}`
-}
-
-export function getKeycloakSsoCallbackUri() {
-  // Exact match required in Keycloak Valid Redirect URIs (no trailing slash on callback).
-  return `${window.location.origin}${appPath(ROUTES.AUTH_SSO_CALLBACK)}`
-}
-
-/** Human-readable Keycloak admin checklist for local / prod. */
-export function getKeycloakSetupHints() {
-  const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3001'
-  return {
-    clientId: keycloakClientId,
-    realm: keycloakRealm,
-    validRedirectUris: [
-      `${origin}${appPath(ROUTES.LOGIN)}`,
-      `${origin}${appPath(ROUTES.AUTH_SSO_CALLBACK)}`,
-      `${origin}${appPath('/').replace(/\/$/, '') || ''}/*`,
-    ],
-    webOrigins: [origin, '+'],
-    notes: [
-      'Client authentication: ON (confidential) — required by the email-otp extension',
-      'Standard flow: enabled (browser gets only the code; backend exchanges it)',
-      'Direct access grants: enabled, with Direct grant flow = email-otp-direct-grant',
-      'PKCE: S256',
-      'Backend needs KEYCLOAK_CLIENT_ID + KEYCLOAK_CLIENT_SECRET for the same client',
-      'Production UI is under /docs-pipeline/*',
-    ],
-  }
-}
-
 /**
  * Restore a session on page load.
  *
@@ -768,7 +437,7 @@ export function getKeycloakSetupHints() {
  * backend, so all this has to do is rehydrate localStorage and renew if stale.
  */
 export async function initKeycloak() {
-  if (!isKeycloakConfigured) return false
+  if (!AUTH_ENABLED) return false
 
   const persisted = loadPersistedSession()
   if (!persisted?.token) return false
@@ -813,179 +482,54 @@ export function applyBackendSession(tokens) {
   return true
 }
 
-
-
-/** RFC 7636 verifier: 43-128 chars from the unreserved set. */
-function createCodeVerifier() {
-  const bytes = new Uint8Array(32)
-  window.crypto.getRandomValues(bytes)
-  return base64UrlEncode(bytes.buffer)
-}
-
-function base64UrlEncode(buffer) {
-  const bytes = new Uint8Array(buffer)
-  let binary = ''
-  for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i])
-  return window.btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-}
-
-async function createCodeChallenge(verifier) {
-  const digest = await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))
-  return base64UrlEncode(digest)
-}
-
-/**
- * Stash the PKCE verifier for the round trip to Keycloak.
- *
- * sessionStorage, not localStorage: it must survive the redirect but die with
- * the tab, and it must not leak into other tabs mid-login.
- */
-function stashPkce(verifier, state) {
-  try {
-    window.sessionStorage.setItem(PKCE_STORAGE_KEY, JSON.stringify({ verifier, state }))
-  } catch (err) {
-    console.warn('[auth] Could not stash the PKCE verifier:', err)
-  }
-}
-
-function takePkce() {
-  try {
-    const raw = window.sessionStorage.getItem(PKCE_STORAGE_KEY)
-    window.sessionStorage.removeItem(PKCE_STORAGE_KEY)
-    return raw ? JSON.parse(raw) : null
-  } catch {
-    return null
-  }
-}
-
-/**
- * Complete SSO by having the backend exchange the authorization code.
- *
- * The browser cannot do this itself — the token endpoint requires the
- * confidential client's secret. Sharing one client id between SSO and email-OTP
- * is exactly what that buys us.
- *
- * @returns the token set on success.
- */
-export async function exchangeSsoCode(code, { state } = {}) {
-  const stashed = takePkce()
-  if (stashed?.state && state && stashed.state !== state) {
-    throw new Error('Sign-in state did not match. Please start again.')
-  }
-
-  const response = await fetch(`${API_BASE}/auth/sso/exchange`, {
+async function postAuth(path, body) {
+  const response = await fetch(`${API_BASE}/auth/${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      code,
-      redirect_uri: getKeycloakSsoCallbackUri(),
-      code_verifier: stashed?.verifier || null,
-    }),
+    body: JSON.stringify(body),
   })
-
+  if (response.status === 204) return null
   const data = await response.json().catch(() => null)
   if (!response.ok) {
-    throw new Error(data?.detail || data?.message || 'Could not complete sign-in.')
+    const message = typeof data?.detail === 'string' ? data.detail : 'Sign-in could not be completed.'
+    const error = new Error(message)
+    error.challenge = data?.challenge
+    throw error
   }
-  if (!data?.access_token) throw new Error('Keycloak returned no access token.')
-
-  return {
-    token: data.access_token,
-    refreshToken: data.refresh_token || null,
-    idToken: data.id_token || null,
-  }
+  return data
 }
 
-/**
- * Full-page Keycloak SSO.
- *
- * The authorize URL is built by hand rather than through keycloak-js: the
- * adapter insists on completing the token exchange in the browser, which a
- * confidential client rejects. Only the authorize leg happens here; the code
- * that comes back goes to the backend (see exchangeSsoCode).
- *
- * Navigates away on success; does not resolve.
- */
-export async function loginWithKeycloakRedirect({ idpHint, loginHint } = {}) {
-  if (!isKeycloakConfigured) {
-    throw new Error(
-      'Keycloak is not configured. Set VITE_AUTH_ENABLED=true plus VITE_KEYCLOAK_URL, VITE_KEYCLOAK_REALM, and VITE_KEYCLOAK_CLIENT_ID.',
-    )
-  }
-
-  clearSsoResult()
-
-  // Reuse a live local session instead of bouncing through Keycloak.
-  const existing = loadPersistedSession()
-  if (existing?.token && existing.via === BACKEND_SESSION && !isJwtExpired(existing.token, 10)) {
-    setCurrentToken(existing.token)
-    return { status: 'success', tokens: existing }
-  }
-
-  const redirectUri = getKeycloakSsoCallbackUri()
-  const verifier = createCodeVerifier()
-  const state = createCodeVerifier()
-  stashPkce(verifier, state)
-
-  const params = new URLSearchParams({
-    client_id: keycloakClientId,
-    redirect_uri: redirectUri,
-    response_type: 'code',
-    scope: 'openid profile email',
-    state,
-    code_challenge: await createCodeChallenge(verifier),
-    code_challenge_method: 'S256',
-    prompt: 'select_account',
-  })
-  // Empty hint = show the Keycloak page (Google button + password/email-OTP
-  // form). idpHint passed in overrides the env default (undefined = env
-  // default, e.g. the Google button; '' = explicitly no hint, e.g. the email
-  // login path, which needs Keycloak's own hosted email-otp-browser flow —
-  // the mesutpiskin email-authenticator plugin only supports OTP delivery
-  // through a real browser session, not a headless/direct-grant REST call.
-  const hint = idpHint === undefined ? keycloakIdpHint : idpHint
-  if (hint) params.set('kc_idp_hint', hint)
-  // Pre-fills Keycloak's username field so the user doesn't retype the email
-  // they already entered on our page.
-  if (loginHint) params.set('login_hint', loginHint)
-
-  const authorizeUrl = `${keycloakUrl}/realms/${encodeURIComponent(
-    keycloakRealm,
-  )}/protocol/openid-connect/auth?${params.toString()}`
-
-  console.info('[auth] Starting Keycloak SSO redirect', {
-    redirectUri,
-    realm: keycloakRealm,
-    clientId: keycloakClientId,
-    idpHint: hint || '(none — Keycloak login page)',
-    loginHint: loginHint || undefined,
-  })
-
-  window.location.assign(authorizeUrl)
-  return { status: 'redirecting' }
+export async function requestEmailCode(email) {
+  return postAuth('email/send', { email })
 }
 
+export async function verifyEmailCode(challenge, code) {
+  const data = await postAuth('email/verify', { challenge, code })
+  return { token: data.access_token, refreshToken: data.refresh_token, idToken: data.id_token }
+}
+
+export async function googleSignInEnabled() {
+  const response = await fetch(`${API_BASE}/auth/google`)
+  return response.ok && (await response.json()).enabled === true
+}
+
+export async function startGoogleSignIn() {
+  const { location } = await postAuth('google/start', {})
+  window.location.assign(location)
+}
+
+let googleSessionRequest
+
+export function finishGoogleSignIn() {
+  googleSessionRequest ??= postAuth('google/complete', {}).then(data => ({
+    token: data.access_token, refreshToken: data.refresh_token, idToken: data.id_token,
+  })).finally(() => { googleSessionRequest = undefined })
+  return googleSessionRequest
+}
 
 export async function logoutFromKeycloak() {
-  const stored = loadPersistedSession()
-  setCurrentToken(null)
-  clearSsoResult()
-  clearPersistedSession()
-  if (!isKeycloakConfigured) return
-
-  // Built by hand for the same reason login is: the adapter is never initialized
-  // against this confidential client, so kc.logout() has nothing to work with.
-  const params = new URLSearchParams({
-    post_logout_redirect_uri: `${window.location.origin}${appPath(ROUTES.LOGIN)}`,
-    client_id: keycloakClientId,
-  })
-  // Keycloak requires either an id_token_hint or client_id to skip the
-  // "do you want to log out?" confirmation page.
-  if (stored?.idToken) params.set('id_token_hint', stored.idToken)
-
-  window.location.assign(
-    `${keycloakUrl}/realms/${encodeURIComponent(
-      keycloakRealm,
-    )}/protocol/openid-connect/logout?${params.toString()}`,
-  )
+  const session = loadPersistedSession()
+  if (session?.refreshToken) {
+    await postAuth('session/logout', { refresh_token: session.refreshToken })
+  }
 }

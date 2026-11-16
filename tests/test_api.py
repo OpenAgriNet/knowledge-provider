@@ -19,7 +19,6 @@ import pytest
 # Set test environment
 os.environ["MINIO_ACCESS_KEY"] = "test-key"
 os.environ["MINIO_SECRET_KEY"] = "test-secret"
-os.environ["ALLOWED_FILE_PATHS"] = "/app/books,/tmp"
 
 
 _code_seq = itertools.count(1)
@@ -383,7 +382,7 @@ class TestDocumentValidityEndpoints:
         # only real if it is asserted through the endpoint that grants it.
         # Spelled out rather than compared against default_period(), so a
         # change to that default fails here instead of agreeing with itself.
-        from datetime import date
+        from datetime import datetime, timezone
 
         response = test_client.post(
             "/upload",
@@ -393,7 +392,7 @@ class TestDocumentValidityEndpoints:
 
         assert response.status_code == 200
         doc = test_client.get(f"/documents/{response.json()['workflow_id']}").json()
-        assert doc["valid_from"] == date.today().isoformat()
+        assert doc["valid_from"] == datetime.now(timezone.utc).date().isoformat()
         assert doc["valid_to"] is None
 
     @pytest.mark.api
@@ -558,7 +557,7 @@ class TestSearchValidity:
     @pytest.mark.api
     @pytest.mark.unit
     def test_applies_validity_by_default(self, test_client, capturing_store):
-        from datetime import date
+        from datetime import datetime, timezone
 
         response = test_client.post("/search", json={"query": "kisan"})
 
@@ -566,7 +565,7 @@ class TestSearchValidity:
         assert capturing_store.captured["apply_validity"] is True
         config = response.json()["effective_config"]
         assert config["apply_validity"] is True
-        assert config["valid_on"] == date.today().isoformat()
+        assert config["valid_on"] == datetime.now(timezone.utc).date().isoformat()
 
     @pytest.mark.api
     @pytest.mark.unit
@@ -844,6 +843,47 @@ class TestPageEndpoints:
         page = response.json()
         assert page["edited_markdown"] == "Updated content"
 
+    @pytest.mark.api
+    @pytest.mark.db
+    @pytest.mark.parametrize("stored_language", ["fr-ca", "fr-CA"])
+    def test_review_and_edit_only_the_selected_translation(self, test_client, db_connection, stored_language):
+        import json
+
+        workflow_id = "page-translation-locale"
+        db_connection.upsert_document(
+            kind="advisory", code=_next_code(), workflow_id=workflow_id, document_id="locale-test",
+            filename="notice.txt", filepath="/tmp/notice.txt", stage="completed",
+        )
+        db_connection.save_pages(workflow_id, [{
+            "page_number": 1, "original_markdown": "Source",
+            "translations": {
+                "en": {"translated_markdown": "Original English"},
+                stored_language: {"translated_markdown": "Texte original"},
+            },
+        }])
+        path = f"/documents/{workflow_id}/pages/1"
+        review = test_client.patch(path, json={"translation_language": "fr-CA", "translation_reviewed": True})
+        assert review.status_code == 200, review.text
+        assert review.json()["translations"][stored_language]["is_reviewed"] is True
+        assert not db_connection.get_document(workflow_id)["reindex_required"]
+
+        missing = test_client.patch(path, json={
+            "translation_language": "de", "edited_translation": "Missing", "edited_markdown": "Uncommitted",
+        })
+        assert missing.status_code == 409, missing.text
+        assert not db_connection.get_page(workflow_id, 1)["edited_markdown"]
+
+        edited = test_client.patch(path, json={"translation_language": "fr-CA", "edited_translation": "Texte corrigé"})
+        assert edited.status_code == 200, edited.text
+        translations = edited.json()["translations"]
+        assert translations["en"]["translated_markdown"] == "Original English"
+        assert not translations["en"].get("edited_translation")
+        assert translations[stored_language]["edited_translation"] == "Texte corrigé"
+        assert db_connection.get_document(workflow_id)["reindex_required"]
+        audit = db_connection.get_audit_logs(workflow_id, action_type="translation_edit")
+        assert len(audit) == 2
+        assert all(json.loads(entry["metadata"])["language"] == "fr-ca" for entry in audit)
+
 
 class TestChunkEndpoints:
     """Tests for chunk operations."""
@@ -1049,7 +1089,7 @@ class TestErrorHandling:
 class TestPdfHeaders:
     @pytest.mark.unit
     def test_inline_content_disposition_unicode_filename(self):
-        from pipeline.api.api import _inline_content_disposition
+        from pipeline.api.routers.document_content import _inline_content_disposition
 
         header = _inline_content_disposition("રબર મેટ.pdf")
         header.encode("latin-1")
@@ -1058,7 +1098,7 @@ class TestPdfHeaders:
 
     @pytest.mark.unit
     def test_inline_content_disposition_strips_crlf(self):
-        from pipeline.api.api import _inline_content_disposition
+        from pipeline.api.routers.document_content import _inline_content_disposition
 
         header = _inline_content_disposition("evil.pdf\r\nX-Injected: yes")
         assert "\r" not in header
@@ -1109,6 +1149,21 @@ class TestUploadCatalogIdentity:
         assert "scheme" in response.json()["detail"]
 
     @pytest.mark.api
+    def test_upload_accepts_a_configured_kind_without_a_catalog(
+        self, test_client, db_connection, sample_pdf_content, monkeypatch,
+    ):
+        monkeypatch.setenv("DOCUMENT_KINDS", "scheme,advisory,field-report")
+        response = test_client.post(
+            "/upload",
+            params={"kind": "field-report"},
+            files={"file": ("report.pdf", sample_pdf_content, "application/pdf")},
+        )
+        assert response.status_code in (200, 201), response.text
+        document = test_client.get(f"/documents/{response.json()['workflow_id']}").json()
+        assert document["kind"] == "field-report"
+        assert db_connection.get_document(response.json()["workflow_id"])["catalog_id"] is None
+
+    @pytest.mark.api
     @pytest.mark.unit
     def test_an_invalid_code_is_rejected(self, test_client, sample_pdf_content):
         response = test_client.post(
@@ -1140,8 +1195,8 @@ class TestUploadCatalogIdentity:
         assert doc["name"] == "National Mission on Natural Farming"
         with db_connection.get_connection() as conn:
             catalog = conn.execute(
-                "SELECT c.type, g.name, g.path FROM documents d JOIN catalogs c ON c.id = d.catalog_id "
-                "JOIN instances g ON g.id = c.instance_id WHERE d.code = %s",
+                "SELECT c.type, g.name, g.path FROM catalog_status c "
+                "JOIN instances g ON g.id = c.instance_id WHERE c.code = %s",
                 (doc["code"],),
             ).fetchall()
         assert [(r["type"], r["name"], r["path"]) for r in catalog] == [
@@ -1375,7 +1430,7 @@ class TestVectorKeysToDelete:
     @pytest.mark.api
     @pytest.mark.unit
     def test_disable_never_deletes_a_key_another_live_document_is_indexed_under(self, db_connection):
-        from pipeline.api import api
+        from pipeline.api.routers.document_lifecycle import _vector_doc_ids
 
         db = db_connection
         uuid_a = db.upsert_document(
@@ -1392,11 +1447,11 @@ class TestVectorKeysToDelete:
         )
 
         # The twin was only uploaded, never indexed, so nothing of it is at risk.
-        assert api._vector_doc_ids(db.get_document(uuid_a), "dev") == ["a" * 32]
+        assert _vector_doc_ids(db.get_document(uuid_a), "dev") == ["a" * 32]
 
         db.upsert_document_index_status("wf-k-b", "documents-index", doc_id="a" * 32, status="indexed")
-        assert api._vector_doc_ids(db.get_document(uuid_a), "dev") == []
-        assert api._vector_doc_ids(db.get_document("wf-k-c"), "dev") == ["b" * 32]
+        assert _vector_doc_ids(db.get_document(uuid_a), "dev") == []
+        assert _vector_doc_ids(db.get_document("wf-k-c"), "dev") == ["b" * 32]
 
         db.set_document_disabled("wf-k-b", True)
-        assert api._vector_doc_ids(db.get_document(uuid_a), "dev") == ["a" * 32]
+        assert _vector_doc_ids(db.get_document(uuid_a), "dev") == ["a" * 32]

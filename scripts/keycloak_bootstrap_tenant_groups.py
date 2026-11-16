@@ -2,9 +2,9 @@
 """Idempotently configure Keycloak multi-state tenant groups + roles + mappers.
 
 Creates:
-  - Realm roles: super_admin, bh_viewer, state_admin, state_approver,
+  - Realm roles: super_admin, global_viewer, state_admin, state_approver,
     state_contributor, state_view
-  - Groups: /global/super-admin, /global/bh-viewer,
+  - Groups: /global/super-admin, /global/global-viewer,
     /states/{CODE}/{admin|approver|contributor|view}
   - Group → realm role mappings on leaf groups
   - Group Membership mapper (claim ``groups``, full path) on SPA clients
@@ -70,7 +70,7 @@ DEFAULT_STATES = [
 
 PRODUCT_ROLES = (
     ("super_admin", "Platform super admin — all states, full access"),
-    ("bh_viewer", "Bharat Vistaar viewer — all states, read-only"),
+    ("global_viewer", "Viewer with read-only access to all providers"),
     ("state_admin", "State admin — upload, edit, review & approve, pipeline, delete own"),
     ("state_approver", "State approver — upload, edit, review & approve, pipeline"),
     ("state_contributor", "State contributor — upload and run pipeline only"),
@@ -80,7 +80,7 @@ PRODUCT_ROLES = (
 # Global leaf group name → realm role.
 GLOBAL_LEAVES = (
     ("super-admin", "super_admin"),
-    ("bh-viewer", "bh_viewer"),
+    ("global-viewer", "global_viewer"),
 )
 
 # Per-state leaf group name → realm role.

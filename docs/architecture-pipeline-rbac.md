@@ -220,7 +220,7 @@ stateDiagram-v2
 | **Approval for Prod** (queue) | Document waits | Still **DEV-only** in search until promote |
 | **Approve for Prod** | **Super Admin only** (`admin` / `RequireAdmin`) | `promote_document_to_prod_qdrant` → **Qdrant PROD** → `completed` |
 
-Signals (workflow): `approve_ocr`, `approve_translation`, `approve_chunks`, `approve_ingestion`, `approve_prod` — see `pipeline/workflows.py`.
+Signals (workflow): `approve_ocr`, `approve_translation`, `approve_chunks`, `approve_ingestion`, `approve_prod` — see `pipeline/temporal/workflows/`.
 
 API (examples):
 
@@ -400,10 +400,10 @@ flowchart TB
 
 | Concern | Location |
 |---|---|
-| Stages enum | `pipeline/models.py` → `DocumentStage` |
-| Workflow + signals | `pipeline/workflows.py` |
-| DEV ingest / PROD promote activities | `pipeline/activities.py` |
-| Approve prod API | `pipeline/api/api.py` → `POST .../approve-prod` |
+| Stages enum | `pipeline/documents/models.py` → `DocumentStage` |
+| Workflow + signals | `pipeline/temporal/workflows/` |
+| DEV ingest / PROD promote activities | `pipeline/temporal/activities/` |
+| Approve prod API | `pipeline/api/routers/document_review.py` → `POST .../approve-prod` |
 | Permissions | `pipeline/auth/permissions.py` |
 | Groups / super_admin | `pipeline/auth/groups.py` |
 | Tenancy | `pipeline/auth/tenancy.py` |

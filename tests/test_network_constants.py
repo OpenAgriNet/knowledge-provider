@@ -1,6 +1,6 @@
 import pytest
 
-from pipeline.network_constants import (
+from pipeline.network.network_constants import (
     KIND_TO_CATALOG_TYPE,
     catalog_type_for_kind,
     kind_for_catalog_type,

@@ -11,7 +11,6 @@ from fastapi import HTTPException
 from pipeline.auth.jwt import claims_to_user
 from pipeline.auth.models import local_bypass_user
 from pipeline.auth.tenancy import (
-    PORTAL_INSTANCE,
     allowed_instances,
     assert_document_instance_access,
     assert_instance_access,
@@ -19,6 +18,8 @@ from pipeline.auth.tenancy import (
     resolve_create_instance,
     user_can_access_instance,
 )
+
+PORTAL_INSTANCE = "bv"  # compatibility fixture configured in conftest
 
 
 def test_bypass_user_is_unrestricted():
@@ -393,8 +394,8 @@ class TestGroupForInstance:
             ("mh", "mh"),
             ("  MH ", "mh"),
             ("ka", "ka"),
-            ("bv", None),
-            ("BV", None),
+            ("bv", "bv"),
+            ("BV", "bv"),
             ("default", None),
             ("", None),
             (None, None),
@@ -438,7 +439,7 @@ def test_instance_is_reached_through_the_documents_catalog(db_connection):
         PORTAL_INSTANCE: "/global" if PORTAL_INSTANCE == "bv" else f"/states/{PORTAL_INSTANCE.upper()}",
     }
     # Every group is seeded with one catalog per supported type.
-    from pipeline.network_constants import KIND_TO_CATALOG_TYPE
+    from pipeline.network.network_constants import KIND_TO_CATALOG_TYPE
 
     assert sorted((r["instance_name"], r["type"]) for r in catalogs) == sorted(
         (group, catalog_type)

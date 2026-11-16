@@ -7,7 +7,7 @@ import pytest
 
 @pytest.fixture
 def catalog_db(db_connection):
-    from pipeline import scheme_catalog
+    from pipeline.network.catalog import scheme_catalog
 
     yield db_connection, scheme_catalog
 
@@ -29,20 +29,33 @@ def _doc(db, workflow_id, *, code, kind="scheme", name=None, stage="completed",
     )
 
 
-def test_catalog_has_no_bootstrap_entries(catalog_db):
-    """The catalog is documents only; the code-defined lists stay as hints."""
-    db, scheme_catalog = catalog_db
+def test_catalog_has_no_bootstrap_entries(catalog_db, monkeypatch):
+    monkeypatch.delenv("LEGACY_SCHEME_PROFILE_PATH", raising=False)
+    _, scheme_catalog = catalog_db
     assert not hasattr(scheme_catalog, "bootstrap_catalog_if_empty")
     snap = scheme_catalog.build_snapshot()
     assert snap["vector_schemes"] == []
     assert snap["catalog_version"] == 0
-    # Static lists are untouched: curated alias source and legacy tool list.
-    assert len(scheme_catalog.BOOTSTRAP_VECTOR_SCHEMES) == 13
-    assert "nbm" not in scheme_catalog.BOOTSTRAP_VECTOR_SCHEMES  # legacy-only
-    assert any(s["scheme_code"] == "nbm" for s in snap["legacy_schemes"])
+    assert snap["legacy_schemes"] == []
     assert "search_schemes_doc" in snap["tool_prompts"]
-    assert snap["routing_exceptions"]["pkvy"] == "search_schemes"
-    assert snap["routing_exceptions"]["nbm"] == "get_scheme_info"
+    assert snap["routing_exceptions"] == {}
+
+
+def test_deployment_profile_preserves_legacy_tool_routing(catalog_db, monkeypatch, tmp_path):
+    _, scheme_catalog = catalog_db
+    before = scheme_catalog.build_snapshot()
+    profile = tmp_path / "scheme-profile.json"
+    profile.write_text(
+        '{"legacy_schemes":[{"scheme_code":"example","scheme_name":"Example scheme",'
+        '"tool":"legacy_lookup","tool_routing":"legacy"}],"routing_exceptions":{"example":"legacy_lookup"}}'
+    )
+    monkeypatch.setenv("LEGACY_SCHEME_PROFILE_PATH", str(profile))
+    after = scheme_catalog.build_snapshot()
+
+    assert after["legacy_schemes"][0]["scheme_code"] == "example"
+    assert after["routing_exceptions"] == {"example": "legacy_lookup"}
+    assert after["tool_prompts"]["legacy_scheme_count"] == "1"
+    assert before["etag"] != after["etag"]
 
 
 def test_snapshot_has_one_entry_per_live_scheme_document(catalog_db):
@@ -162,7 +175,7 @@ def test_kind_is_fixed_after_upload(catalog_db):
 
 
 def test_prepare_records_scheme_payload():
-    from pipeline.activities import _prepare_records
+    from pipeline.search.passage_projection import _prepare_records
 
     chunks = [
         {
@@ -201,7 +214,7 @@ def test_prepare_records_scheme_payload():
 
 
 def test_prepare_records_document_unchanged():
-    from pipeline.activities import _prepare_records
+    from pipeline.search.passage_projection import _prepare_records
 
     chunks = [
         {
@@ -227,7 +240,7 @@ def test_prepare_records_document_unchanged():
     [("advisory", "advisory"), ("video", "video"), (" Advisory ", "advisory")],
 )
 def test_prepare_records_type_equals_kind(kind, expected):
-    from pipeline.activities import _prepare_records
+    from pipeline.search.passage_projection import _prepare_records
 
     chunks = [{"chunk_number": 0, "original_text": "Some text.", "token_count": 3, "is_excluded": False}]
     records = _prepare_records("doc3", "x.pdf", chunks, kind=kind)
@@ -236,7 +249,7 @@ def test_prepare_records_type_equals_kind(kind, expected):
 
 
 @pytest.fixture
-def asgi_client(db_connection, mock_temporal_client, mock_minio_client):
+def asgi_client(db_connection, mock_temporal_client, mock_object_store):
     """HTTP client that does not run real Temporal/MinIO lifespan."""
     from contextlib import asynccontextmanager
 
@@ -245,7 +258,7 @@ def asgi_client(db_connection, mock_temporal_client, mock_minio_client):
     from pipeline.api import api
 
     api.temporal_client = mock_temporal_client
-    api.minio_client = mock_minio_client
+    api.object_store = mock_object_store
 
     @asynccontextmanager
     async def _noop_lifespan(_app):
@@ -261,7 +274,8 @@ def asgi_client(db_connection, mock_temporal_client, mock_minio_client):
 
 
 def test_catalog_api_snapshot(asgi_client):
-    from pipeline import db, scheme_catalog
+    from pipeline import db
+    from pipeline.network.catalog import scheme_catalog
 
     _doc(db, "wf-snap-1", code="pkvy", name="Paramparagat Krishi Vikas Yojana")
     _doc(db, "wf-snap-2", code="pm-ddky", name="Deen Dayal Upadhyaya Krishi Kalyan Yojana")
@@ -292,6 +306,24 @@ def test_catalog_api_snapshot(asgi_client):
 
 def test_catalog_bootstrap_endpoint_is_gone(asgi_client):
     assert asgi_client.post("/catalog/v1/bootstrap").status_code in (404, 405)
+
+
+def test_catalog_reads_follow_provider_access(asgi_client, monkeypatch):
+    from pipeline import db
+    from pipeline.api import api
+    from pipeline.auth.deps import get_current_user
+    from pipeline.auth.jwt import claims_to_user
+
+    _doc(db, "wf-provider-a", code="scheme-a", instance="provider-a")
+    _doc(db, "wf-provider-b", code="scheme-b", instance="provider-b")
+    reader = claims_to_user({"sub": "reader", "groups": ["/states/PROVIDER-A/view"]})
+    monkeypatch.setitem(api.app.dependency_overrides, get_current_user, lambda: reader)
+    for endpoint in ("schemes", "snapshot"):
+        result = asgi_client.get(f"/catalog/v1/{endpoint}").raise_for_status().json()
+        assert [entry["scheme_code"] for entry in result["vector_schemes"]] == ["scheme-a"]
+        assert asgi_client.get(f"/catalog/v1/{endpoint}", params={"instance": "provider-b"}).status_code == 403
+    prompt = asgi_client.get("/catalog/v1/tool-prompt").raise_for_status().json()
+    assert prompt["vector_scheme_codes"] == ["scheme-a"]
 
 
 def test_catalog_service_key_auth(asgi_client, monkeypatch):
@@ -401,7 +433,7 @@ class TestResolveSchemeAliases:
     @pytest.mark.unit
     def test_nmeoop_gets_aliases_without_any_curation(self):
         """The real case: a scheme indexed with scheme_aliases: [] matched nothing."""
-        from pipeline.scheme_catalog import resolve_scheme_aliases
+        from pipeline.network.catalog.scheme_catalog import resolve_scheme_aliases
 
         aliases = resolve_scheme_aliases(
             "nmeoop", "National Mission on Edible Oils - Oil Palm", None
@@ -419,7 +451,7 @@ class TestResolveSchemeAliases:
 
     @pytest.mark.unit
     def test_acronym_is_derived_from_significant_words(self):
-        from pipeline.scheme_catalog import resolve_scheme_aliases
+        from pipeline.network.catalog.scheme_catalog import resolve_scheme_aliases
 
         aliases = resolve_scheme_aliases("cdp-2", "Crop Diversification Programme", None)
 
@@ -427,7 +459,7 @@ class TestResolveSchemeAliases:
 
     @pytest.mark.unit
     def test_stopwords_are_excluded_from_the_acronym(self):
-        from pipeline.scheme_catalog import resolve_scheme_aliases
+        from pipeline.network.catalog.scheme_catalog import resolve_scheme_aliases
 
         aliases = resolve_scheme_aliases("x", "National Mission on Edible Oils", None)
 
@@ -435,7 +467,7 @@ class TestResolveSchemeAliases:
 
     @pytest.mark.unit
     def test_curator_aliases_are_kept_and_come_first(self):
-        from pipeline.scheme_catalog import resolve_scheme_aliases
+        from pipeline.network.catalog.scheme_catalog import resolve_scheme_aliases
 
         aliases = resolve_scheme_aliases(
             "nmeoop",
@@ -449,17 +481,23 @@ class TestResolveSchemeAliases:
         assert "nmeoop" in {a.lower() for a in aliases}
 
     @pytest.mark.unit
-    def test_bootstrap_aliases_are_merged_for_known_codes(self):
-        from pipeline.scheme_catalog import resolve_scheme_aliases
+    def test_deployment_aliases_are_merged_for_known_codes(self, monkeypatch, tmp_path):
+        from pipeline.network.catalog.scheme_catalog import resolve_scheme_aliases
 
-        aliases = {a.lower() for a in resolve_scheme_aliases("nmeo", None, None)}
+        profile = tmp_path / "scheme-profile.json"
+        profile.write_text(
+            '{"aliases_by_code":{"example":{"scheme_name":"Example Scheme",'
+            '"scheme_aliases":["configured alias"]}}}'
+        )
+        monkeypatch.setenv("LEGACY_SCHEME_PROFILE_PATH", str(profile))
+        aliases = {a.lower() for a in resolve_scheme_aliases("example", None, None)}
 
-        assert "nmeo-os" in aliases
-        assert "oilseeds mission" in aliases
+        assert "configured alias" in aliases
+        assert "example scheme" in aliases
 
     @pytest.mark.unit
     def test_aliases_are_deduped_case_insensitively(self):
-        from pipeline.scheme_catalog import resolve_scheme_aliases
+        from pipeline.network.catalog.scheme_catalog import resolve_scheme_aliases
 
         aliases = resolve_scheme_aliases("pkvy", "Paramparagat Krishi Vikas Yojana", ["PKVY", "pkvy"])
 
@@ -469,7 +507,7 @@ class TestResolveSchemeAliases:
     @pytest.mark.unit
     def test_json_string_aliases_are_accepted(self):
         """Aliases may arrive as a JSON string."""
-        from pipeline.scheme_catalog import resolve_scheme_aliases
+        from pipeline.network.catalog.scheme_catalog import resolve_scheme_aliases
 
         aliases = resolve_scheme_aliases("makhana", "Makhana Scheme", '["fox nut", "lotus seed"]')
 
@@ -478,6 +516,6 @@ class TestResolveSchemeAliases:
 
     @pytest.mark.unit
     def test_no_code_and_no_name_yields_nothing(self):
-        from pipeline.scheme_catalog import resolve_scheme_aliases
+        from pipeline.network.catalog.scheme_catalog import resolve_scheme_aliases
 
         assert resolve_scheme_aliases(None, None, None) == []

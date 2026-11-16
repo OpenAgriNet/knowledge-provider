@@ -1,0 +1,26 @@
+{
+  "advisoryId": "cotton-field-drainage-demo",
+  "title": "કપાસના ખેતરની સંભાળ",
+  "content": {
+    "language": "gu",
+    "text": "કપાસના ખેતરની સંભાળ\n\nવરસાદ પછી કપાસના ખેતરમાં પાણી ભરાયું છે કે નહીં તે તપાસો. જ્યાં પાણી ઊભું હોય ત્યાં નિકાસનો માર્ગ ખુલ્લો રાખો. જમીનમાં ભેજ હોય તો તરત સિંચાઈ ન કરો. ખેતરની મુલાકાતની તારીખ અને જમીનની સ્થિતિ લખી રાખો.\n\nઆ એક કૃત્રિમ પરીક્ષણ ઉદાહરણ છે.",
+    "translations": {
+      "en": "Cotton field care\n\nAfter rainfall, check the cotton field for standing water. Keep drainage channels open wherever water has collected. If the soil is moist, wait before irrigating. Record the date of the field visit and the condition of the soil.\n\nThis is a synthetic test example.",
+      "hi": "कपास के खेत की देखभाल\n\nबारिश के बाद देखें कि कपास के खेत में पानी जमा तो नहीं है। जहाँ पानी ठहरा है, वहाँ निकासी का रास्ता खुला रखें। मिट्टी में नमी हो तो तुरंत सिंचाई न करें। खेत के निरीक्षण की तारीख और मिट्टी की स्थिति लिख लें।\n\nयह परीक्षण के लिए बनाया गया एक उदाहरण है।"
+    }
+  },
+  "applicability": {
+    "cropSubjects": [{"subjectId": "https://taxonomy.openagrinet.global/crops/cotton", "descriptor": {"code": "COTTON", "name": "Cotton"}}],
+    "validFrom": "2026-01-01",
+    "validTo": "2027-12-31"
+  },
+  "metadata": {
+    "subject_categories": ["Crop", "Practice"],
+    "agriculture_subjects": [{"subjectId": "https://taxonomy.openagrinet.global/crops/cotton", "descriptor": {"code": "COTTON", "name": "Cotton"}}],
+    "coverage_areas": [{"codeScheme": "ISO3166-2", "areaCode": "IN-GJ", "areaLevel": "State", "areaName": "Gujarat"}],
+    "seasons": ["Kharif"],
+    "topics": ["Field drainage", "Soil moisture"],
+    "tags": ["synthetic-demo"],
+    "issued_at": "2026-07-01T08:00:00+05:30"
+  }
+}

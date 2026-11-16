@@ -1,6 +1,6 @@
 # SQLite Schema — knowledge-provider (legacy)
 
-> Legacy. The store is now Postgres, described in `docs/POSTGRES_SCHEMA.md`. This file documents the shape of the old SQLite file that `scripts/migrate_sqlite_to_postgres.py` reads.
+> Legacy. The store is now Postgres, described in `docs/POSTGRES_SCHEMA.md`. This file documents the shape of the old SQLite file that the operator migration kit reads.
 
 ## Overview
 

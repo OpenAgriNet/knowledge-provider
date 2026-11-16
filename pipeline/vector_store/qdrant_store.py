@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 from typing import Any, Optional
@@ -11,8 +12,8 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
 from qdrant_client.http.exceptions import UnexpectedResponse
 
-from ..documents.document_validity import Clock, system_clock, today
-from .embeddings import embed_passages, embed_query, get_vector_size
+from pipeline.documents.document_validity import Clock, system_clock, today
+from .embeddings import embed_passages, embed_query, get_vector_size, get_embedding_prompt_style
 
 logger = logging.getLogger(__name__)
 
@@ -24,14 +25,36 @@ PAYLOAD_FIELDS = (
     "instance",
     "instance_name",
     "provider_id",
+    "crop_subjects",
+    "knowledge_metadata",
+    "subject_categories",
+    "agriculture_subject_ids",
+    "coverage_area_keys",
+    "excluded_coverage_area_keys",
+    "season_keys",
+    "applicability_groups",
+    "applicability_scope",
+    "tag_keys",
+    "chunk_tags",
+    "source_url",
     "type",
     "source",
     "filename",
+    "name",
+    # Older frozen revisions and structured advisory imports still carry these fields.
     "name_gu",
     "name_en",
     "title_en",
     "title_gu",
     "doc_language",
+    "primary_language",
+    "primary_text",
+    "text_language",
+    "translations",
+    "source_evidence",
+    "available_languages",
+    "revision_id",
+    "release_network_id",
     "category_tags",
     "doc_short_description",
     "doc_llm_description",
@@ -177,6 +200,19 @@ def _record_payload(record: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _same_cosine_vector(stored: Any, expected: list[float]) -> bool:
+    if not isinstance(stored, list) or len(stored) != len(expected):
+        return False
+    stored_norm = math.hypot(*stored)
+    expected_norm = math.hypot(*expected)
+    if not 0 < stored_norm < math.inf or not 0 < expected_norm < math.inf:
+        return False
+    return all(
+        math.isclose(left / stored_norm, right / expected_norm, abs_tol=1e-6, rel_tol=1e-5)
+        for left, right in zip(stored, expected)
+    )
+
+
 def _hit_from_point(point: Any) -> dict[str, Any]:
     payload = dict(point.payload or {})
     hit = {
@@ -242,6 +278,12 @@ def _build_filter(
     valid_on: Optional[str] = None,
     instance: Optional[str] = None,
     provider_id: Optional[str] = None,
+    crop_subject_ids: Optional[list[str]] = None,
+    allowed_instances: Optional[list[str]] = None,
+    strict_language: Optional[str] = None,
+    applicability: Optional[dict[str, list[str]]] = None,
+    excluded_revision_ids: Optional[list[str]] = None,
+    document_workflow_id: Optional[str] = None,
 ) -> Optional[qmodels.Filter]:
     """Assemble a Qdrant filter. `valid_on` (`YYYY-MM-DD`) restricts the result
     to chunks valid on that day; None leaves validity out entirely, which is
@@ -249,10 +291,50 @@ def _build_filter(
     document's chunk. `instance` keeps only chunks tagged with that group
     code (the API calls it `group`); None means every group."""
     must: list[qmodels.Condition] = []
+    must_not: list[qmodels.Condition] = []
     if instance is not None:
         must.append(_exact("instance", instance))
+    if allowed_instances is not None:
+        must.append(qmodels.FieldCondition(
+            key="instance", match=qmodels.MatchAny(any=allowed_instances),
+        ))
     if provider_id is not None:
         must.append(_exact("provider_id", provider_id))
+    if strict_language is not None:
+        must.append(_exact("available_languages", strict_language))
+    if crop_subject_ids:
+        must.append(qmodels.FieldCondition(
+            key="crop_subjects[].subjectId", match=qmodels.MatchAny(any=crop_subject_ids),
+        ))
+    contextual = []
+    for key, values in (applicability or {}).items():
+        if not values:
+            continue
+        exact = qmodels.FieldCondition(key=key, match=qmodels.MatchAny(any=values))
+        if key == "coverage_area_keys":
+            must_not.append(qmodels.FieldCondition(key="excluded_coverage_area_keys", match=qmodels.MatchAny(any=values)))
+        if key in {"coverage_area_keys", "season_keys"}:
+            contextual.append(exact)
+        else:
+            must.append(exact)
+    if contextual:
+        group_key = "applicability_groups"
+        legacy_or_broad = qmodels.Filter(should=[
+            _exact("applicability_scope", "broad"),
+            qmodels.IsEmptyCondition(is_empty=qmodels.PayloadField(key="applicability_scope")),
+        ])
+        flat = [
+            qmodels.Filter(should=[condition, qmodels.Filter(must=[
+                legacy_or_broad, qmodels.IsEmptyCondition(is_empty=qmodels.PayloadField(key=condition.key)),
+            ])])
+            for condition in contextual
+        ]
+        must.append(qmodels.Filter(should=[
+            qmodels.NestedCondition(nested=qmodels.Nested(
+                key=group_key, filter=qmodels.Filter(must=contextual),
+            )),
+            qmodels.Filter(must=[qmodels.IsEmptyCondition(is_empty=qmodels.PayloadField(key=group_key)), *flat]),
+        ]))
     if doc_id is not None:
         must.append(_exact("doc_id", doc_id))
     if chunk_num is not None:
@@ -261,9 +343,13 @@ def _build_filter(
         must.append(_exact("is_reference", False))
     if valid_on:
         must.extend(_validity_conditions(valid_on))
-    if not must:
+    if excluded_revision_ids:
+        must_not.append(qmodels.FieldCondition(key="revision_id", match=qmodels.MatchAny(any=excluded_revision_ids)))
+    if document_workflow_id is not None:
+        must.append(_exact("workflow_id", document_workflow_id))
+    if not must and not must_not:
         return None
-    return qmodels.Filter(must=must)
+    return qmodels.Filter(must=must or None, must_not=must_not or None)
 
 
 class QdrantVectorStore:
@@ -292,9 +378,21 @@ class QdrantVectorStore:
     PAYLOAD_INDEXES = {
         "doc_id": qmodels.PayloadSchemaType.KEYWORD,
         "workflow_id": qmodels.PayloadSchemaType.KEYWORD,
+        "revision_id": qmodels.PayloadSchemaType.KEYWORD,
         "filename": qmodels.PayloadSchemaType.KEYWORD,
         "instance": qmodels.PayloadSchemaType.KEYWORD,
         "provider_id": qmodels.PayloadSchemaType.KEYWORD,
+        "available_languages": qmodels.PayloadSchemaType.KEYWORD,
+        "crop_subjects[].subjectId": qmodels.PayloadSchemaType.KEYWORD,
+        "subject_categories": qmodels.PayloadSchemaType.KEYWORD,
+        "agriculture_subject_ids": qmodels.PayloadSchemaType.KEYWORD,
+        "coverage_area_keys": qmodels.PayloadSchemaType.KEYWORD,
+        "excluded_coverage_area_keys": qmodels.PayloadSchemaType.KEYWORD,
+        "season_keys": qmodels.PayloadSchemaType.KEYWORD,
+        "applicability_scope": qmodels.PayloadSchemaType.KEYWORD,
+        "applicability_groups[].coverage_area_keys": qmodels.PayloadSchemaType.KEYWORD,
+        "applicability_groups[].season_keys": qmodels.PayloadSchemaType.KEYWORD,
+        "tag_keys": qmodels.PayloadSchemaType.KEYWORD,
         "chunk_num": qmodels.PayloadSchemaType.INTEGER,
         "is_reference": qmodels.PayloadSchemaType.BOOL,
         "type": qmodels.PayloadSchemaType.KEYWORD,
@@ -319,6 +417,15 @@ class QdrantVectorStore:
                 )
             except Exception as exc:
                 logger.debug("Payload index %s skipped/exists: %s", field_name, exc)
+
+    def create_new_collection(self, name: str) -> None:
+        # Qdrant atomically rejects an existing collection. Never delete it.
+        if not self.client.create_collection(
+            collection_name=name,
+            vectors_config=qmodels.VectorParams(size=get_vector_size(), distance=qmodels.Distance.COSINE),
+        ):
+            raise RuntimeError("Qdrant did not create the new collection")
+        self._ensure_payload_indexes(name)
 
     def ensure_collection(self, name: str, recreate: bool = False) -> dict[str, Any]:
         vector_size = get_vector_size()
@@ -402,8 +509,9 @@ class QdrantVectorStore:
             }
 
         passages: list[str] = []
+        use_e5_text = get_embedding_prompt_style() == "e5"
         for record in records:
-            text_for_emb = record.get("text_for_embedding")
+            text_for_emb = record.get("text_for_embedding") if use_e5_text else None
             if text_for_emb is None:
                 text_for_emb = record.get("text") or ""
             passages.append(str(text_for_emb))
@@ -411,6 +519,8 @@ class QdrantVectorStore:
         # If passages already include the E5 "passage:" prefix, do not double-prefix.
         use_prefix = not all(str(p or "").lower().startswith("passage:") for p in passages)
         vectors = embed_passages(passages, use_e5_prefix=use_prefix, batch_size=batch_size)
+        if len(vectors) != len(records):
+            raise ValueError("The embedding model did not return one vector per passage")
 
         points = [
             qmodels.PointStruct(
@@ -423,7 +533,21 @@ class QdrantVectorStore:
 
         for i in range(0, len(points), batch_size):
             batch = points[i : i + batch_size]
-            self.client.upsert(collection_name=name, points=batch)
+            self.client.upsert(collection_name=name, points=batch, wait=True)
+            release_points = [point for point in batch if (point.payload or {}).get("release_network_id")]
+            if release_points:
+                visible = self.client.retrieve(
+                    collection_name=name, ids=[point.id for point in release_points],
+                    with_payload=True, with_vectors=True, consistency="all",
+                )
+                by_id = {str(point.id): point for point in visible}
+                for expected in release_points:
+                    stored = by_id.get(str(expected.id))
+                    if (
+                        stored is None or stored.payload != expected.payload
+                        or not _same_cosine_vector(stored.vector, expected.vector)
+                    ):
+                        raise ValueError("Qdrant could not verify the release projection")
 
         stats = self.get_stats(name)
         return {
@@ -432,6 +556,18 @@ class QdrantVectorStore:
             "supports_prefixed_tensor_field": True,
             "backend": self.backend,
         }
+
+    def remove_superseded_passages(self, name: str, doc_id: str, records: list[dict[str, Any]]) -> None:
+        if not records or any(row["doc_id"] != doc_id for row in records):
+            raise ValueError("Replacement passages must belong to one document")
+        self.client.delete(
+            collection_name=name,
+            points_selector=qmodels.FilterSelector(filter=qmodels.Filter(
+                must=[_exact("doc_id", doc_id)],
+                must_not=[qmodels.HasIdCondition(has_id=[point_id_for_record(row) for row in records])],
+            )),
+            wait=True,
+        )
 
     def delete_by_doc_id(self, name: str, doc_id: str) -> dict[str, Any]:
         try:
@@ -539,6 +675,12 @@ class QdrantVectorStore:
         valid_on: Optional[str] = None,
         instance: Optional[str] = None,
         provider_id: Optional[str] = None,
+        crop_subject_ids: Optional[list[str]] = None,
+        allowed_instances: Optional[list[str]] = None,
+        strict_language: Optional[str] = None,
+        applicability: Optional[dict[str, list[str]]] = None,
+        excluded_revision_ids: Optional[list[str]] = None,
+        document_workflow_id: Optional[str] = None,
     ) -> dict[str, Any]:
         """Search `name`, by default returning only chunks valid today.
 
@@ -548,15 +690,23 @@ class QdrantVectorStore:
         and neither is what a caller serving an end user should pass.
 
         `instance` limits the search to one group's chunks (e.g. `mh`); None
-        searches every group. The same filter feeds every mode.
+        searches every permitted group. The same filter feeds every mode.
         """
         mode = (search_mode or "TENSOR").upper()
         as_of = (valid_on or self.today()) if apply_validity else None
+        if allowed_instances == []:
+            return {"hits": [], "backend": self.backend, "search_mode": mode, "valid_on": as_of}
         query_filter = _build_filter(
             exclude_reference=exclude_reference,
             valid_on=as_of,
             instance=instance,
             provider_id=provider_id,
+            crop_subject_ids=crop_subject_ids,
+            allowed_instances=allowed_instances,
+            strict_language=strict_language,
+            applicability=applicability,
+            excluded_revision_ids=excluded_revision_ids,
+            document_workflow_id=document_workflow_id,
         )
 
         if mode == "LEXICAL":
@@ -571,9 +721,9 @@ class QdrantVectorStore:
             )
             scored: list[tuple[float, Any]] = []
             for point in points:
-                text = str((point.payload or {}).get("text") or "")
-                desc = str((point.payload or {}).get("description") or "")
-                blob = f"{text} {desc}".lower()
+                payload = point.payload or {}
+                translations = (entry.get("text") or "" for entry in (payload.get("translations") or {}).values())
+                blob = " ".join([payload.get("text") or "", payload.get("description") or "", *translations]).lower()
                 if not tokens:
                     score = 0.0
                 else:

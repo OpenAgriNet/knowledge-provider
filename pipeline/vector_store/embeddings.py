@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from threading import Lock
 from typing import Iterable
 
 import httpx
@@ -13,6 +14,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_EMBEDDING_MODEL = "intfloat/multilingual-e5-large"
 DEFAULT_VECTOR_SIZE = 1024
 _local_embedder = None
+_local_embedder_lock = Lock()
 
 
 def get_embedding_model_name() -> str:
@@ -38,6 +40,23 @@ def get_embedding_provider() -> str:
     return "sentence_transformers"
 
 
+def get_embedding_prompt_style() -> str:
+    style = os.environ.get("EMBEDDING_PROMPT_STYLE", "e5").strip().lower()
+    if style not in {"e5", "embeddinggemma", "plain"}:
+        raise ValueError("EMBEDDING_PROMPT_STYLE must be e5, embeddinggemma, or plain")
+    return style
+
+
+def format_embedding_input(text: str, kind: str, *, use_e5_prefix: bool = True) -> str:
+    style = get_embedding_prompt_style()
+    if style == "embeddinggemma":
+        prefix = "task: search result | query: " if kind == "query" else "title: none | text: "
+        return prefix + text.strip()
+    if style == "plain" or not use_e5_prefix:
+        return text
+    return _prefix_query(text) if kind == "query" else _prefix_passage(text)
+
+
 def _prefix_passage(text: str) -> str:
     cleaned = (text or "").strip()
     if cleaned.lower().startswith("passage:"):
@@ -56,7 +75,7 @@ def _embed_openai_compatible(texts: list[str]) -> list[list[float]]:
     base_url = (os.environ.get("EMBEDDING_BASE_URL") or "").rstrip("/")
     if not base_url:
         raise RuntimeError("EMBEDDING_BASE_URL is required for openai_compatible embeddings")
-    api_key = os.environ.get("EMBEDDING_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
+    api_key = os.environ.get("EMBEDDING_API_KEY", "")
     model = get_embedding_model_name()
     url = base_url if base_url.endswith("/embeddings") else f"{base_url}/embeddings"
     headers = {"Content-Type": "application/json"}
@@ -78,7 +97,9 @@ def _embed_openai_compatible(texts: list[str]) -> list[list[float]]:
 
 def _get_local_embedder():
     global _local_embedder
-    if _local_embedder is None:
+    with _local_embedder_lock:
+        if _local_embedder is not None:
+            return _local_embedder
         try:
             from sentence_transformers import SentenceTransformer
         except ModuleNotFoundError as exc:
@@ -92,7 +113,7 @@ def _get_local_embedder():
         model_name = get_embedding_model_name()
         logger.info("Loading SentenceTransformer model %s", model_name)
         _local_embedder = SentenceTransformer(model_name)
-    return _local_embedder
+        return _local_embedder
 
 
 def _embed_local(texts: list[str]) -> list[list[float]]:
@@ -107,15 +128,7 @@ def embed_texts(
     use_e5_prefix: bool = True,
 ) -> list[list[float]]:
     """Embed texts as passage or query vectors."""
-    prepared: list[str] = []
-    for text in texts:
-        raw = text or ""
-        if not use_e5_prefix:
-            prepared.append(raw)
-        elif kind == "query":
-            prepared.append(_prefix_query(raw))
-        else:
-            prepared.append(_prefix_passage(raw))
+    prepared = [format_embedding_input(text or "", kind, use_e5_prefix=use_e5_prefix) for text in texts]
 
     if not prepared:
         return []
@@ -151,7 +164,7 @@ def count_tokens(text: str) -> int:
     Uses the local model's tokenizer when embeddings run locally; for a remote
     (OpenAI-compatible) provider there is no tokenizer here, so it estimates ~4 chars/token.
     """
-    prefixed = _prefix_passage(text)
+    prefixed = format_embedding_input(text, "passage")
     if get_embedding_provider() == "openai_compatible":
         return max(1, len(prefixed) // 4)
     return len(_get_local_embedder().tokenizer.encode(prefixed))

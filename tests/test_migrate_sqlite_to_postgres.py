@@ -1,18 +1,17 @@
-"""scripts/migrate_sqlite_to_postgres.py: a legacy SQLite file lands in Postgres.
+"""A legacy SQLite file lands in Postgres using the workspace migration kit.
 
 The fixture file is built with the legacy schema DDL, the way a production
 database looked at cutover.
 """
 
 import hashlib
-import importlib.util
 import json
 import sqlite3
 from pathlib import Path
 
 import pytest
 
-_SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "migrate_sqlite_to_postgres.py"
+from tests.migration_kit import load_migration_tool
 
 LEGACY_DDL = """
 CREATE TABLE documents (
@@ -73,7 +72,7 @@ CREATE TABLE document_index_status (
 );
 CREATE TABLE document_manifest_entries (
     id INTEGER PRIMARY KEY AUTOINCREMENT, manifest_filename TEXT NOT NULL UNIQUE, title_en TEXT,
-    imported_at TEXT NOT NULL
+    title_gu TEXT, description TEXT, category_tags TEXT, imported_at TEXT NOT NULL
 );
 CREATE TABLE email_otps (
     email TEXT PRIMARY KEY, code_hash TEXT NOT NULL, expires_at TEXT NOT NULL,
@@ -106,10 +105,7 @@ FUTURE = "2099-01-01T00:00:00"
 
 
 def _load_script():
-    spec = importlib.util.spec_from_file_location("migrate_sqlite_to_postgres", _SCRIPT)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_migration_tool("migrate_sqlite_to_postgres")
 
 
 def _insert(conn, table, **values):
@@ -243,6 +239,9 @@ def legacy_db(tmp_path):
             scheme_aliases_json='["registry"]', status="live", source="pipeline")
     _insert(conn, "document_manifest_entries", manifest_filename="a.csv", imported_at="2026-01-01T00:00:00")
     _insert(conn, "document_manifest_entries", manifest_filename="b.csv", imported_at="2026-01-01T00:00:00")
+    _insert(conn, "document_manifest_entries", manifest_filename="GUIDELINE.PDF", title_en="Imported title",
+            title_gu="અનુવાદ", description="Source description", category_tags="notice, public",
+            imported_at="2026-01-01T00:00:00")
     conn.commit()
     conn.close()
     return str(path)
@@ -250,25 +249,56 @@ def legacy_db(tmp_path):
 
 def _counts(db):
     with db.get_connection() as conn:
-        return {
+        counts = {
             table: conn.execute(f"SELECT count(*) AS n FROM {table}").fetchone()["n"]
             for table in (
                 "documents", "workflows", "workflow_artifacts", "pages", "chunks", "audit_logs",
-                "users", "instances", "catalogs", "email_otps", "webhook_records",
+                "users", "instances", "catalogs",
             )
         }
+        if conn.execute("SELECT to_regclass('public.legacy_import_evidence') IS NOT NULL AS exists").fetchone()["exists"]:
+            counts["legacy_import_evidence"] = conn.execute("SELECT count(*) AS n FROM legacy_import_evidence").fetchone()["n"]
+        return counts
 
 
 @pytest.mark.db
 @pytest.mark.unit
 class TestSqliteToPostgresMigration:
+    @pytest.fixture(autouse=True)
+    def _remove_test_import_archive(self, db_connection):
+        yield
+        with db_connection.get_connection() as conn:
+            conn.execute("DROP TABLE IF EXISTS public.legacy_import_evidence")
+
+    def test_explicit_manifest_association_takes_precedence_over_filename(self, db_connection, postgres_url, legacy_db):
+        with sqlite3.connect(legacy_db) as conn:
+            conn.execute("UPDATE documents SET source_manifest_name = ? WHERE workflow_id = ?", ("a.csv", WF1))
+            conn.execute("UPDATE document_manifest_entries SET title_en = ? WHERE manifest_filename = ?", ("Linked title", "a.csv"))
+
+        report = _load_script().run_migration(legacy_db, postgres_url)
+
+        assert report.tables["document_manifest_entries"] == {"read": 3, "inserted": 1, "dropped": 2}
+        assert db_connection.get_document(WF1)["knowledge_metadata"] == {"localized": {"en": {"title": "Linked title"}}}
+
+    def test_ambiguous_manifest_is_not_shared_across_providers(self, db_connection, postgres_url, legacy_db):
+        with sqlite3.connect(legacy_db) as conn:
+            conn.execute("UPDATE documents SET source_filename = ? WHERE workflow_id = ?", ("guideline.pdf", WF2))
+
+        report = _load_script().run_migration(legacy_db, postgres_url)
+
+        assert report.tables["document_manifest_entries"] == {"read": 3, "dropped": 2, "skipped": 1}
+        assert report.mismatches() == []
+        assert not db_connection.get_document(WF1).get("knowledge_metadata")
+        assert not db_connection.get_document(WF2).get("knowledge_metadata")
+
     def test_dry_run_writes_nothing_but_reports_everything(self, db_connection, postgres_url, legacy_db):
         script = _load_script()
         before = _counts(db_connection)
+        assert "legacy_import_evidence" not in before
         report = script.run_migration(legacy_db, postgres_url, dry_run=True)
         assert _counts(db_connection) == before
-        assert report.tables["documents"]["inserted"] == 3
-        assert report.tables["documents"]["skipped"] == 2
+        assert report.tables["documents"]["inserted"] == 4
+        assert report.tables["documents"]["skipped"] == 1
         assert report.mismatches() == []
 
     def test_a_full_run_maps_every_table(self, db_connection, postgres_url, legacy_db):
@@ -277,26 +307,29 @@ class TestSqliteToPostgresMigration:
 
         assert report.mismatches() == []
         tables = report.as_dict()["tables"]
-        assert tables["documents"] == {"read": 5, "inserted": 3, "skipped": 2}
+        assert tables["documents"] == {"read": 5, "inserted": 4, "skipped": 1}
         assert tables["document_jobs"] == {"read": 3, "inserted": 2, "skipped": 1}
         assert tables["pages"] == {"read": 4, "inserted": 2, "skipped": 2}
         assert tables["chunks"]["inserted"] == 2
-        assert tables["document_manifest_entries"] == {"read": 2, "dropped": 2}
-        assert tables["email_otps"] == {"read": 2, "inserted": 1, "dropped": 1}
+        assert tables["document_manifest_entries"] == {"read": 3, "dropped": 2, "inserted": 1}
+        assert tables["email_otps"] == {"read": 2, "dropped": 2}
         assert tables["settings"]["skipped"] == 2
         assert tables["scheme_catalog_entries"] == {"read": 2, "inserted": 1, "dropped": 1}
         skipped = {i["key"]: i["reason"] for i in report.skip_reasons if i["table"] == "documents"}
         assert skipped == {
-            WF4: "document_kind 'document' has no catalog",
             WF5: "demo document (is_demo)",
         }
-        assert db.get_document(WF4) is None and db.get_document(WF5) is None
+        assert db.get_document(WF4)["kind"] == "document" and db.get_document(WF5) is None
 
         doc = db.get_document(WF1)
         assert doc["stage"] == "completed"
         assert doc["instance"] == "mh"
         assert doc["document_id"] == FP1
         assert doc["name"] == "Registry name"  # one name per document in v2
+        assert doc["knowledge_metadata"] == {
+            "description": "Source description", "tags": ["notice", "public"],
+            "localized": {"en": {"title": "Imported title"}, "gu": {"title": "અનુવાદ"}},
+        }
         assert (doc["valid_from"], doc["valid_to"]) == ("2026-03-01", "2027-03-01")
         assert (doc["code"], doc["kind"]) == ("pm-kmy", "scheme")
         assert doc["network_visible"] is False and doc["reindex_required"] is True
@@ -384,12 +417,13 @@ class TestSqliteToPostgresMigration:
         assert settings["showHighlights"] is False and settings["searchMethod"] == "LEXICAL"
         assert settings["efSearch"] == 256
 
-        assert db.get_email_otp("live@x.in")["attempts"] == 2
-        assert db.get_email_otp("old@x.in") is None
         with db.get_connection() as conn:
-            hook = conn.execute("SELECT * FROM webhook_records").fetchone()
-        assert str(hook["id"]) == "3c8a2f0e-6b1d-4f6e-9d0a-5f8f0b2e7a11"
-        assert hook["is_published"] is True and hook["payload"] == {"contentID": "c-1"}
+            hook = conn.execute(
+                "SELECT source_key, payload FROM legacy_import_evidence WHERE source_table = 'webhook_records'"
+            ).fetchone()
+        assert hook["source_key"] == "3c8a2f0e-6b1d-4f6e-9d0a-5f8f0b2e7a11"
+        assert hook["payload"]["is_published"] == 1
+        assert json.loads(hook["payload"]["payload"]) == {"contentID": "c-1"}
 
     def test_in_flight_documents_keep_their_stage_and_prod_request(self, db_connection, postgres_url, legacy_db):
         db = db_connection
@@ -429,7 +463,7 @@ class TestSqliteToPostgresMigration:
         report = script.run_migration(legacy_db, postgres_url)
 
         assert _counts(db_connection) == first
-        assert report.tables["documents"] == {"read": 5, "existing": 3, "skipped": 2}
+        assert report.tables["documents"] == {"read": 5, "existing": 4, "skipped": 1}
         assert report.tables["audit_logs"]["inserted"] == 0
         assert report.tables["webhook_records"]["existing"] == 1
         assert report.mismatches() == []

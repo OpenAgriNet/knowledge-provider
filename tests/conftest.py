@@ -20,11 +20,15 @@ os.environ["MINIO_ACCESS_KEY"] = "test-access-key"
 os.environ["MINIO_SECRET_KEY"] = "test-secret-key"
 os.environ["TRANSLATION_VLLM_BASE_URL"] = "http://localhost:8000/v1"
 os.environ["AUTH_DISABLED"] = "true"
+os.environ["KP_RUNTIME_PROFILE"] = "local"
+os.environ["KEYCLOAK_PROVIDER_GROUP_ROOT"] = "states"
+os.environ["PORTAL_INSTANCE"] = "bv"
+os.environ["PROVIDER_DISPLAY_NAMES"] = '{"bv":"Bharat Vistaar","mh":"Maharashtra","ka":"Karnataka","up":"Uttar Pradesh","gj":"Gujarat","tn":"Tamil Nadu","wb":"West Bengal","dl":"Delhi","jk":"Jammu and Kashmir","or":"Odisha","od":"Odisha","ts":"Telangana","tg":"Telangana"}'
 
 
 _TRUNCATE_SQL = """
-    TRUNCATE documents, users, instances, catalogs, audit_logs, email_otps,
-             webhook_records, search_settings CASCADE
+    TRUNCATE documents, users, instances, catalogs, audit_logs,
+             search_settings, schema_pack_versions, scheduled_source_pulls, email_sign_in_limits CASCADE
 """
 
 
@@ -95,27 +99,25 @@ def mock_temporal_client():
 
 
 @pytest.fixture
-def mock_minio_client():
+def mock_object_store():
     """Mock MinIO client for testing without actual MinIO server."""
     client = MagicMock()
-    client.bucket_exists = MagicMock(return_value=True)
-    client.make_bucket = MagicMock()
-    client.put_object = MagicMock()
-    client.get_object = MagicMock(return_value=MagicMock(read=lambda: b"%PDF-test"))
+    client.ensure_bucket = MagicMock()
+    client.put = MagicMock()
+    client.open = MagicMock(return_value=iter((b"%PDF-test",)))
     return client
 
 
 @pytest.fixture
-def test_client(db_connection, mock_temporal_client, mock_minio_client):
+def test_client(db_connection, mock_temporal_client, mock_object_store):
     """Create FastAPI TestClient with mocked dependencies.
 
     Neutralizes the app's real lifespan (which otherwise connects to a live
     Temporal server and MinIO) before entering TestClient — see
     test_scheme_catalog.py's asgi_client fixture for the same pattern.
 
-    Depends on ``db_connection`` for a file-backed SQLite: an in-memory one
-    lives per connection, so its tables are gone by the time a route opens
-    its own connection.
+    Uses the isolated PostgreSQL test database and resets the shared limiter
+    so requests in one test cannot affect a later test.
     """
     from contextlib import asynccontextmanager
 
@@ -125,7 +127,7 @@ def test_client(db_connection, mock_temporal_client, mock_minio_client):
 
     # Patch the global clients
     api.temporal_client = mock_temporal_client
-    api.minio_client = mock_minio_client
+    api.object_store = mock_object_store
 
     @asynccontextmanager
     async def _noop_lifespan(_app):
@@ -133,11 +135,13 @@ def test_client(db_connection, mock_temporal_client, mock_minio_client):
 
     original = api.app.router.lifespan_context
     api.app.router.lifespan_context = _noop_lifespan
+    api.limiter.reset()
     try:
         with TestClient(api.app) as client:
             yield client
     finally:
         api.app.router.lifespan_context = original
+        api.limiter.reset()
 
 
 class CapturingVectorStore:
@@ -151,12 +155,12 @@ class CapturingVectorStore:
         self.hits: list[dict] = []
 
     def search(self, **kwargs):
-        from datetime import date
+        from pipeline.documents.document_validity import today
 
         self.captured.update(kwargs)
         valid_on = kwargs.get("valid_on")
         if valid_on is None and kwargs.get("apply_validity", True):
-            valid_on = date.today().isoformat()
+            valid_on = today()
         return {"hits": list(self.hits), "valid_on": valid_on}
 
 

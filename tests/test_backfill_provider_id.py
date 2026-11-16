@@ -5,7 +5,7 @@ import pytest
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
 
-from pipeline.network_provider import ProviderNaming
+from pipeline.network.network_provider import ProviderNaming
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "backfill_provider_id.py"
 COLLECTION = "documents-index"
@@ -30,6 +30,7 @@ def target(backfill_module):
         ("wf-bv-scheme", {}),
         ("wf-mh-document", {"provider_id": "stale"}),
         ("wf-bad", {}),
+        ("wf-mh-advisory", {"provider_id": "frozen", "revision_id": "revision-1"}),
     ]
     client.upsert(
         COLLECTION,
@@ -42,11 +43,11 @@ def target(backfill_module):
 
 
 DOCUMENTS = [
-    {"workflow_id": "wf-mh-advisory", "document_kind": "advisory", "instance": "mh"},
-    {"workflow_id": "wf-bv-scheme", "document_kind": "scheme", "instance": "bv"},
-    {"workflow_id": "wf-mh-document", "document_kind": "document", "instance": "mh"},
-    {"workflow_id": "wf-bad", "document_kind": "advisory", "instance": "ladakh_ut"},
-    {"workflow_id": "wf-not-indexed", "document_kind": "advisory", "instance": "ka"},
+    {"workflow_id": "wf-mh-advisory", "kind": "advisory", "instance": "mh"},
+    {"workflow_id": "wf-bv-scheme", "kind": "scheme", "instance": "bv"},
+    {"workflow_id": "wf-mh-document", "kind": "document", "instance": "mh"},
+    {"workflow_id": "wf-bad", "kind": "advisory", "instance": "ladakh_ut"},
+    {"workflow_id": "wf-not-indexed", "kind": "advisory", "instance": "ka"},
 ]
 
 
@@ -63,6 +64,21 @@ def test_plan_follows_the_publish_provider(backfill_module):
     assert planned["wf-bv-scheme"].provider_id == "bv.provider.oan.dev"
     assert planned["wf-mh-document"].provider_id is None
     assert planned["wf-bad"].error and planned["wf-bad"].provider_id is None
+    unknown, = backfill_module.plan([{"workflow_id": "no-kind"}], NAMING)
+    assert unknown.error
+
+
+@pytest.mark.db
+def test_backfill_reads_postgres_documents(backfill_module, db_connection):
+    db_connection.upsert_document(
+        workflow_id="wf-provider-backfill", document_id="a" * 32, filename="notice.pdf",
+        filepath="minio://documents/notice.pdf", kind="advisory", code="notice", instance="provider-a",
+    )
+
+    planned, = backfill_module.plan(backfill_module.all_documents(), NAMING)
+
+    assert planned.provider_id == "provider-a.provider.oan.dev"
+    assert backfill_module.dev_collections()
 
 
 @pytest.mark.unit
@@ -88,6 +104,7 @@ def test_apply_sets_and_clears_by_workflow(backfill_module, target):
         3: "bv.provider.oan.dev",
         4: None,
         5: None,
+        6: "frozen",
     }
 
 

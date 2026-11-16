@@ -614,32 +614,42 @@ def _new_doc(db, workflow_id, **kwargs):
 class TestSchemaConstraints:
     """Rules the database itself enforces."""
 
-    @staticmethod
-    def _catalog_id(db):
-        with db.get_connection() as conn:
-            return db.get_or_create_catalog(db.get_or_create_instance("mh", conn=conn), "scheme", conn=conn)["id"]
-
     @pytest.mark.db
     @pytest.mark.unit
     def test_document_code_must_be_a_slug(self, db_connection):
-        catalog_id = self._catalog_id(db_connection)
-        with db_connection.get_connection() as conn:
+        db = db_connection
+        with db.get_connection() as conn:
+            provider_id = db.get_or_create_instance("mh", conn=conn)
             with pytest.raises(psycopg.errors.CheckViolation):
                 conn.execute(
-                    "INSERT INTO documents (catalog_id, code, name, source) VALUES (%s::uuid, 'Bad Code', 'N', %s)",
-                    (catalog_id, psycopg.types.json.Jsonb({"fingerprint": _md5("k")})),
+                    "INSERT INTO documents (provider_id, kind, code, name, source) "
+                    "VALUES (%s, 'scheme', 'Bad Code', 'N', %s)",
+                    (provider_id, psycopg.types.json.Jsonb({"fingerprint": _md5("k")})),
                 )
 
     @pytest.mark.db
     @pytest.mark.unit
     def test_source_requires_a_hex_fingerprint(self, db_connection):
-        catalog_id = self._catalog_id(db_connection)
-        with db_connection.get_connection() as conn:
+        db = db_connection
+        with db.get_connection() as conn:
+            provider_id = db.get_or_create_instance("mh", conn=conn)
             with pytest.raises(psycopg.errors.CheckViolation):
                 conn.execute(
-                    "INSERT INTO documents (catalog_id, code, name, source) VALUES (%s::uuid, 'c', 'C', %s)",
-                    (catalog_id, psycopg.types.json.Jsonb({"fingerprint": "not-hex"})),
+                    "INSERT INTO documents (provider_id, kind, code, name, source) "
+                    "VALUES (%s, 'scheme', 'c', 'C', %s)",
+                    (provider_id, psycopg.types.json.Jsonb({"fingerprint": "not-hex"})),
                 )
+
+    @pytest.mark.db
+    def test_document_is_readable_without_a_catalog(self, db_connection):
+        db = db_connection
+        document_id = _new_doc(db, "wf-owner", instance="mh", kind="scheme", code="owned")
+        with db.get_connection() as conn:
+            conn.execute("DELETE FROM catalogs WHERE id = %s", (db.get_document("wf-owner")["catalog_id"],))
+        document = db.find_document_by_code("mh", "scheme", "owned")
+        assert (document["id"], document["instance"], document["kind"]) == (document_id, "mh", "scheme")
+        assert document["catalog_id"] is None
+        assert db.get_catalog_entry("owned")["type"] == "openagrinet:AgricultureResource"
 
     @pytest.mark.db
     @pytest.mark.unit
@@ -1149,26 +1159,6 @@ class TestUsersAndOtps:
         assert (doc["uploaded_by_user_id"], doc["uploaded_by_username"]) == ("kc-u", "uma")
         assert doc["uploaded_by_roles"] == "contributor,reviewer"
 
-    @pytest.mark.db
-    @pytest.mark.unit
-    def test_otp_attempts_increment_atomically(self, db_connection):
-        db_connection.store_email_otp(
-            email="A@X.in", code_hash="h", expires_at="2099-01-01T00:00:00+00:00",
-            created_at="x", last_sent_at="2026-01-01T00:00:00+00:00",
-        )
-        assert db_connection.increment_email_otp_attempts("a@x.in") == 1
-        assert db_connection.increment_email_otp_attempts("a@x.in") == 2
-        row = db_connection.get_email_otp("a@x.in")
-        assert row["attempts"] == 2
-        assert row["expires_at"].endswith("+00:00")
-        db_connection.store_email_otp(
-            email="a@x.in", code_hash="h2", expires_at="2099-01-01T00:00:00+00:00",
-            created_at="x", last_sent_at="2026-01-02T00:00:00+00:00",
-        )
-        assert db_connection.get_email_otp("a@x.in")["attempts"] == 0
-        db_connection.delete_email_otp("a@x.in")
-        assert db_connection.get_email_otp("a@x.in") is None
-
 
 class TestOperationsViews:
     @pytest.mark.db
@@ -1210,18 +1200,77 @@ class TestOperationsViews:
         assert result["updated"] is True and result["stage"] == "ocr_review"
         assert db_connection.get_latest_document_job("wf-rec")["status"] == "waiting_review"
 
-    @pytest.mark.db
-    @pytest.mark.unit
-    def test_webhook_upsert_skips_unchanged_payloads(self, db_connection):
-        db = db_connection
-        assert db.upsert_webhook_records("webhook", [{"contentID": "c1", "title": "T", "isPublished": True}]) == 1
-        assert db.upsert_webhook_records("webhook", [{"contentID": "c1", "title": "T", "isPublished": True}]) == 1
-        with db.get_connection() as conn:
-            rows = conn.execute("SELECT title, is_published FROM webhook_records").fetchall()
-        assert rows == [{"title": "T", "is_published": True}]
-
-
 class TestMigrationRunner:
+    @pytest.mark.db
+    def test_document_and_release_migrations_backfill_existing_rows(self, db_connection):
+        from pipeline import migrate
+        from tests.migration_kit import migration_kit_path
+
+        migrations = dict(migrate.list_migrations(migration_kit_path() / "legacy_postgres" / "upgrade_history"))
+        with db_connection.get_connection() as conn, conn.transaction(force_rollback=True):
+            conn.execute("CREATE SCHEMA legacy_owner_test")
+            conn.execute("SET LOCAL search_path TO legacy_owner_test, public")
+            conn.execute(migrations["0001"].read_text(encoding="utf-8"))
+            provider_id = conn.execute(
+                "INSERT INTO instances (name, path) VALUES ('provider', '/providers/provider') RETURNING id"
+            ).fetchone()["id"]
+            catalog_id = conn.execute(
+                "INSERT INTO catalogs (instance_id, type, name) VALUES (%s, 'example:Resource', 'Catalog') RETURNING id",
+                (provider_id,),
+            ).fetchone()["id"]
+            before = conn.execute(
+                """
+                INSERT INTO documents (catalog_id, code, name, source, updated_at)
+                VALUES (%s, 'original', 'Original', %s, '2024-01-01T00:00:00Z')
+                RETURNING id, updated_at
+                """,
+                (catalog_id, psycopg.types.json.Jsonb({"fingerprint": _md5("original")})),
+            ).fetchone()
+            conn.execute(migrations["0007"].read_text(encoding="utf-8"))
+            conn.execute(migrations["0008"].read_text(encoding="utf-8"))
+            after = conn.execute(
+                "SELECT provider_id, kind, updated_at FROM documents WHERE id = %s", (before["id"],)
+            ).fetchone()
+            assert after == {"provider_id": provider_id, "kind": "example:Resource", "updated_at": before["updated_at"]}
+
+            for version in ("0003", "0006"):
+                conn.execute(migrations[version].read_text(encoding="utf-8"))
+            job = conn.execute(
+                """
+                INSERT INTO workflows (document_id, workflow_type, temporal_workflow_id, config)
+                VALUES (%s, 'pipeline', 'legacy-release', '{"release_network_id":"test.net"}')
+                RETURNING id
+                """,
+                (before["id"],),
+            ).fetchone()
+            snapshot = {
+                "index_name": "published",
+                "expected_release_generation": None,
+                "passages": [{"text": "Original", "provider_id": "provider.test.net"}],
+            }
+            revision = conn.execute(
+                """
+                INSERT INTO document_revisions (id, document_id, workflow_id, content_sha256, snapshot)
+                VALUES (gen_random_uuid(), %s, %s, repeat('a', 64), %s) RETURNING id
+                """,
+                (before["id"], job["id"], psycopg.types.json.Jsonb(snapshot)),
+            ).fetchone()
+            conn.execute(migrations["0009"].read_text(encoding="utf-8"))
+            staged = conn.execute(
+                """
+                SELECT s.network_id, s.collection, s.provider_id, s.expected_generation,
+                       s.generation_captured, r.snapshot, r.content_sha256
+                FROM network_release_staging s JOIN document_revisions r ON r.id = s.revision_id
+                WHERE s.revision_id = %s
+                """,
+                (revision["id"],),
+            ).fetchone()
+            assert staged == {
+                "network_id": "test.net", "collection": "published", "provider_id": "provider.test.net",
+                "expected_generation": None, "generation_captured": True, "snapshot": snapshot,
+                "content_sha256": "a" * 64,
+            }
+
     @pytest.mark.db
     @pytest.mark.unit
     def test_applied_migrations_are_recorded_and_not_reapplied(self, db_connection, postgres_url):
@@ -1229,22 +1278,29 @@ class TestMigrationRunner:
 
         assert migrate.apply_migrations(postgres_url) == []
         assert migrate.is_current(postgres_url)
-        assert migrate.current_version(postgres_url) == migrate.list_migrations()[-1][0]
+        migrations = migrate.list_migrations()
+        assert migrate.current_version(postgres_url) == (migrations[-1][0] if migrations else "0022")
 
     @pytest.mark.db
     @pytest.mark.unit
-    def test_migration_files_are_numbered_and_unversioned_by_schema_name(self):
+    def test_clean_schema_omits_import_only_tables(self, db_connection):
         from pipeline import migrate
 
-        names = [path.name for _, path in migrate.list_migrations()]
-        assert names[0] == "0001_initial_schema.sql"
+        assert all(version > "0022" for version, _ in migrate.list_migrations())
+        with db_connection.get_connection() as conn:
+            row = conn.execute("""
+                SELECT to_regclass('public.legacy_import_evidence') AS evidence,
+                       to_regclass('public.webhook_records') AS webhook_records,
+                       to_regclass('public.email_otps') AS email_otps,
+                       to_regclass('public.webhook_deliveries') AS webhook_deliveries
+            """).fetchone()
+        assert row == {"evidence": None, "webhook_records": None, "email_otps": None, "webhook_deliveries": "webhook_deliveries"}
 
     @pytest.mark.db
     @pytest.mark.unit
     def test_a_new_migration_runs_once(self, db_connection, postgres_url, tmp_path):
         from pipeline import migrate
 
-        (tmp_path / "0001_initial_schema.sql").write_text("SELECT 1;")
         (tmp_path / "0099_probe.sql").write_text("CREATE TABLE mig_probe (n int);")
         try:
             assert migrate.apply_migrations(postgres_url, tmp_path) == ["0099"]
@@ -1259,7 +1315,6 @@ class TestMigrationRunner:
     def test_a_failing_migration_applies_nothing_of_itself(self, db_connection, postgres_url, tmp_path):
         from pipeline import migrate
 
-        (tmp_path / "0001_initial_schema.sql").write_text("SELECT 1;")
         (tmp_path / "0099_bad.sql").write_text("CREATE TABLE mig_half (n int); SELECT 1/0;")
         with pytest.raises(psycopg.errors.DivisionByZero):
             migrate.apply_migrations(postgres_url, tmp_path)

@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from pipeline.api.api import _network_publish_outcome
+from pipeline.api.routers.document_detail import _network_publish_outcome
 
 
 def artifact(artifact_type, metadata=None, created_at="2026-10-28T10:00:00"):

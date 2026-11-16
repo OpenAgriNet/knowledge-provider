@@ -255,7 +255,8 @@ Supporting workflows: `OcrOnly`, `TranslationOnly`, `ChunkingOnly`,
 
 ```text
 documents (id UUID PK)
-  ├── catalog_id            # → catalogs.instance_id → instances.name
+  ├── provider_id           # → instances.id (tenant ownership)
+  ├── kind                  # Document classification
   ├── source (JSONB)        # fingerprint, filename, storage_uri, page_count
   ├── index_status (JSONB)  # dev / prod vector index state
   ├── metadata (JSONB)      # chunk_count, reindex_required, is_demo, ...
