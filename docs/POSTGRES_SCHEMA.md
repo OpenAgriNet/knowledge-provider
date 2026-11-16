@@ -522,13 +522,13 @@ Computed from `documents`, `catalogs`, `instances`, `workflows` and `document_cu
 | code | TEXT | `documents.code`. |
 | name | TEXT | `documents.name`. |
 | aliases | TEXT[] | `documents.aliases`. |
-| status | TEXT | `pending_reindex` if the document is live and `metadata.reindex_required` is true. Else `live` if live. Else `pending_prod` if the latest workflow's stage is `approval_for_prod` and the document is not disabled. Else `disabled`. |
+| status | TEXT | `pending_reindex` if the document is live and `metadata.reindex_required` is true. Else `live` if live. Else `pending_prod` if the current (latest) workflow's stage is `approval_for_prod` and the document is not disabled. Else `disabled`. |
 | workflow_id | TEXT | `temporal_workflow_id` of the document's earliest `pipeline` workflow. |
 | chunk_count | INTEGER | Count of the document's `chunks`. |
 | network_visible | BOOLEAN | `metadata.network_visible`, true when absent. |
 | promoted_at | TIMESTAMPTZ | `metadata.index_status.prod.last_indexed_at`, only for live documents. |
 
-"Live" means the latest workflow's `current_stage = 'completed'`, `is_disabled` is false and `metadata.catalog_visible` is true. There are no bootstrap rows: a scheme appears only once a document exists.
+"Live" means all of: `is_disabled` is false; `metadata.catalog_visible` is true; some workflow of the document has `current_stage = 'completed'`; and either the PROD index holds it (`metadata.index_status.prod.status = 'indexed'`) or a completed run was started with PROD skipped (`workflows.config.skip_prod`, set from `DISABLE_PROD_SETTING`). A DEV-only document is therefore not live, and starting a new run does not hide a document that is already live (migration `0003`). There are no bootstrap rows: a scheme appears only once a document exists.
 
 ---
 

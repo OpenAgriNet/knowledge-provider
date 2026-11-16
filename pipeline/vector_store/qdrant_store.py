@@ -69,11 +69,26 @@ PAYLOAD_FIELDS = (
     "start_period",
     "end_period",
     "updated_at",
+    # Advisory location (from the webhook's contentLocationDetails)
+    "location_national",
+    "location_state_codes",
+    "location_statewide_codes",
+    "location_district_codes",
+    "location_state_names",
+    "location_district_names",
     # Document validity - the period this chunk is searchable in. Absent on
     # points written before validity existed, which search treats as current.
     "start_date",
     "end_date",
 )
+
+# Filterable advisory location fields, indexed on new and existing collections.
+LOCATION_PAYLOAD_INDEXES = {
+    "location_national": qmodels.PayloadSchemaType.BOOL,
+    "location_state_codes": qmodels.PayloadSchemaType.INTEGER,
+    "location_statewide_codes": qmodels.PayloadSchemaType.INTEGER,
+    "location_district_codes": qmodels.PayloadSchemaType.INTEGER,
+}
 
 
 def _md5_to_uuid(hex_id: str) -> str:
@@ -301,6 +316,7 @@ class QdrantVectorStore:
         "source": qmodels.PayloadSchemaType.KEYWORD,
         "start_date": qmodels.PayloadSchemaType.DATETIME,
         "end_date": qmodels.PayloadSchemaType.DATETIME,
+        **LOCATION_PAYLOAD_INDEXES,
     }
 
     def _ensure_payload_indexes(self, name: str) -> None:

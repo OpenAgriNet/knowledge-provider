@@ -466,6 +466,30 @@ class TestUpdateDocumentState:
         assert doc["page_count"] == 5
 
 
+class TestUpdateDocumentStateRunOwnership:
+    @pytest.mark.unit
+    def test_late_update_from_older_run_does_not_touch_newer_job(self, db_connection):
+        from pipeline.activities import update_document_state
+
+        wf = "state-owner-test"
+        db_connection.upsert_document(
+            kind="scheme", code=_next_code(), workflow_id=wf, document_id="doc-owner",
+            filename="t.pdf", filepath="/app/books/t.pdf", stage="ingesting",
+        )
+        retry_id = db_connection.create_document_job(
+            wf, "ocr_retry", temporal_workflow_id=f"{wf}-retry-ocr-1", current_stage="ocr_processing",
+        )
+
+        asyncio.run(update_document_state(
+            workflow_id=wf, stage="completed", run_workflow_id=wf,
+        ))
+
+        retry = db_connection.get_document_job(retry_id)
+        assert (retry["current_stage"], retry["status"]) == ("ocr_processing", "running")
+        pipeline = next(j for j in db_connection.list_document_jobs(wf) if j["job_type"] == "pipeline")
+        assert (pipeline["current_stage"], pipeline["status"]) == ("completed", "completed")
+
+
 class TestMinIOClient:
     """Tests for MinIO client creation."""
 

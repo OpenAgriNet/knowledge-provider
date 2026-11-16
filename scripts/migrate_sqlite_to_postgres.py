@@ -45,6 +45,7 @@ from psycopg.rows import dict_row  # noqa: E402
 from psycopg.types.json import Jsonb  # noqa: E402
 
 from pipeline import db, migrate  # noqa: E402
+from pipeline.instances import prod_stage_disabled  # noqa: E402
 from pipeline.models import (  # noqa: E402
     ChunkingRun,
     DocumentMetadata,
@@ -534,6 +535,7 @@ def migrate_document(
 
     catalog_id = _catalog_for(conn, _instance_for(conn, _instance_of(doc)), kind)
     code = (_get(doc, "scheme_code") or "").strip().lower()
+    original_code = code
     entry = registry.get(code) if kind == "scheme" and code else None
     if entry is not None:
         consumed.add(code)
@@ -553,6 +555,13 @@ def migrate_document(
     if unique != code:
         report.notes.append(f"{workflow_id}: code {code!r} already used in its catalog, stored as {unique!r}")
         code = unique
+    if original_code and code != original_code:
+        # The legacy index still carries the old code on its points. Postgres now
+        # advertises a different one, so the document must be re-indexed to match.
+        metadata["reindex_required"] = True
+        metadata["reindex_reason"] = (
+            f"scheme_code changed during migration: {original_code!r} -> {code!r}"
+        )
 
     created_at = parse_ts(doc["created_at"]) or datetime.now(timezone.utc)
     updated_at = parse_ts(doc["updated_at"]) or created_at
@@ -570,6 +579,12 @@ def migrate_document(
     report.count("documents", "inserted")
 
     workflows, job_ids = _build_workflows(sq, doc, uploader, report)
+    if prod_stage_disabled():
+        # The legacy deployment finished at DEV ingest; catalog_status needs the
+        # marker to count those completed runs as live without a PROD index entry.
+        for w in workflows:
+            if w["type"] in ("pipeline", "ocr_only"):
+                w["config"].setdefault("skip_prod", True)
     root = next((w for w in workflows if w["type"] in ("pipeline", "ocr_only")), workflows[0])
     for w in workflows:
         started_by = w["started_by"]

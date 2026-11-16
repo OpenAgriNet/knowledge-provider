@@ -14,7 +14,23 @@ def catalog_db(db_connection):
 
 def _doc(db, workflow_id, *, code, kind="scheme", name=None, stage="completed",
          instance="default", filename=None, **extra):
-    """Register a document the v2 way: it needs a kind (catalog) and a code."""
+    """Register a document the v2 way: it needs a kind (catalog) and a code.
+
+    A completed document counts as live here because its run skipped PROD (the
+    ``DISABLE_PROD_SETTING`` deployment); see ``catalog_status`` for the rule.
+    """
+    doc_id = _upsert(db, workflow_id, filename, stage, instance, kind, code, name, extra)
+    if stage == "completed":
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE workflows SET config = config || '{\"skip_prod\": true}'::jsonb "
+                "WHERE temporal_workflow_id = %s",
+                (workflow_id,),
+            )
+    return doc_id
+
+
+def _upsert(db, workflow_id, filename, stage, instance, kind, code, name, extra):
     return db.upsert_document(
         workflow_id=workflow_id,
         document_id=f"doc-{workflow_id}",
