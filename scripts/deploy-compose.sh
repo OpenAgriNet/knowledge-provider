@@ -11,7 +11,7 @@
 #
 # Required nginx snippet locations (see deploy/):
 #   /docs-pipeline-api/ → 127.0.0.1:8011
-#   /docs-pipeline/     → 127.0.0.1:3011
+#   /knowledge-provider/ → 127.0.0.1:3011
 #   /auth/              → 127.0.0.1:8081   (Keycloak)
 set -euo pipefail
 
@@ -99,7 +99,7 @@ cat <<EOF
  Public URLs (after nginx — see deploy/ snippets)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  https://<your-domain>/docs-pipeline-api/health
- https://<your-domain>/docs-pipeline/
+ https://<your-domain>/knowledge-provider/
  https://<your-domain>/auth/realms/knowledge-engine/.well-known/openid-configuration
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  Logs

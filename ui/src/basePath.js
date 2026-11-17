@@ -1,6 +1,6 @@
 /**
  * App URL prefix from Vite `base` (Dockerfile.prod / VITE_BASE).
- * Production: '/docs-pipeline/' → all routes live under domain/docs-pipeline/*
+ * Production: '/knowledge-provider/' → all routes live under domain/knowledge-provider/*
  * Local Vite: '/' → no prefix
  */
 
@@ -12,7 +12,7 @@ export const APP_BASENAME =
 
 /**
  * Absolute path within this app (includes basename).
- * appPath('/login') → '/docs-pipeline/login' in prod, '/login' locally.
+ * appPath('/login') → '/knowledge-provider/login' in prod, '/login' locally.
  */
 export function appPath(path = '/') {
   const normalized =
