@@ -2,7 +2,7 @@
 
 This document describes **how Bharat Vistaar Docs Pipeline works end-to-end**: from SSO login and state/role resolution, through document processing and **DEV** ingestion, to **PROD** promotion that only **Bharat Vistaar Super Admin** can approve.
 
-Grounded in current code under `pipeline/`, `ui/`, and Keycloak group conventions.
+Historical deployment description, retained for migration and saved workflow histories. Current instance permissions, private Keycloak login, index-only processing, and network revision releases are described in [README](../README.md) and [Search contract](SEARCH.md). The DEV/PROD terminology below is not the current network retrieval authority.
 
 **Also see:** [SYSTEM_DESIGN.md](./SYSTEM_DESIGN.md) for full system design, plus the box-and-arrow diagrams:
 

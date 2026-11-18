@@ -5,13 +5,13 @@ import pytest
 from temporalio.exceptions import ApplicationError
 
 from pipeline.network import publication_delivery
-from pipeline.temporal.activities import publication as activities
 from pipeline.network.adapters.beckn import BecknNetworkPublisher
 from pipeline.network.network_publisher import (
     PublicationReceipt,
     PublishConfigError,
     get_network_adapter,
 )
+from pipeline.temporal.activities import publication as activities
 
 
 @pytest.mark.db
@@ -139,8 +139,8 @@ def test_managed_publication_validates_wire_attributes_against_network_pack(
 ):
     import json
 
-    from pipeline.network.catalog.catalog_profile import load_catalog_profile
     from pipeline.metadata.schema_packs import SchemaPack, install_schema_pack
+    from pipeline.network.catalog.catalog_profile import load_catalog_profile
 
     db = db_connection
     workflow_id = sample_document["workflow_id"]

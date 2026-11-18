@@ -10,9 +10,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
-from . import api as _api, request_logging
+from . import api as _api
+from . import request_logging
 from .rate_limiting import limiter
-
 
 _DOCUMENT_PATH_RE = re.compile(r"^/documents/([^/]+)(/.*)?$")
 # Only identifier shapes with an indexed lookup are resolved before auth runs:

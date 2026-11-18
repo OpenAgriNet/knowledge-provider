@@ -19,7 +19,7 @@ def test_rebuild_uses_completed_snapshot_and_never_reuses_collection(db_connecti
         filepath="minio://docs/source.pdf", instance="bv", kind="advisory", code="frozen-projection",
     )
     accepted_id = str(uuid4())
-    db.save_draft_revision_snapshot(doc_id, workflow, accepted_id, {"passages": [{
+    db.save_draft_revision_snapshot(doc_id, workflow, accepted_id, {"source": {"source_file_fingerprint": "a" * 32}, "passages": [{
         "_id": "a" * 32, "doc_id": doc_id, "chunk_num": 0, "text": "accepted passage", "workflow_id": workflow,
     }]})
     job = db.get_latest_document_job(workflow)
@@ -45,6 +45,19 @@ def test_rebuild_uses_completed_snapshot_and_never_reuses_collection(db_connecti
     from pipeline.search.index_identity import projection_doc_id
 
     assert points[0].payload["doc_id"] == projection_doc_id(db.get_document(doc_id))
+    import asyncio
+
+    from pipeline.api.routers.search import run_search
+    from pipeline.auth.models import AuthUser
+    from pipeline.search.models import SearchRequest
+
+    monkeypatch.setenv("VECTOR_DB_COLLECTION_NAME", "replacement")
+    monkeypatch.setattr("pipeline.vector_store.get_vector_store", lambda: store)
+    monkeypatch.setattr(qdrant_store, "embed_query", lambda *_args, **_kw: [1.0, 0.0])
+    response = asyncio.run(run_search(SearchRequest(query="accepted passage", include_expired=True,
+                                      exclude_reference=False), AuthUser("restore-reader", instances=["bv"])))
+    assert [hit["text"] for hit in response["hits"]] == ["accepted passage"]
+    monkeypatch.setenv("VECTOR_DB_COLLECTION_NAME", "serving")
     with pytest.raises(ValueError, match="already exists"):
         rebuild.rebuild("replacement")
     with pytest.raises(ValueError, match="serving collection"):

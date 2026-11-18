@@ -7,7 +7,9 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from pipeline.documents.document_formats import allowed_file_extensions
+
 from ..object_storage import is_object_uri, parse_object_uri
+
 
 def validate_file_path(filepath: str) -> str:
     """Accept a supported object storage reference, never a host path."""

@@ -40,7 +40,7 @@ function AccessSummary({ user }) {
   )
 }
 
-export default function UserDirectory({ revision, onEdit }) {
+export default function UserDirectory({ revision, instances = [], onEdit }) {
   const [users, setUsers] = useState([])
   const [query, setQuery] = useState('')
   const [access, setAccess] = useState('all')
@@ -84,8 +84,11 @@ export default function UserDirectory({ revision, onEdit }) {
     }
   }, [query, reload, revision])
 
-  const assignedInstances = [...new Set(users.flatMap(user => memberships(user).map(({ code }) => code)))].sort()
-  const instanceOptions = [...new Set(instance === ANY_INSTANCE ? assignedInstances : [...assignedInstances, instance])]
+  const instanceOptions = [...new Set([
+    ...instances.map(({ code }) => code.toLowerCase()),
+    ...users.flatMap(user => memberships(user).map(({ code }) => code)),
+    ...(instance === ANY_INSTANCE ? [] : [instance]),
+  ])].sort()
   const filtered = users.filter(user =>
     (access === 'all' || user.access_type === access) &&
     (status === 'all' || Boolean(user.enabled) === (status === 'active')) &&

@@ -18,13 +18,21 @@ from collections import Counter
 from fastapi import APIRouter, HTTPException
 
 from pipeline import db
-from pipeline.documents import document_validity
 from pipeline.auth.deps import RequireSearch
 from pipeline.auth.tenancy import allowed_instances, assert_instance_access
+from pipeline.documents import document_validity
 from pipeline.metadata.crop_metadata import parse_crop_subject_ids
-from pipeline.network.release_policy import managed_release_collections, managed_release_targets
+from pipeline.metadata.extraction import MetadataFilters
 from pipeline.metadata.knowledge_metadata import KnowledgeFilters
 from pipeline.metadata.localization import localize_search_hit, normalize_language_tag
+from pipeline.network.release_policy import managed_release_collections, managed_release_targets
+from pipeline.search.access import (
+    is_network_principal,
+    network_search_collection,
+    principal_networks,
+)
+from pipeline.search.document_identity import indexed_identity
+from pipeline.search.models import SearchRequest
 from pipeline.search.query_expansion import expand_query
 
 router = APIRouter()
@@ -50,42 +58,41 @@ def _token_overlap_score(query: str, text: str) -> float:
 
 
 def _metadata_blob(hit: dict) -> str:
-    metadata = hit.get("knowledge_metadata") or {}
-    labels = [*metadata.get("topics", []), *metadata.get("tags", []), *metadata.get("seasons", [])]
+    labels = [label for key in ("topics", "document_tags", "season_keys", "subject_categories")
+              for label in (hit.get(key) or [])]
+    localized = [str(value or "") for entry in (hit.get("localized_labels") or {}).values()
+                 for value in (entry.get("title"), entry.get("description"))]
     fields = (
         str(hit.get(key) or "")
         for key in (
             "name",
-            "name_en",
-            "name_gu",
             "filename",
-            "title_en",
-            "title_gu",
-            "category_tags",
             "description",
-            "doc_short_description",
-            "doc_llm_description",
         )
     )
-    return " ".join([*fields, *labels])
+    return " ".join([*fields, *labels, *localized])
 
 
 def _display_search_hit(hit: dict, requested_language: str | None) -> dict:
     """Present localized document labels and the legacy search response aliases."""
     name = hit.get("name")
-    if not name:
-        return hit
-    metadata = hit.get("knowledge_metadata") or {}
-    variants = metadata.get("localized") or {}
-    selected = variants.get(hit.get("text_language"), {}) if requested_language else {}
     result = dict(hit)
+    if hit.get("type") == "scheme" or hit.get("scheme_code"):
+        if identity := indexed_identity(hit):
+            result["scheme_code"] = identity.get("code")
+            result["scheme_name"] = identity.get("name") or name
+            result["scheme_aliases"] = identity.get("aliases") or []
+    if not name:
+        return result
+    variants = hit.get("localized_labels") or {}
+    selected = variants.get(hit.get("text_language"), {}) if requested_language else {}
     result.setdefault("name_en", name)
     result.setdefault("name_gu", variants.get("gu", {}).get("title") or name)
     result.setdefault("title_en", variants.get("en", {}).get("title") or "")
     result.setdefault("title_gu", variants.get("gu", {}).get("title") or "")
     result.setdefault("doc_language", hit.get("primary_language") or "")
-    result.setdefault("category_tags", ", ".join(metadata.get("tags", [])))
-    result.setdefault("doc_short_description", metadata.get("description") or "")
+    result.setdefault("category_tags", ", ".join(hit.get("document_tags", [])))
+    result.setdefault("doc_short_description", hit.get("description") or "")
     result.setdefault("doc_llm_description", "")
     result.setdefault("ingestion_status", "")
     result.setdefault("quality_score", 0.0)
@@ -226,27 +233,49 @@ async def search_collections(user: RequireSearch):
     except ValueError as exc:
         raise HTTPException(503, "Network collections are misconfigured") from exc
     if not scopes:
-        return [{"label": "Documents", "name": get_default_index_name()}]
+        return [] if is_network_principal(user) else [{"label": "Documents", "name": get_default_index_name()}]
     labels = {collection: "Published schemes" for collection in schemes.values()}
     labels.update({collection: "Published advisories" for collection in advisories.values()})
-    return [
-        {"label": labels.get(collection, "Published documents"), "name": collection, "network_id": network_id}
+    available = [
+        {"label": labels.get(collection, "Published documents"), "name": collection, "network_id": network_id,
+         **({"document_kind": "scheme"} if collection in schemes.values() and collection not in advisories.values() else {})}
         for collection, network_id in scopes.items()
+        if network_id in principal_networks(user)
     ]
+    if not is_network_principal(user):
+        available.insert(0, {"label": "Local documents", "name": get_default_index_name()})
+    return available
 
 
 @router.post("/search/", include_in_schema=False)
 @router.post("/search")
-async def run_search(payload: dict, user: RequireSearch):
+async def run_search(payload: SearchRequest, user: RequireSearch):
     """Search passages visible to the caller, optionally within one provider."""
     from pipeline.vector_store import get_default_index_name, get_vector_store
 
+    payload = payload.model_dump(exclude_none=True)
     settings = db.get_search_settings()
     from pipeline.network.release_policy import index_only_mode
 
     index_name = get_default_index_name()
+    if index_only_mode() and payload.get("index_name") not in (None, index_name):
+        raise HTTPException(422, "Local search uses only the configured serving collection")
     if not index_only_mode():
-        index_name = payload.get("index_name") or settings.get("indexName") or index_name
+        index_name = payload.get("index_name") or index_name
+    release_network = payload.get("network_id")
+    document_kind = payload.get("document_kind")
+    document_code = payload.get("document_code")
+    try:
+        if release_network:
+            index_name = network_search_collection(user, release_network, document_kind, payload.get("index_name"))
+        elif is_network_principal(user):
+            raise HTTPException(422, "network_id is required for a network search principal")
+        elif index_name in managed_release_collections():
+            raise HTTPException(422, "network_id is required for a network serving collection")
+        elif index_name != get_default_index_name():
+            raise HTTPException(422, "Local search uses only the configured serving collection")
+    except ValueError as exc:
+        raise HTTPException(503, "Search network policy is misconfigured") from exc
     raw_query = payload.get("query")
     if raw_query is not None and not isinstance(raw_query, str):
         raise HTTPException(422, "query must be text")
@@ -326,6 +355,7 @@ async def run_search(payload: dict, user: RequireSearch):
         raise HTTPException(400, "crop_subject_ids must contain at most 32 absolute URI strings") from exc
     try:
         applicability = KnowledgeFilters.model_validate(payload.get("applicability", {})).qdrant_values()
+        metadata_filters = MetadataFilters.model_validate(payload.get("metadata_filters", {})).qdrant_values()
     except ValueError as exc:
         raise HTTPException(422, "Invalid agriculture applicability filters") from exc
     try:
@@ -341,7 +371,6 @@ async def run_search(payload: dict, user: RequireSearch):
     store_mode = "TENSOR" if backend == "qdrant" and search_mode == "HYBRID" else search_mode
 
     try:
-        release_network = managed_release_collections().get(index_name)
         exclusions = await asyncio.to_thread(db.inactive_network_revision_ids, release_network, index_name) if release_network else []
         search_arguments = dict(
             name=index_name,
@@ -355,20 +384,25 @@ async def run_search(payload: dict, user: RequireSearch):
             valid_on=valid_on,
             instance=group,
             provider_id=provider_id,
+            **({"document_kind": document_kind} if document_kind else {}),
+            **({"document_code": document_code} if document_code else {}),
+            **({"release_network_id": release_network} if release_network else {}),
             **({"strict_language": language} if strict_language else {}),
             **scope_filter,
             **({"document_workflow_id": selected_workflow} if selected_workflow else {}),
             **({"crop_subject_ids": crop_subject_ids} if crop_subject_ids else {}),
             **({"applicability": applicability} if applicability else {}),
+            **({"metadata_filters": metadata_filters} if metadata_filters else {}),
             **({"excluded_revision_ids": exclusions} if exclusions else {}),
         )
         result = await asyncio.to_thread(store.search, limit=candidate_cap, **search_arguments)
         candidates = result.get("hits", [])
-        validate_hits = db.visible_document_hits if index_only_mode() else db.visible_release_hits
-        hits = await asyncio.to_thread(validate_hits, candidates)
+        validate_hits = db.visible_release_hits if release_network else db.visible_document_hits
+        visibility_scope = {"network_id": release_network} if release_network else {"index_name": index_name}
+        hits = await asyncio.to_thread(validate_hits, candidates, **visibility_scope)
         if (index_only_mode() or release_network) and len(candidates) == candidate_cap and len(hits) < top_k:
             result = await asyncio.to_thread(store.search, limit=min(candidate_cap * 3, 600), **search_arguments)
-            hits = await asyncio.to_thread(validate_hits, result.get("hits", []))
+            hits = await asyncio.to_thread(validate_hits, result.get("hits", []), **visibility_scope)
     except Exception as error:
         logging.warning("vector search failed backend=%s error_type=%s", backend, type(error).__name__)
         raise HTTPException(503, "Vector search is temporarily unavailable") from error
@@ -420,10 +454,15 @@ async def run_search(payload: dict, user: RequireSearch):
         len(hits),
         len(final_hits),
     )
+    score_field = next((field for field in ("_rerank_score", "_hybrid_score")
+                        if final_hits and all(field in hit for hit in final_hits)), "_score")
 
     return {
         "effective_config": {
             "index_name": index_name,
+            "network_id": release_network,
+            "document_kind": document_kind,
+            "document_code": document_code,
             "backend": backend,
             "query": query,
             "search_mode": search_mode,
@@ -441,6 +480,7 @@ async def run_search(payload: dict, user: RequireSearch):
             "query_expansion_profile": query_expansion_profile,
             "query_expansion_applied": expanded_query != query,
             "rerank_mode": rerank_mode,
+            "ranking_score_field": score_field,
             "apply_validity": not include_expired,
             "valid_on": result.get("valid_on"),
             "group": group,

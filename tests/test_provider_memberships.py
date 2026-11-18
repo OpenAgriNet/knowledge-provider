@@ -102,6 +102,8 @@ def test_provider_lifecycle_and_revocation_with_same_user_token(monkeypatch):
         for path, group_id in instances.items() if scope is None or path.rsplit("/", 1)[1].lower() in scope
     ])
     monkeypatch.setattr(db, "get_search_settings", lambda: {})
+    monkeypatch.setenv("VECTOR_DB_COLLECTION_NAME", "test-providers")
+    monkeypatch.setattr(db, "visible_document_hits", lambda hits, **_: hits)
     monkeypatch.setattr(qdrant_store, "get_vector_size", lambda: 2)
     monkeypatch.setattr(qdrant_store, "embed_passages", lambda texts, **_: [[1.0, 1.0] for _ in texts])
     monkeypatch.setattr(qdrant_store, "embed_query", lambda *args, **_: [1.0, 1.0])
@@ -196,10 +198,44 @@ def test_readable_provider_choices_match_document_access(monkeypatch):
         monkeypatch.setitem(api.app.dependency_overrides, deps.get_current_user, lambda: user)
         return client.get("/providers/readable").json()["providers"]
 
-    assert choices_for(["/global/super-admin"]) == ["registered"]
-    assert choices_for(["/global/global-viewer"]) == ["registered"]
+    assert choices_for(["/global/super-admin"]) == ["bv", "registered"]
+    assert choices_for(["/global/global-viewer"]) == ["bv", "registered"]
     assert choices_for(["/providers/MEMBER/view"]) == ["member"]
     assert choices_for([]) == []
+
+
+def test_unregistered_keycloak_groups_are_visible_in_each_instance_picker(monkeypatch):
+    from pipeline.api import api
+
+    monkeypatch.setenv("AUTH_DISABLED", "false")
+    monkeypatch.setenv("KEYCLOAK_VERIFY_LIVE_GROUPS", "true")
+    monkeypatch.setenv("KEYCLOAK_PROVIDER_GROUP_ROOT", "states")
+    monkeypatch.delenv("PORTAL_INSTANCE", raising=False)
+    monkeypatch.setattr(keycloak_admin, "list_provider_groups", lambda cfg=None: [
+        {"name": "RESTORED"}, {"name": "EMPTY"}, {"name": "REGISTERED"}
+    ])
+    monkeypatch.setattr(db, "list_provider_instances", lambda scope: [
+        {"provider": "registered", "id": "saved-instance", "group": "/states/REGISTERED"}
+    ] if scope is None or "registered" in scope else [])
+    client = TestClient(api.app)
+
+    def sign_in(groups):
+        user = claims_to_user({"sub": "member", "groups": groups})
+        monkeypatch.setitem(api.app.dependency_overrides, deps.get_current_user, lambda: user)
+
+    sign_in(["/global/super-admin"])
+    complete = ["empty", "registered", "restored"]
+    management = client.get("/providers").json()["providers"]
+    assert [row["provider"] for row in management] == complete
+    assert management[1]["id"] == "saved-instance"
+    assert client.get("/providers/readable").json()["providers"] == complete
+    assert client.get("/upload/providers").json()["providers"] == complete
+    assert [row["code"].lower() for row in client.get("/admin/access-options").json()["states"]] == complete
+
+    sign_in(["/states/EMPTY/admin", "/states/RESTORED/view"])
+    assert [row["provider"] for row in client.get("/providers").json()["providers"]] == ["empty"]
+    assert client.get("/providers/readable").json()["providers"] == ["empty", "restored"]
+    assert client.get("/upload/providers").json()["providers"] == ["empty"]
 
 
 def test_document_actions_use_permission_in_the_document_provider(monkeypatch):

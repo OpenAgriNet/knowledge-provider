@@ -622,20 +622,30 @@ def provision_user(
     }
 
 
+def list_provider_groups(cfg: KeycloakAdminConfig | None = None) -> list[dict] | None:
+    """Return the realm's direct provider groups, or None without an admin client."""
+    cfg = cfg or load_keycloak_admin_config()
+    if not cfg.configured:
+        return None
+    root_name = provider_group_root()
+    admin, token = _admin_root(cfg), _admin_token(cfg)
+    root = next((group for group in _list_keycloak(f"{admin}/groups", token) if group.get("name") == root_name), None)
+    if root is None:
+        return []
+    return [
+        group for group in _get_children(admin, token, root["id"])
+        if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", group.get("name", ""))
+    ]
+
+
 def list_access_options() -> dict[str, Any]:
     """List the provider groups that exist in this Keycloak realm."""
     cfg = load_keycloak_admin_config()
     root_name = provider_group_root()
-    providers = []
-    if cfg.configured:
-        admin, token = _admin_root(cfg), _admin_token(cfg)
-        root = next((group for group in _list_keycloak(f"{admin}/groups", token) if group.get("name") == root_name), None)
-        if root:
-            for group in _get_children(admin, token, root["id"]):
-                name = group.get("name", "")
-                if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name):
-                    continue
-                providers.append({"code": name.upper(), "label": name})
+    providers = [
+        {"code": group["name"].upper(), "label": group["name"]}
+        for group in list_provider_groups(cfg) or []
+    ]
     return {
         "keycloak_admin_configured": cfg.configured,
         "realm": cfg.realm,

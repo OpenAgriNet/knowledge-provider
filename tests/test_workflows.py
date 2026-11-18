@@ -7,11 +7,13 @@ from temporalio import activity
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Replayer, UnsandboxedWorkflowRunner, Worker
 
-from pipeline.temporal.workflows import document, policies, releases
 from pipeline.temporal.workflows import (
     DocumentPipelineWorkflow,
     PromoteToProdWorkflow,
     ReingestionWorkflow,
+    document,
+    policies,
+    releases,
 )
 from pipeline.temporal.workflows.policies import _network_publish_retry_policy
 

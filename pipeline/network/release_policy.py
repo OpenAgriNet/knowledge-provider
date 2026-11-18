@@ -21,10 +21,32 @@ def index_only_mode() -> bool:
     return _enabled("KP_INDEX_ONLY")
 
 
+def validate_projection_destinations() -> None:
+    """Retained promotion endpoints must have unambiguous collection ownership."""
+    from pipeline.vector_store import get_default_index_name
+
+    if index_only_mode() or _enabled("DISABLE_PROD_SETTING"):
+        return
+    local = get_default_index_name()
+    remote = os.environ.get("PROD_VECTOR_DB_URL", "").strip()
+    remote_collection = (os.environ.get("PROD_VECTOR_DB_COLLECTION_NAME") or local).strip()
+    if remote and remote_collection == local:
+        raise ValueError("Legacy promotion requires a collection name distinct from the local serving collection")
+    scheme_remote = os.environ.get("PROD_SCHEME_VECTOR_DB_URL", "").strip() or remote
+    scheme_collection = (os.environ.get("PROD_SCHEME_VECTOR_DB_COLLECTION_NAME") or "schemes-index").strip()
+    if scheme_remote and scheme_collection in {local, remote_collection}:
+        raise ValueError("Legacy scheme promotion requires its own collection name")
+
+
 def intake_index_options(index_name: str, auto_approve: bool) -> tuple[str, bool]:
     from pipeline.vector_store import get_default_index_name
 
-    return (get_default_index_name(), True) if index_only_mode() else (index_name, auto_approve)
+    serving = get_default_index_name()
+    if index_only_mode():
+        return serving, True
+    if index_name not in ("documents-index", serving):
+        raise ValueError("Draft indexing uses only the configured local serving collection")
+    return serving, auto_approve
 
 
 def publish_to_network_enabled() -> bool:

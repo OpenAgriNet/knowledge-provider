@@ -3,17 +3,16 @@ import pytest
 from pipeline.network.network_constants import (
     KIND_TO_CATALOG_TYPE,
     catalog_type_for_kind,
-    kind_for_catalog_type,
 )
 
 
 @pytest.mark.parametrize("kind", ["scheme", "advisory", "video"])
-def test_every_kind_round_trips_through_its_catalog_type(kind):
-    assert kind_for_catalog_type(catalog_type_for_kind(kind)) == kind
+def test_every_kind_resolves_to_its_catalog_type(kind):
+    assert catalog_type_for_kind(kind) == KIND_TO_CATALOG_TYPE[kind]
 
 
-def test_each_kind_has_its_own_catalog_type():
-    assert len(set(KIND_TO_CATALOG_TYPE.values())) == len(KIND_TO_CATALOG_TYPE)
+def test_multiple_kinds_can_share_the_same_schema():
+    assert catalog_type_for_kind("scheme") == catalog_type_for_kind("advisory")
 
 
 def test_video_is_a_known_kind():

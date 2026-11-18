@@ -36,6 +36,9 @@ class VectorStore(Protocol):
         name: str,
         doc_id: str,
         limit: int = 1000,
+        *,
+        chunk_num: int | None = None,
+        raw_payload: bool = False,
     ) -> list[dict[str, Any]]:
         ...
 
@@ -57,12 +60,16 @@ class VectorStore(Protocol):
         valid_on: Optional[str] = None,
         instance: Optional[str] = None,
         provider_id: Optional[str] = None,
+        document_kind: Optional[str] = None,
+        document_code: Optional[str] = None,
+        release_network_id: Optional[str] = None,
         crop_subject_ids: Optional[list[str]] = None,
         allowed_instances: Optional[list[str]] = None,
         strict_language: Optional[str] = None,
         applicability: Optional[dict[str, list[str]]] = None,
         excluded_revision_ids: Optional[list[str]] = None,
         document_workflow_id: Optional[str] = None,
+        metadata_filters: Optional[dict] = None,
     ) -> dict[str, Any]:
         """`apply_validity` keeps only chunks whose validity period covers
         `valid_on` (default: the store's today). `instance` limits results to

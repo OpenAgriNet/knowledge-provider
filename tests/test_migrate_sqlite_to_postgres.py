@@ -341,8 +341,8 @@ class TestSqliteToPostgresMigration:
         assert doc["page_count"] == 2
         assert doc["catalog_id"]
         assert (doc["name"], doc["aliases"]) == ("Registry name", ["registry"])
-        assert set(doc["index_status"]) == {"dev"}
-        assert doc["index_status"]["dev"]["index_name"] == "schemes-index"
+        assert set(doc["index_status"]) == {"documents-index", "schemes-index"}
+        assert doc["index_status"]["schemes-index"]["index_name"] == "schemes-index"
 
         jobs = {j["job_type"]: j for j in db.list_document_jobs(WF1)}
         assert set(jobs) == {"pipeline", "reingest"}
@@ -388,12 +388,14 @@ class TestSqliteToPostgresMigration:
         assert all(g["keycloak_group_id"] is None for g in groups.values())
         assert [(c["path"], c["type"]) for c in catalogs] == [
             ("/states/DEFAULT", "openagrinet:KnowledgeAdvisory"),
-            ("/states/MH", "openagrinet:AgricultureResource"),
+            ("/states/MH", "openagrinet:KnowledgeAdvisory"),
             ("/states/UP", "openagrinet:KnowledgeAdvisory"),
         ]
-        assert (meta["valid_from"], meta["valid_to"]) == ("2026-03-01", "2027-03-01")
+        assert "valid_from" not in meta and "valid_to" not in meta
+        assert meta["validity"]["startsAt"].startswith("2026-03-01T00:00:00")
+        assert meta["validity"]["endsAt"].startswith("2027-03-01T23:59:59")
         assert meta["uploaded_by_user_id"] == db.get_user_by_keycloak_id("kc-up")["id"]
-        assert meta["index_status"]["dev"]["index_name"] == "schemes-index"
+        assert meta["index_status"]["schemes-index"]["index_name"] == "schemes-index"
         assert not {"is_demo", "chunk_count", "display_name"} & set(meta)
 
         users = {u: db.get_user_by_keycloak_id(u) for u in ("kc-up", "kc-rev", "kc-req")}

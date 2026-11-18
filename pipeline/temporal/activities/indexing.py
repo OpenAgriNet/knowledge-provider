@@ -8,20 +8,21 @@ from uuid import uuid4
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
-from pipeline.search.index_identity import projection_doc_id
+from pipeline.network.network_provider import InvalidProviderIdError
+from pipeline.network.network_publisher import PublishConfigError, get_network_adapter
 from pipeline.network.release_policy import (
     index_only_mode,
     managed_release_targets,
     upload_release_target,
+    validate_projection_destinations,
 )
-from pipeline.network.network_provider import InvalidProviderIdError
-from pipeline.network.network_publisher import PublishConfigError, get_network_adapter
+from pipeline.search.index_identity import projection_doc_id
 from pipeline.search.passage_projection import (
+    _document_fields_from_doc,
     _draft_revision_passages,
     _prepare_records,
     _release_passages,
     _revision_snapshot,
-    _scheme_fields_from_doc,
     _validity_fields_from_doc,
 )
 from pipeline.temporal.activities.artifacts import _upload_artifact, _write_json_temp
@@ -73,7 +74,7 @@ async def prepare_for_ingestion(
         **_validity_fields_from_doc(doc),
         provider_id=_provider_id_from_doc(doc),
         display_name=legacy_primary_title or (doc or {}).get("name") or legacy_secondary_title,
-        **_scheme_fields_from_doc(doc),
+        **_document_fields_from_doc(doc),
     )
     activity.logger.info(f"Prepared {len(records)} records")
     return records
@@ -114,6 +115,7 @@ async def promote_document_to_prod_qdrant(
     batch_size: int = 10,
 ) -> dict:
     """Re-upsert document chunks into the PROD Qdrant collection (from Postgres)."""
+    validate_projection_destinations()
     from pipeline import db
     from pipeline.vector_store.qdrant_store import QdrantVectorStore, get_qdrant_client
 
@@ -146,7 +148,7 @@ async def promote_document_to_prod_qdrant(
     chunks = db.get_chunks(workflow_id, include_excluded=True)
     doc = db.get_document(workflow_id) or {}
     document_id = projection_doc_id(doc, document_id)
-    scheme_kwargs = _scheme_fields_from_doc(doc)
+    scheme_kwargs = _document_fields_from_doc(doc)
     kind = (scheme_kwargs.get("kind") or "document").strip().lower()
     is_scheme = kind == "scheme" and bool((scheme_kwargs.get("code") or "").strip())
 
@@ -187,6 +189,7 @@ async def promote_document_to_prod_qdrant(
         **_validity_fields_from_doc(doc),
         provider_id=_provider_id_from_doc(doc),
         display_name=doc.get("name"),
+        pages=db.get_pages(workflow_id),
     )
     activity.logger.info(
         "Promoting %s records to PROD Qdrant collection %s (kind=%s)",
@@ -204,8 +207,9 @@ async def promote_document_to_prod_qdrant(
         chunk_count_indexed=result.get("records_ingested", 0),
         last_indexed_at=datetime.utcnow().isoformat(), schema_version="passage-v2",
         status="indexed", details=result.get("index_stats"),
+        publication=True,
     )
-    await _drop_superseded_points("prod", workflow_id, doc, document_id, prod_collection, store=store)
+    await _drop_superseded_points(prod_collection, workflow_id, doc, document_id, prod_collection, store=store)
     db.log_audit(
         workflow_id=workflow_id,
         document_id=document_id,
@@ -315,6 +319,12 @@ async def ingest_document_from_db(
 ) -> dict:
     """Prepare and ingest chunks directly from Postgres by workflow_id."""
     from pipeline import db
+    from pipeline.vector_store import get_default_index_name
+
+    if not index_name or index_name == "documents-index":
+        index_name = get_default_index_name()
+    if not release_network_id and index_name != get_default_index_name():
+        raise ApplicationError("Draft indexing uses only the configured local serving collection", non_retryable=True)
 
     if release_network_id or freeze_draft_revision or source_first:
         doc, pages, chunks = db.load_revision_material(workflow_id)
@@ -327,8 +337,8 @@ async def ingest_document_from_db(
     else:
         chunks = db.get_chunks(workflow_id, include_excluded=True)
         doc = db.get_document(workflow_id) or {}
-        pages = None
-        source_url = None
+        pages = db.get_pages(workflow_id) if doc.get("metadata_review") else None
+        source_url = db.get_document_source_url(doc.get("id")) if doc.get("id") else None
 
     if release_network_id:
         try:
@@ -348,7 +358,7 @@ async def ingest_document_from_db(
         chunks,
         workflow_id=workflow_id,
         instance=doc.get("instance"),
-        **_scheme_fields_from_doc(doc),
+        **_document_fields_from_doc(doc),
         **_validity_fields_from_doc(doc),
         provider_id=None if release_network_id else _draft_provider_id(doc),
         display_name=doc.get("name"),
@@ -360,7 +370,7 @@ async def ingest_document_from_db(
         records = [record for record in records if record["text"].strip()]
         if not records:
             raise ApplicationError("The document has no searchable content", non_retryable=True)
-        snapshot = _revision_snapshot(doc, pages, records, document_id, source_url)
+        snapshot = _revision_snapshot(doc, pages, records, document_id, source_url, chunks=chunks)
         try:
             revision = db.save_revision_snapshot(
                 doc["id"], workflow_id, release_network_id, revision_id, snapshot,
@@ -381,9 +391,11 @@ async def ingest_document_from_db(
         revision_doc_id = projection_doc_id(doc, revision_id)
         passages = _draft_revision_passages(records, revision_doc_id)
         if passages:
-            snapshot = _revision_snapshot(doc, pages, passages, revision_doc_id, source_url)
+            snapshot = _revision_snapshot(doc, pages, passages, revision_doc_id, source_url, chunks=chunks)
             try:
-                db.save_draft_revision_snapshot(doc["id"], revision_workflow_id or workflow_id, revision_id, snapshot)
+                frozen = db.save_draft_revision_snapshot(doc["id"], revision_workflow_id or workflow_id, revision_id, snapshot)
+                document_id = frozen["snapshot"]["vector_doc_id"]
+                records = [{**record, "provider_id": _draft_provider_id(doc)} for record in frozen["snapshot"]["passages"]]
             except ValueError as exc:
                 raise ApplicationError(str(exc), non_retryable=True) from exc
     payload_path = _write_json_temp(records)
@@ -425,7 +437,8 @@ async def ingest_document_from_db(
         schema_version="passage-v2",
         status="indexed",
         details=result.get("index_stats"),
+        publication=bool(release_network_id),
     )
     if not release_network_id:
-        await _drop_superseded_points("dev", workflow_id, doc, document_id, index_name)
+        await _drop_superseded_points(index_name, workflow_id, doc, document_id, index_name)
     return result

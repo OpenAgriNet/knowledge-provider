@@ -7,13 +7,19 @@ from typing import Optional
 
 from fastapi import HTTPException, Request
 
+from pipeline.documents.document_kinds import validate_document_kind
+from pipeline.documents.models import DocumentStage, DocumentSummary
 from pipeline.network.catalog import scheme_catalog
+from pipeline.network.release_policy import prod_stage_disabled
+
 from ..auth.models import AuthUser
 from ..auth.permissions import Permission
-from ..auth.tenancy import allowed_instances, assert_document_instance_access, normalize_instance, resolve_create_instance
-from pipeline.documents.document_kinds import validate_document_kind
-from pipeline.network.release_policy import prod_stage_disabled
-from pipeline.documents.models import DocumentStage, DocumentSummary
+from ..auth.tenancy import (
+    allowed_instances,
+    assert_document_instance_access,
+    normalize_instance,
+    resolve_create_instance,
+)
 from . import api as _api
 
 
@@ -81,11 +87,14 @@ def _assert_can_replace(user: AuthUser, existing: dict) -> None:
     latest_job = _api.db.get_latest_document_job(existing["workflow_id"])
     if latest_job and latest_job.get("status") in {"running", "start_pending"}:
         raise HTTPException(409, "A run is still in progress for this document")
-    if (existing.get("index_status") or {}).get("prod") and not user.has_permission_for_instance(
+    published = existing.get("uses_network_releases") or any(
+        entry.get("publication") for entry in (existing.get("index_status") or {}).values()
+    )
+    if published and not user.has_permission_for_instance(
         Permission.APPROVE_INGESTION, doc_instance
     ):
         raise HTTPException(
-            403, "Replacing a document that is live in PROD needs approval rights in its instance"
+            403, "Replacing a released document needs approval rights in its instance"
         )
 
 

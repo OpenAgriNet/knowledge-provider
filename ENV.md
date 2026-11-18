@@ -36,7 +36,13 @@ Root `.env` (see `.env.example`). Required by FastAPI (`pipeline/api/`), Tempora
 
 ### Document kinds
 
-Set `DOCUMENT_KINDS` to a comma-separated list of kind codes such as `advisory,scheme,field-report`. Upload and structured intake accept those codes. Network publication also requires a projection for the kind in the Beckn catalog profile.
+Set `DOCUMENT_KINDS` to a comma-separated list of kind codes such as `advisory,scheme,field-report`. Add a schema mapping for every custom kind using `DOCUMENT_KIND_SCHEMAS`, for example `{"field-report":"example:FieldReport"}`. API and worker startup reject a kind without a mapping. Scheme and advisory default to `openagrinet:KnowledgeAdvisory`; video defaults to `openagrinet:VideoResource`. Kinds partition catalogs independently, so several kinds can share one schema. Network publication also requires a projection for the kind in the selected adapter.
+
+Set `INTAKE_SUBJECT_SCHEMA` in the API service to the path of an approved local JSON or YAML schema. Mount the file read-only. The console reads the `subjectCategories.items.enum` declaration from the root schema or a component in an OpenAPI file and offers those values on file and URL intake. If you leave the setting unset, subject categories remain optional free-text labels.
+
+Set `INTAKE_METADATA_PROFILES` in the API and worker services to the path of the [optional metadata profile file](test_data/intake-metadata-profiles.example.yaml). Mount the file read-only and restart API and worker replicas together after changes. A profile selects a document kind and optionally one subject category. One matching category profile takes precedence over the kind default. If multiple selected categories each have a profile, intake asks the user to choose one of them. Other categories and free-text tags may still accompany it.
+
+The console submits the selected profile ID, version and digest as `knowledge_metadata.attribute_profile`, with values in `knowledge_metadata.attributes`. The backend resolves and validates the profile for all new intake, including webhook and URL submissions that omit the pin. A stale pin returns a validation error. Use self-contained object schemas. Fields can be typed or have enumerated values. The profile's `additionalProperties` controls free key/value attributes. Postgres stores the pin with the accepted values. Keep old profile files with deployment history when exact validation replay is needed. Registry-installed network schema packs remain independent. Existing documents and exact webhook retries keep their saved profile.
 
 ### Object storage
 
@@ -321,6 +327,25 @@ An extension package registers a factory in the Python entry point group `knowle
 | `DOMAIN_TAGGING_REQUEST_TIMEOUT_SECONDS` | `120` | Timeout |
 | `DOMAIN_TAGGING_MAX_OUTPUT_TOKENS` | `1024` | Max tokens |
 
+### Knowledge metadata extraction
+
+The document pipeline can propose metadata after it saves the source text and chunks. Set `METADATA_AUTO_EXTRACT=true` to run it automatically. **Content → Document metadata** can also run it for an existing document. Open a specific chunk and choose **Chunk metadata → Generate metadata** to review that chunk alone. Use **Edit metadata** to set or correct saved values, or **Edit suggestions** to revise a proposal. **Document metadata** also lets reviewers save the inclusive start and end dates. A blank end date means no expiry. Chunks inherit the document validity period. PostgreSQL saves changes immediately. Chunk overrides replace the corresponding document field. Turn off an override to inherit the document value. Re-ingest the document to refresh Qdrant.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `METADATA_BASE_URL` | Unset | An OpenAI-compatible base URL ending in `/v1`. For Ollama on a Docker host, use `http://host.docker.internal:11434/v1`. For OpenAI, use `https://api.openai.com/v1`. |
+| `METADATA_MODEL` | Unset | The exact model ID advertised by the endpoint, for example `gemma4:latest` on the local Ollama server. |
+| `METADATA_API_KEY` | Unset | Optional bearer credential for this endpoint. |
+| `METADATA_AUTO_EXTRACT` | `false` | Generate document metadata suggestions after chunking. Explicit document and chunk actions still work when the endpoint and model are configured. |
+| `METADATA_USE_MAX_COMPLETION_TOKENS` | `false` | Send `max_completion_tokens` instead of `max_tokens` for models that require it. |
+| `METADATA_AREA_CODES` | `{}` | JSON that maps source area names or aliases to governed codes. Example `{"Example District":{"codeScheme":"example","areaCode":"D1"}}`. Unmapped names stay visible as evidence and are unavailable for exact area filtering. |
+
+The extractor sends the saved text to the configured endpoint. Use an endpoint authorized for that content. An automatic extraction failure leaves the document processing pipeline able to finish and can be retried in Content. The source is processed in bounded windows. Oversized inputs return an error so a partial proposal cannot look complete.
+
+The opt-in `POST /search/` filter accepts `metadata_filters` with `scope` (`document` or `chunk`), `category`, `crop`, `season` and `area` (an object with `codeScheme` and `areaCode`). Crop and season names match normalized exact labels. For example, `{"scope":"chunk","category":"Crop","crop":"Wheat","season":"Rabi"}` selects chunks whose effective values match Wheat and Rabi. An override takes precedence for its field. If area and season are both present, they must match the same applicability rule.
+
+Qdrant stores the effective category in `subject_categories`. A passage stores values in `document_scope` only when the corresponding document filter values differ. Document extensions are stored in `metadata.attributes`. To attach an extension to a particular subject, supply its `attributes` in `knowledge_metadata.subjects`. For example, a Wheat subject can have `{"sowingDays":14}` while a Rice subject has separate values. Qdrant keeps these under `metadata.subjects`. They are payload data and have no automatic search filters.
+
 ### Chunking
 
 | Variable | Default | Purpose |
@@ -384,9 +409,15 @@ Exposes `/catalog/v1/*` so **bharat-oan-api** and **bharat-provider-backend** ca
 | `PROD_SCHEME_VECTOR_DB_API_KEY` | `PROD_VECTOR_DB_API_KEY` | Scheme collection API key |
 | `PROD_SCHEME_VECTOR_DB_COLLECTION_NAME` | `schemes-index` | Must **not** equal documents collection |
 
-**Endpoints:** `GET /catalog/v1/snapshot`, `/version`, `/schemes`, `/tool-prompt`; `POST /catalog/v1/rebuild`; `PATCH /documents/{id}/scheme-metadata` (body: `kind`, `code`, `name`, `aliases`, `tool_routing`, `catalog_visible`, `network_visible`, `valid_from`, `valid_to`). The catalog is computed from documents (one row per document), so there is no bootstrap endpoint. `/upload`, `/documents` and `/upload/batch` take a required `kind` (`scheme` or `advisory`) and an optional `group` and `code`.
+**Endpoints:** `GET /catalog/v1/snapshot`, `/version`, `/schemes`, `/tool-prompt`; `POST /catalog/v1/rebuild`; `PATCH /documents/{id}/scheme-metadata` (body: `kind`, `code`, `name`, `aliases`, `tool_routing`, `catalog_visible`, `network_visible`, `valid_from`, `valid_to`). The catalog is computed from documents (one row per document), so there is no bootstrap endpoint. `/upload`, `/documents` and `/upload/batch` take a required `kind` (`scheme` or `advisory`) and an optional `instance` and `code`.
 
 ### Publish to Network
+
+`SEARCH_NETWORK_PRINCIPALS` is a JSON object mapping verified Keycloak subject IDs to permitted serving network IDs, for example `{"adapter-service-subject":["oan.dev"]}`. The default is `{}`, granting no network retrieval access. Use the subject of the provisioned adapter service account, not its display name or a value supplied in a request. Requests from a listed principal must specify `network_id`, even when its grant list is empty. The local authentication bypass grants no network retrieval access. The API resolves the collection from its managed targets and still applies instance restrictions. Configure this value on the API; the worker does not use caller retrieval grants. The adapter remains responsible for verifying the incoming participant and NxN route.
+
+A listed principal can call only retrieval, scoped catalog, its own identity and read-only search settings endpoints. It cannot read document, chunk, revision, export or audit routes through an unrelated permission.
+
+Network requests cannot use `include_expired`, historical `valid_on`, or raw diagnostic hits. Local operator inspection retains those controls. `/search/collections` lists only the caller's permitted network targets. See [Search contract and BV examples](docs/SEARCH.md).
 
 A network release selects a specific document revision. Automatic release follows the source policy and configured destination. An authorized provider operator can also select a saved revision for each managed network. The worker stages its search passages and records the publisher's receipt before activating the revision for that destination.
 

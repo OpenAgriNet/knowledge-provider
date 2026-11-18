@@ -15,11 +15,8 @@ from pipeline.api import api as _api
 from pipeline.api.routers.upload import _process_upload
 from pipeline.auth.deps import RequireUpload
 from pipeline.auth.permissions import Permission
-from pipeline.metadata.crop_metadata import CropSubjects
-from pipeline.intake.source_fetch import SourceFile, SourcePageError, fetch_source
-from pipeline.network.release_policy import upload_release_target
-from pipeline.metadata.knowledge_metadata import KnowledgeMetadata
 from pipeline.intake.provider_sources import CrawlProfile
+from pipeline.intake.source_fetch import SourceFile, SourcePageError, fetch_source
 from pipeline.intake.source_intake import (
     IntakeConflict,
     NormalizedSourceDocument,
@@ -36,6 +33,13 @@ from pipeline.intake.webhook_mapping import (
     load_intake_template,
     map_source_submission,
 )
+from pipeline.metadata.crop_metadata import CropSubjects
+from pipeline.metadata.intake_profiles import (
+    IntakeProfileConfigurationError,
+    IntakeProfileValidationError,
+)
+from pipeline.metadata.knowledge_metadata import KnowledgeMetadata
+from pipeline.network.release_policy import upload_release_target
 
 router = APIRouter()
 
@@ -194,6 +198,10 @@ async def _ingest_url(instance: str, source_id: str, data: CrawlRequest, user, p
                 attach_source_response(conn, receipts[-1]["job_id"], capture)
     except IntakeConflict as exc:
         raise HTTPException(409, str(exc)) from exc
+    except IntakeProfileConfigurationError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except IntakeProfileValidationError as exc:
+        raise HTTPException(422, str(exc)) from exc
     except LookupError as exc:
         raise HTTPException(404, "Provider not found") from exc
     except (ValueError, RecursionError) as exc:

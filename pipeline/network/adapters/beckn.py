@@ -4,6 +4,8 @@ import hashlib
 import json
 
 from pipeline.auth.tenancy import group_for_instance
+from pipeline.metadata.schema_packs import get_schema_pack
+from pipeline.network.adapters.contracts import PublicationReceipt, PublicationRequest
 from pipeline.network.catalog.catalog_builder import is_publishable_kind
 from pipeline.network.catalog.catalog_profile import load_catalog_profile
 from pipeline.network.catalog.discovery_publish_service import (
@@ -15,8 +17,6 @@ from pipeline.network.network_constants import RESULT_REJECTED
 from pipeline.network.network_group import load_provider_naming, named_group, provider_for
 from pipeline.network.network_provider import InvalidProviderIdError
 from pipeline.network.publication_admission import publication_admission_evidence
-from pipeline.metadata.schema_packs import get_schema_pack
-from pipeline.network.adapters.contracts import PublicationReceipt, PublicationRequest
 
 
 class BecknNetworkPublisher:

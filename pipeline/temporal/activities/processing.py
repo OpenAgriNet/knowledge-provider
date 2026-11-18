@@ -10,8 +10,8 @@ from temporalio import activity
 
 from pipeline.chunking import chunk_pages, load_chunking_config
 from pipeline.network.release_policy import index_only_mode
-from pipeline.translation import load_translation_config, translate_pages
 from pipeline.temporal.activities.artifacts import _upload_artifact, _write_json_temp
+from pipeline.translation import load_translation_config, translate_pages
 
 
 async def _detect_and_translate_impl(
@@ -199,6 +199,15 @@ async def create_chunks_from_db(
             "percent": 100.0,
         }
     )
+    from pipeline.metadata.extraction import automatic_extraction_enabled
+
+    if automatic_extraction_enabled():
+        from pipeline.db.metadata_review import document_id_for_workflow, generate_review
+
+        try:
+            await generate_review(document_id_for_workflow(workflow_id), automatic=True)
+        except Exception as exc:
+            activity.logger.warning("Document metadata generation failed (%s)", type(exc).__name__)
     return {"chunk_count": len(chunks)}
 
 

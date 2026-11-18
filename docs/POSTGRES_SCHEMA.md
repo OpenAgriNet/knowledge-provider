@@ -119,15 +119,16 @@ Notes
 
 ## 3. `catalogs`
 
-One row per provider instance and resource type. A catalog is what a provider publishes on the network: Mahavistar's `scheme` catalog and its `advisory` catalog are two rows. A new type adds rows, not tables.
+One row per provider instance and document kind. Scheme and advisory catalogs remain separate rows while sharing the Knowledge Advisory schema. A new kind adds rows, not tables.
 
-Unique: `(instance_id, type)`.
+Unique: `(instance_id, kind)`.
 
 | Column | Type | Constraints / Default | Purpose |
 |---|---|---|---|
 | id | UUID | PRIMARY KEY, DEFAULT gen_random_uuid() | Catalog ID. |
 | instance_id | UUID | NOT NULL, FK → `instances(id)` ON DELETE RESTRICT | The provider that owns the catalog. |
-| type | TEXT | NOT NULL, CHECK `^[a-z0-9]+:[A-Za-z0-9]+$` | Network schema/capability, e.g. `openagrinet:AgricultureResource`. |
+| kind | TEXT | NOT NULL | Configured document kind used to partition catalogs. |
+| type | TEXT | NOT NULL, CHECK `^[a-z0-9]+:[A-Za-z0-9]+$` | Configured network schema, such as `openagrinet:KnowledgeAdvisory`. |
 | name | TEXT | NOT NULL | Catalog display name. Defaults to `<instance name> <kind>` when created on upload. |
 | metadata | JSONB | NOT NULL DEFAULT '{}', CHECK object | Beckn publish information. See keys below. |
 | created_at | TIMESTAMPTZ | NOT NULL DEFAULT now() | Created. |
@@ -145,8 +146,8 @@ Unique: `(instance_id, type)`.
 Pydantic (`CatalogMetadata`) validates the keys; the database only checks for an object.
 
 Notes
-- `type` stores the schema name. `pipeline/network/network_constants.py` defines `catalog_type_for_kind` and `kind_for_catalog_type`. The mappings are `scheme` to `openagrinet:AgricultureResource`, `advisory` to `openagrinet:KnowledgeAdvisory`, and `video` to `openagrinet:VideoResource`. See ADR 0003 and ADR 0006.
-- Every instance gets one catalog per supported type when the instance row is created (`upsert_instance` calls `ensure_instance_catalogs` in the same transaction). Startup (`init_db`) runs `sync_catalogs_for_all_instances`, so a type added to `KIND_TO_CATALOG_TYPE` reaches existing instances. Upload keeps `get_or_create_catalog` as a fallback for a catalog that is missing. Names are `<INSTANCE> <kind> catalog`, for example `MH scheme catalog`.
+- `type` stores the schema name. `document_kind_schemas` supplies the defaults and `DOCUMENT_KIND_SCHEMAS` overrides. Scheme and advisory share `openagrinet:KnowledgeAdvisory`; the mapping is not reversible. Document reads join catalogs by instance and kind. The former SQL mapping view has been removed.
+- Every instance gets one catalog per configured mapping when the instance row is created. Startup synchronizes missing catalogs and changed schema names. Upload keeps `get_or_create_catalog` as a fallback. Names are `<INSTANCE> <kind> catalog`.
 - Computed catalog values (status, chunk count, network visibility, `promoted_at`) come from the `catalog_status` view, not stored here.
 
 ---
@@ -204,7 +205,7 @@ There is no page count here: it is the number of `pages` rows.
 | valid_from | string `YYYY-MM-DD` | absent | Start of the period chunks are searchable. |
 | valid_to | string `YYYY-MM-DD` | absent | End of the period. Absent means no end. Pydantic requires `valid_from <= valid_to`. |
 | uploaded_by_user_id | string (users.id) | absent | Who uploaded. Not an FK, so a deleted user leaves a stale id; `audit_logs.actor_user_id` keeps real history. |
-| index_status | object | `{}` | Vector index state per index. Keys `dev` and `prod`. See below. |
+| index_status | object | `{}` | Vector index state keyed by actual collection name. See below. |
 | catalog_visible | boolean | true | Counts toward the catalog. |
 | network_visible | boolean | true | May be published to the Beckn network. |
 | reindex_required | boolean | false | Approved content changed and the vector index is stale. |
@@ -213,24 +214,24 @@ There is no page count here: it is the number of `pages` rows.
 
 Column default: `'{"index_status": {}, "catalog_visible": true, "network_visible": true, "reindex_required": false}'`.
 
-`index_status` is one entry per vector index (DEV and PROD are separate Qdrant collections):
+`index_status` holds one independent entry per collection. Draft and network targets cannot overwrite each other's status:
 
 ```json
 {
-  "dev":  {"status": "indexed", "chunk_count_indexed": 42,
+  "documents-index": {"index_name": "documents-index", "status": "indexed", "publication": false, "chunk_count_indexed": 42,
            "last_indexed_at": "2026-10-19T06:20:00Z", "last_verified_at": "2026-10-19T06:25:00Z",
-           "schema_version": "passage-v1", "details": {}},
-  "prod": {"...": "..."}
+           "schema_version": "passage-v2", "details": {}},
+  "released-oan": {"index_name": "released-oan", "status": "indexed", "publication": true}
 }
 ```
 
 - A missing key means the document was never ingested to that index. `status` is `unknown`, `indexed` or `missing`.
-- Update one index atomically with `jsonb_set(metadata, '{index_status,dev}', $1::jsonb)`; the `index_status` key always exists, which `jsonb_set` needs.
+- Update one collection atomically with a parameterized `jsonb_set` path. Superseded point ownership uses the same collection key. Existing databases must convert the earlier environment keys before starting baseline 0025.
 
 ### Notes
 - A document's stage is the `current_stage` of its latest workflow. List and filter queries join the `document_current_workflow` view.
 - The API's `instance` comes from `documents.provider_id → instances.name`. Migration 0007 backfills this reference. Migration 0008 backfills the kind and removes the catalog foreign key.
-- The document's kind is stored in `documents.kind`. The legacy catalog view maps known kinds to their catalog types. `scheme_code`, `scheme_name` and `scheme_aliases` are `code`, `name` and `aliases`.
+- The document's kind is stored in `documents.kind`. The catalog row stores kind separately from schema type. Scheme and advisory share KnowledgeAdvisory. `scheme_code`, `scheme_name` and `scheme_aliases` are `code`, `name` and `aliases`.
 - `chunk_count` and `page_count` are counted from `chunks` and `pages`; they are not stored.
 - A new document needs a `document_kind` and a `code`. A document's kind is fixed after upload. `DuplicateDocumentCode` is raised when that provider already uses the code for that kind.
 - Re-uploading an existing code updates the same document: a new workflow starts, `source` is replaced, pages and chunks are cleared and `reindex_required` is set (`reset_document_for_reupload`). Earlier workflows and artifacts stay as history.
@@ -399,6 +400,8 @@ Unique: `(document_id, chunk_number)`.
 | is_reviewed | BOOLEAN | NOT NULL DEFAULT FALSE | Reviewed by a human. |
 | is_excluded | BOOLEAN | NOT NULL DEFAULT FALSE | Excluded from indexing. |
 | reviewer_notes | TEXT | | Reviewer comments. |
+| tags | TEXT[] | NOT NULL DEFAULT '{}', at most 16 entries | Tags for this passage. |
+| metadata_review | JSONB | NOT NULL DEFAULT '{}', CHECK object | Generated suggestions, accepted facts, and manual metadata overrides for this chunk. |
 | created_at | TIMESTAMPTZ | NOT NULL DEFAULT now() | Created. |
 | updated_at | TIMESTAMPTZ | NOT NULL DEFAULT now() | Last change (trigger). |
 
@@ -490,15 +493,16 @@ The same migration moves the first raw JSON item observed on legacy crawl replay
 
 ## View: `catalog_status`
 
-Computed from `documents`, `catalogs`, `instances`, `workflows` and `document_current_workflow`. Stores nothing. One row per document. The `/catalog/v1/*` snapshot API reads it for the scheme type (`catalogs.type` of the scheme kind), and its fields are named `scheme_code`, `scheme_name` and so on, so consumers see no change.
+Computed from `documents`, `catalogs`, `instances`, `workflows` and `document_current_workflow`. Stores nothing. This is the local operator catalog. Managed-release workflows do not become locally live through this view. Network-scoped `/catalog/v1/*` requests instead join `network_releases` to the selected frozen revision and return its metadata, even while a new draft is being edited. External response aliases retain scheme code and name fields.
 
 | Column | Type | How it is computed |
 |---|---|---|
 | document_id | UUID | `documents.id`. |
-| catalog_id | UUID | Matching legacy catalog, if present. |
+| catalog_id | UUID | Matching catalog by instance and kind, if present. |
 | instance_id | UUID | `documents.provider_id`. |
 | instance_name | TEXT | `instances.name`. |
 | type | TEXT | `catalogs.type`. |
+| kind | TEXT | `documents.kind`. |
 | code | TEXT | `documents.code`. |
 | name | TEXT | `documents.name`. |
 | aliases | TEXT[] | `documents.aliases`. |
@@ -506,7 +510,7 @@ Computed from `documents`, `catalogs`, `instances`, `workflows` and `document_cu
 | workflow_id | TEXT | `temporal_workflow_id` of the document's earliest `pipeline` workflow. |
 | chunk_count | INTEGER | Count of the document's `chunks`. |
 | network_visible | BOOLEAN | `metadata.network_visible`, true when absent. |
-| promoted_at | TIMESTAMPTZ | `metadata.index_status.prod.last_indexed_at`, only for live documents. |
+| promoted_at | TIMESTAMPTZ | Latest local collection indexing time for a locally live document. Network-scoped responses use the selected release time. |
 
 "Live" means the latest workflow's `current_stage = 'completed'`, `is_disabled` is false and `metadata.catalog_visible` is true. There are no bootstrap rows: a scheme appears only once a document exists.
 
@@ -538,7 +542,7 @@ A Beckn catalog profile can also pin its outbound schema. Add a `schema_pack` ob
 
 ## `schema_migrations`
 
-The runner creates the ledger with `version` (the `NNNN` prefix and primary key), `name`, and `applied_at`. It installs all six bootstrap files and records one `0022` baseline marker in the same transaction. A pre-release database already at `0022` keeps its existing ledger. The runner takes a session advisory lock across startup and commits each later migration in its own transaction.
+The runner creates the ledger with `version` (the `NNNN` prefix and primary key), `name`, and `applied_at`. It installs the seven bootstrap files and records one `0025` baseline marker in the same transaction. Bootstrap includes chunk metadata review. Document validity uses the OAN TimePeriod fields inside metadata. An existing database must be upgraded through `0025` before startup. The [operator-only 0024-to-0025 upgrade](upgrades/0024_to_0025.sql) adds catalog kinds, replaces the old catalog view, converts index status and superseded keys to collection names, and normalizes retired rerank labels. Fresh installs use the consolidated bootstrap. The runner takes a session advisory lock across startup and commits each later migration in its own transaction.
 
 ---
 

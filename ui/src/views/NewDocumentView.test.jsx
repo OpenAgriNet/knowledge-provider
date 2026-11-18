@@ -89,15 +89,13 @@ describe('NewDocumentView display name', () => {
     expect(body.get('display_name')).toBe('Cotton Pest Advisory')
   })
 
-  it('sends a structured crop reference with the upload', async () => {
+  it('sends a subject name and code with the upload', async () => {
     const user = userEvent.setup()
     renderView()
     await pickFile(user)
     await pickKind(user)
     await user.click(screen.getByRole('button', { name: 'Add subject' }))
     expect(screen.getByRole('button', { name: /start ingestion/i })).toBeDisabled()
-    const subjectId = 'https://taxonomy.openagrinet.global/crops/cotton'
-    await user.type(screen.getByLabelText('Taxonomy ID 1'), subjectId)
     await user.type(screen.getByLabelText('Subject name 1'), 'Cotton')
     await user.type(screen.getByLabelText('Subject code 1'), 'COTTON')
     await user.click(screen.getByRole('button', { name: /start ingestion/i }))
@@ -105,7 +103,7 @@ describe('NewDocumentView display name', () => {
     await waitFor(() => expect(apiFetch).toHaveBeenCalled())
     const body = apiFetch.mock.calls[0][1].body
     expect(JSON.parse(body.get('knowledge_metadata')).agriculture_subjects).toEqual([
-      { subjectId, descriptor: { name: 'Cotton', code: 'COTTON' } },
+      { descriptor: { name: 'Cotton', code: 'COTTON' } },
     ])
   })
 
@@ -160,7 +158,7 @@ describe('NewDocumentView display name', () => {
     })
 
     renderView()
-    await user.click(screen.getByRole('button', { name: 'Use a URL' }))
+    await user.click(screen.getByRole('tab', { name: 'From URL' }))
     expect(screen.queryByLabelText('Source URL')).not.toBeInTheDocument()
     await user.click(await screen.findByRole('combobox', { name: 'Instance' }))
     expect(screen.getByRole('option', { name: 'COTTON-HUB' })).toBeInTheDocument()
@@ -172,7 +170,7 @@ describe('NewDocumentView display name', () => {
   it('keeps the instance visible when the user can upload to only one', async () => {
     const user = userEvent.setup()
     renderView()
-    await user.click(screen.getByRole('button', { name: 'Use a URL' }))
+    await user.click(screen.getByRole('tab', { name: 'From URL' }))
     expect(await screen.findByRole('combobox', { name: 'Instance' })).toHaveTextContent('MH')
     expect(await screen.findByLabelText('Source URL')).toBeInTheDocument()
   })

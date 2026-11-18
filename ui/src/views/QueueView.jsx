@@ -137,7 +137,7 @@ export default function QueueView() {
   }
 
   return (
-    <div className="page-shell space-y-4">
+    <div className="page-shell">
       <div>
         <h1 className="font-serif text-2xl font-semibold text-foreground">Review Queue</h1>
         <p className="mt-1 text-sm text-muted-foreground">{queueTotal || queue.length} items awaiting operator action</p>

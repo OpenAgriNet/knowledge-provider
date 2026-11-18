@@ -154,6 +154,9 @@ def activate_network_release(
             "transaction_id = excluded.transaction_id, released_at = now(), withdrawn_at = NULL, generation = gen_random_uuid()",
             (document_id, network_id, revision["id"], transaction_id),
         )
+        from .catalog import bump_catalog_version
+
+        bump_catalog_version("network_release", conn=conn)
 
 
 def list_document_revisions(document_id: str) -> dict:
@@ -218,8 +221,9 @@ def get_latest_completed_index_revision(document_id: str) -> dict | None:
             "SELECT r.id::text, r.snapshot FROM document_revisions r "
             "JOIN workflows w ON w.id = r.workflow_id "
             "WHERE r.document_id = %s::uuid AND w.status = 'completed' "
-            "AND w.config->>'release_network_id' IS NULL "
-            "ORDER BY (w.workflow_type = 'legacy_index_import'), r.created_at DESC, r.id DESC LIMIT 1",
+            "AND w.config->>'release_network_id' IS NULL AND w.workflow_type <> 'legacy_index_import' "
+            "AND NOT (r.snapshot ? 'legacy_search_import') "
+            "ORDER BY r.created_at DESC, r.id DESC LIMIT 1",
             (document_id,),
         ).fetchone()
 
@@ -244,10 +248,18 @@ def withdraw_network_release(
         result = conn.execute(
             "UPDATE network_releases SET withdrawn_at = COALESCE(withdrawn_at, now()), "
             "generation = CASE WHEN withdrawn_at IS NULL THEN gen_random_uuid() ELSE generation END "
-            "WHERE document_id = %s::uuid AND network_id = %s AND revision_id = %s::uuid",
+            "WHERE document_id = %s::uuid AND network_id = %s AND revision_id = %s::uuid AND withdrawn_at IS NULL",
             (document_id, network_id, revision_id),
         )
-    return result.rowcount > 0
+        if result.rowcount:
+            from .catalog import bump_catalog_version
+
+            bump_catalog_version("network_withdrawal", conn=conn)
+        exists = conn.execute(
+            "SELECT 1 FROM network_releases WHERE document_id = %s::uuid AND network_id = %s AND revision_id = %s::uuid",
+            (document_id, network_id, revision_id),
+        ).fetchone()
+    return exists is not None
 
 
 def stage_saved_network_revision(
@@ -322,3 +334,6 @@ def select_network_revision(
             "transaction_id = excluded.transaction_id, released_at = now(), withdrawn_at = NULL, generation = gen_random_uuid()",
             (document_id, network_id, revision_id, transaction_id),
         )
+        from .catalog import bump_catalog_version
+
+        bump_catalog_version("network_revision_selection", conn=conn)

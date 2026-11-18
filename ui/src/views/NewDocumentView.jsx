@@ -23,6 +23,8 @@ import {
 } from 'lucide-react'
 import { API_BASE } from '../config'
 import UrlIntakeForm from './UrlIntakeForm'
+import WebhookSourcePolicy from './WebhookSourcePolicy'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { IntakeMetadataFields, useIntakeMetadata } from './IntakeMetadataFields'
 import { apiFetch } from '../auth/keycloak'
 import { useAuth } from '../auth/AuthProvider'
@@ -81,7 +83,7 @@ function statusTone(ingest) {
 
 export default function NewDocumentView() {
   const navigate = useNavigate()
-  const { hasPermission, isSuperAdmin, user } = useAuth()
+  const { hasPermission, isSuperAdmin, stateRoles, user } = useAuth()
   const canUpload = hasPermission('upload')
   const [providerOptions, setProviderOptions] = useState(null)
   const [providerError, setProviderError] = useState(false)
@@ -92,6 +94,9 @@ export default function NewDocumentView() {
     ? selectedInstance
     : providerOptions?.default_provider || (uploadInstances.length === 1 ? uploadInstances[0] : '')
   const [intakeMethod, setIntakeMethod] = useState('file')
+  const canManageWebhook = Boolean(user?.live_provider_access) &&
+    (isSuperAdmin || stateRoles?.[documentInstance] === 'state_admin')
+  const fileInput = useRef(null)
   const [files, setFiles] = useState([])
   const [batchResults, setBatchResults] = useState(null)
   const isBatch = files.length > 1
@@ -106,7 +111,7 @@ export default function NewDocumentView() {
     label: kind.split('-').map((word) => word[0].toUpperCase() + word.slice(1)).join(' '),
   })) ?? DOCUMENT_TYPE_OPTIONS
   const [parserProvider, setParserProvider] = useState('default')
-  const metadata = useIntakeMetadata()
+  const metadata = useIntakeMetadata(parserOptions?.metadata_profiles, documentKind)
   const [dragging, setDragging] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadSuccess, setUploadSuccess] = useState(false)
@@ -292,7 +297,7 @@ export default function NewDocumentView() {
 
   if (batchResults) {
     return (
-      <div className="w-full space-y-4 p-4 sm:p-5">
+      <div className="page-shell">
         <h1 className="font-serif text-xl font-semibold text-foreground">Upload results</h1>
         <ul className="panel divide-y divide-border">
           {batchResults.map((item, index) => (
@@ -323,7 +328,7 @@ export default function NewDocumentView() {
 
   if (uploadSuccess) {
     return (
-      <div className="w-full space-y-4 p-4 sm:p-5">
+      <div className="page-shell">
         <h1 className="font-serif text-xl font-semibold text-foreground">
           {pendingStartError ? 'Document saved' : 'Document queued'}
         </h1>
@@ -339,7 +344,7 @@ export default function NewDocumentView() {
             </p>
             <p className="mt-2 font-mono text-[11px] text-muted-foreground break-all">{lastWorkflowId}</p>
           </div>
-          <div className="flex flex-col-reverse gap-2 p-4 sm:flex-row sm:justify-end">
+          <div className="flex flex-col gap-2 p-4 sm:flex-row sm:justify-end">
             <Button variant="outline" size="sm" onClick={resetUpload}>
               Ingest another
             </Button>
@@ -359,7 +364,7 @@ export default function NewDocumentView() {
   }
 
   return (
-    <div className="flex h-full min-h-0 w-full flex-col gap-3 p-3 sm:gap-4 sm:p-4">
+    <div className="page-shell">
       {/* Header — compact, full width */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
@@ -367,7 +372,7 @@ export default function NewDocumentView() {
             Ingest Document
           </h1>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            Upload files or submit a URL to make the content searchable.
+            Upload files, submit a URL, or connect a webhook.
           </p>
         </div>
         <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
@@ -384,15 +389,22 @@ export default function NewDocumentView() {
       ) : null}
 
       {/* Full-width grid — no max-width cap */}
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-12 lg:gap-4">
+      <div className="ingest-layout grid grid-cols-1 items-start gap-6">
         {/* Left column */}
-        <div className="flex min-w-0 flex-col gap-3 lg:col-span-8">
-          <div className="flex flex-wrap items-center gap-2">
+        <div className="min-w-0">
+          <Tabs value={intakeMethod} onValueChange={setIntakeMethod} className="grid gap-5">
+            <TabsList className="flex h-auto w-fit max-w-full flex-wrap justify-start gap-1" aria-label="Intake method">
+              <TabsTrigger value="file">Upload files</TabsTrigger>
+              <TabsTrigger value="url">From URL</TabsTrigger>
+              <TabsTrigger value="webhook">Webhook</TabsTrigger>
+            </TabsList>
+          <div className="grid gap-4 rounded-xl border border-border bg-muted/25 p-4 sm:grid-cols-2">
+          {intakeMethod !== 'webhook' && <div className="grid min-w-0 content-start gap-2">
             <label htmlFor="document-kind" className="text-xs font-medium text-foreground">
               Document type
             </label>
             <Select value={documentKind} onValueChange={setDocumentKind} disabled={!canUpload}>
-              <SelectTrigger id="document-kind" className="h-8 w-[160px] text-xs">
+              <SelectTrigger id="document-kind" className="h-10 w-full">
                 <SelectValue placeholder="Select type…" />
               </SelectTrigger>
               <SelectContent>
@@ -403,13 +415,12 @@ export default function NewDocumentView() {
                 ))}
               </SelectContent>
             </Select>
-            <span className="text-[11px] text-muted-foreground">Required</span>
-          </div>
+          </div>}
           {canUpload && uploadInstances.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="grid min-w-0 content-start gap-2">
               <label htmlFor="upload-instance" className="text-xs font-medium text-foreground">Instance</label>
               <Select value={documentInstance} onValueChange={setSelectedInstance} disabled={!canUpload || uploading}>
-                <SelectTrigger id="upload-instance" className="h-8 w-[160px] text-xs">
+                <SelectTrigger id="upload-instance" className="h-10 w-full">
                   <SelectValue placeholder="Select an instance…" />
                 </SelectTrigger>
                 <SelectContent>
@@ -436,16 +447,15 @@ export default function NewDocumentView() {
               {isSuperAdmin ? 'Add an instance under Users before starting intake.' : 'Ask an administrator for upload access to an instance.'}
             </p>
           )}
-          {canUpload && (
-            <div className="flex gap-2" aria-label="Intake method">
-              <Button type="button" size="sm" variant={intakeMethod === 'file' ? 'default' : 'outline'}
-                aria-pressed={intakeMethod === 'file'} onClick={() => setIntakeMethod('file')}>Upload files</Button>
-              <Button type="button" size="sm" variant={intakeMethod === 'url' ? 'default' : 'outline'}
-                aria-pressed={intakeMethod === 'url'} onClick={() => setIntakeMethod('url')}>Use a URL</Button>
-            </div>
-          )}
-          {intakeMethod === 'url' ? (
-            documentInstance && <UrlIntakeForm key={documentInstance} provider={documentInstance} kind={documentKind} onQueued={loadRecent} />
+          </div>
+          <TabsContent key={intakeMethod} value={intakeMethod} className="space-y-5">
+          {intakeMethod === 'webhook' ? (
+            documentInstance && (canManageWebhook
+              ? <WebhookSourcePolicy key={documentInstance} provider={documentInstance} />
+              : <p className="text-sm text-muted-foreground">An instance administrator can set up the webhook and issue its access credentials.</p>)
+          ) : intakeMethod === 'url' ? (
+            documentInstance && <UrlIntakeForm key={documentInstance} provider={documentInstance} kind={documentKind}
+              subjectCategories={parserOptions?.subject_categories} metadataProfiles={parserOptions?.metadata_profiles} onQueued={loadRecent} />
           ) : (<>
           {parserOptions?.parser_providers?.some((provider) => provider !== parserOptions.default_parser) && (
             <div className="flex flex-wrap items-center gap-2">
@@ -537,22 +547,19 @@ export default function NewDocumentView() {
                       </span>
                     ))}
                   </div>
-                  <label className={canUpload ? 'inline-block' : 'pointer-events-none inline-block'}>
-                    <input
-                      type="file"
-                      multiple
-                      className="hidden"
-                      disabled={!canUpload}
-                      onChange={handleFileChange}
-                      accept={supportedTypes.join(',')}
-                    />
-                    <Button variant="outline" size="sm" className="h-8" asChild disabled={!canUpload}>
-                      <span className={canUpload ? 'cursor-pointer' : 'cursor-not-allowed'}>
-                        <Upload className="mr-1.5 size-3.5" />
-                        Browse files
-                      </span>
-                    </Button>
-                  </label>
+                  <input
+                    ref={fileInput}
+                    type="file"
+                    multiple
+                    className="hidden"
+                    disabled={!canUpload}
+                    onChange={handleFileChange}
+                    accept={supportedTypes.join(',')}
+                  />
+                  <Button type="button" variant="outline" onClick={() => fileInput.current?.click()} disabled={!canUpload}>
+                    <Upload className="mr-1.5 size-3.5" />
+                    Browse files
+                  </Button>
                 </div>
               )}
             </div>
@@ -588,7 +595,8 @@ export default function NewDocumentView() {
             </aside>
           )}
 
-          {file && <IntakeMetadataFields state={metadata} disabled={!canUpload || uploading} />}
+          {file && <IntakeMetadataFields state={metadata} disabled={!canUpload || uploading}
+            subjectCategories={parserOptions?.subject_categories} />}
 
           {validationError ? (
             <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -646,10 +654,12 @@ export default function NewDocumentView() {
             )}
           </Button>
           </>)}
+          </TabsContent>
+          </Tabs>
         </div>
 
         {/* Recent — fills remaining width */}
-        <div className="flex min-h-[280px] min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-card lg:col-span-4 lg:min-h-0 lg:self-stretch">
+        <div className="flex min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-card">
           <div className="flex items-center justify-between border-b border-border px-3 py-2.5">
             <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
               <Clock className="size-3.5 text-muted-foreground" />
@@ -667,7 +677,7 @@ export default function NewDocumentView() {
             </Button>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="max-h-[32rem] min-h-0 flex-1 overflow-y-auto">
             {loadingRecent && !recentIngests.length ? (
               <div className="flex items-center justify-center gap-2 px-3 py-10 text-xs text-muted-foreground">
                 <Loader2 className="size-3.5 animate-spin" />

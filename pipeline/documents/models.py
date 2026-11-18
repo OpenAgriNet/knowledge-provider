@@ -17,9 +17,11 @@ from pydantic import (
     model_validator,
 )
 
+from pipeline.documents.document_validity import TimePeriod
 from pipeline.metadata.crop_metadata import CropSubjects
 from pipeline.metadata.knowledge_metadata import KnowledgeMetadata
 from pipeline.metadata.localization import normalize_language_tag
+from pipeline.search.ranking import RerankMode
 
 
 class DocumentStage(str, Enum):
@@ -283,6 +285,7 @@ class DocumentSummary(BaseModel):
     # validity existed.
     valid_from: Optional[str] = None
     valid_to: Optional[str] = None
+    validity: TimePeriod | None = None
 
 
 class SchemeMetadataUpdate(BaseModel):
@@ -513,7 +516,7 @@ class SearchSettings(BaseModel):
     useE5Prefix: bool = True
     excludeReference: bool = True
     queryExpansionProfile: str = "none"
-    rerankMode: str = "none"
+    rerankMode: RerankMode = "none"
     hybridRrfK: int = 60
 
 
@@ -532,7 +535,7 @@ class SearchSettingsUpdate(BaseModel):
     useE5Prefix: Optional[bool] = None
     excludeReference: Optional[bool] = None
     queryExpansionProfile: Optional[str] = None
-    rerankMode: Optional[str] = None
+    rerankMode: Optional[RerankMode] = None
     hybridRrfK: Optional[int] = None
 
 
@@ -572,10 +575,11 @@ class DocumentSource(BaseModel):
 
 
 class IndexState(BaseModel):
-    """One entry of ``documents.index_status`` (keys ``dev`` / ``prod``)."""
+    """One collection's entry in ``documents.index_status``."""
     model_config = ConfigDict(extra="forbid")
 
     status: str = "unknown"  # unknown | indexed | missing
+    publication: bool = False
     index_name: Optional[str] = None
     doc_id: Optional[str] = None
     chunk_count_indexed: int = Field(default=0, ge=0)
@@ -601,10 +605,9 @@ class DocumentMetadata(BaseModel):
 
     crop_subjects: CropSubjects = Field(default_factory=list)
     knowledge_metadata: KnowledgeMetadata | None = None
-    valid_from: Optional[str] = None  # YYYY-MM-DD
-    valid_to: Optional[str] = None  # YYYY-MM-DD, None = no end
+    validity: TimePeriod | None = None
     uploaded_by_user_id: Optional[str] = None  # users.id (UUID string)
-    index_status: dict[str, IndexState] = Field(default_factory=dict)  # keys dev / prod
+    index_status: dict[str, IndexState] = Field(default_factory=dict)
     catalog_visible: bool = True
     network_visible: bool = True
     reindex_required: bool = False
@@ -615,13 +618,6 @@ class DocumentMetadata(BaseModel):
     # the old points would otherwise be orphaned; the next ingest/promote and
     # disable/purge remove them.
     superseded_doc_ids: dict[str, list[str]] = Field(default_factory=dict)
-
-    @model_validator(mode="after")
-    def _period_is_ordered(self) -> "DocumentMetadata":
-        if self.valid_from and self.valid_to and self.valid_from > self.valid_to:
-            raise ValueError("valid_from must not be after valid_to")
-        return self
-
 
 class CatalogNetworkState(BaseModel):
     """``catalogs.metadata.network``: set once the catalog is published."""
@@ -698,26 +694,26 @@ class RetrievalSettings(BaseModel):
     searchMethod: str = Field(default="HYBRID", pattern=r"^(TENSOR|LEXICAL|HYBRID)$")
     alpha: float = Field(default=0.6, ge=0, le=1)
     rankingMethod: str = Field(default="rrf", pattern=r"^(rrf|normalize_linear)$")
-    hybridRrfK: int = Field(default=60, ge=1)
+    hybridRrfK: int = Field(default=60, ge=1, le=1000)
 
 
 class CandidateSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     indexName: str = "documents-index"
-    efSearch: int = Field(default=256, ge=1)
-    candidateCap: int = Field(default=120, ge=1)
-    candidateMultiplier: int = Field(default=10, ge=1)
+    efSearch: int = Field(default=256, ge=1, le=10000)
+    candidateCap: int = Field(default=120, ge=1, le=200)
+    candidateMultiplier: int = Field(default=10, ge=1, le=100)
 
 
 class ResultSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    limit: int = Field(default=12, ge=1)
-    maxChunksPerDoc: int = Field(default=2, ge=1)
+    limit: int = Field(default=12, ge=1, le=50)
+    maxChunksPerDoc: int = Field(default=2, ge=1, le=50)
     excludeReference: bool = True
     showHighlights: bool = True
-    rerankMode: str = "none"
+    rerankMode: RerankMode = "none"
 
 
 class QuerySettings(BaseModel):

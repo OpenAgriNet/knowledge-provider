@@ -4,10 +4,10 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from pipeline.intake import scheduled_intake
 from pipeline.api.routers import providers
 from pipeline.auth.deps import get_current_user
 from pipeline.auth.jwt import claims_to_user
+from pipeline.intake import scheduled_intake
 from pipeline.intake.source_fetch import SourceFile, SourcePageError
 
 

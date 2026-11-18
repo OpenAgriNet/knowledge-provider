@@ -5,6 +5,7 @@ from __future__ import annotations
 import httpx
 
 from pipeline.metadata.localization import normalize_language_tag
+
 from .base import TranslationConfig, TranslationProvider
 
 TRANSLATE_PROMPT = """Translate the following text to the language with tag {target_language}.

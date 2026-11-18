@@ -10,37 +10,43 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Upload
 from pydantic import BaseModel
 
 from pipeline import db
-from pipeline.documents import document_validity
-from pipeline.documents import display_name as display_name_rules
+from pipeline.api import api as _api
 from pipeline.auth.deps import RequireUpload
 from pipeline.auth.models import AuthUser
 from pipeline.auth.permissions import Permission
+from pipeline.auth.provider_directory import list_document_instance_codes
 from pipeline.auth.tenancy import (
     assert_document_instance_access,
     configured_portal_instance,
     normalize_instance,
     portal_instance,
 )
-from pipeline.metadata.crop_metadata import parse_crop_subjects
+from pipeline.documents import display_name as display_name_rules
+from pipeline.documents import document_validity
 from pipeline.documents.document_dispatch import start_registered_document
 from pipeline.documents.document_formats import TEXT_UPLOAD_TYPES, allowed_file_extensions
 from pipeline.documents.document_kinds import configured_document_kinds
+from pipeline.documents.models import DocumentStage, DocumentSummary
 from pipeline.intake.source_fetch import MAX_HTML_BYTES, extract_text_source
+from pipeline.intake.source_intake import attach_source_response
+from pipeline.intake.webhook_mapping import parse_canonical_document
+from pipeline.metadata.crop_metadata import parse_crop_subjects
+from pipeline.metadata.intake_profiles import (
+    IntakeProfileConfigurationError,
+    apply_intake_profile,
+    load_intake_profiles,
+)
+from pipeline.metadata.knowledge_metadata import KnowledgeMetadata, parse_knowledge_metadata
+from pipeline.metadata.schema_packs import intake_subject_categories, validate_schema_selection
 from pipeline.network.release_policy import (
     index_only_mode,
     intake_index_options,
     prod_stage_disabled,
     upload_release_target,
 )
-from pipeline.metadata.knowledge_metadata import KnowledgeMetadata, parse_knowledge_metadata
-from pipeline.documents.models import DocumentStage, DocumentSummary
 from pipeline.object_storage import ObjectReference
 from pipeline.ocr.service import allowed_ocr_providers, default_ocr_profile
-from pipeline.metadata.schema_packs import validate_schema_selection
-from pipeline.intake.source_intake import attach_source_response
-from pipeline.intake.webhook_mapping import parse_canonical_document
 from pipeline.temporal.workflows import DocumentPipelineWorkflow
-from pipeline.api import api as _api
 
 router = APIRouter()
 MAX_BATCH_FILES = 10
@@ -67,10 +73,12 @@ def upload_options(user: RequireUpload):
             "default_parser": default_ocr_profile(),
             "document_kinds": configured_document_kinds(),
             "file_extensions": sorted(allowed_file_extensions()),
+            "subject_categories": intake_subject_categories(),
+            "metadata_profiles": [profile.form() for profile in load_intake_profiles()],
         }
-    except ValueError as exc:
+    except (IntakeProfileConfigurationError, OSError, ValueError) as exc:
         _api.logger.error("Invalid document processing configuration: %s", exc)
-        raise HTTPException(503, "Parser selection is misconfigured") from exc
+        raise HTTPException(503, "Intake options are misconfigured") from exc
 
 
 @router.get("/upload/providers")
@@ -83,7 +91,7 @@ def upload_providers(user: RequireUpload):
     }
     preferred = None
     if user.is_superadmin or user.token_disabled_mode:
-        providers.update(row["provider"] for row in db.list_provider_instances(None))
+        providers.update(list_document_instance_codes())
         preferred = portal_instance() if user.token_disabled_mode else configured_portal_instance()
         if preferred:
             providers.add(preferred)
@@ -301,7 +309,6 @@ async def _process_upload(
     doc_kind, doc_code, replace_doc = _api._resolve_document_identity(
         user, create_instance, kind, code, file.filename or ""
     )
-    index_name, auto_approve = intake_index_options(index_name, auto_approve)
     try:
         release_target = upload_release_target(doc_kind, provider=create_instance) if not stop_after_ocr else None
     except ValueError as exc:
@@ -312,6 +319,10 @@ async def _process_upload(
         auto_approve = True
     else:
         release_network_id = None
+        try:
+            index_name, auto_approve = intake_index_options(index_name, auto_approve)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
     filename = file.filename or ""
     if (
         not filename or len(filename) > 255 or "/" in filename or chr(92) in filename
@@ -333,6 +344,8 @@ async def _process_upload(
     if file_size > limit:
         raise HTTPException(413, f"Files of this type must be at most {limit // (1024 * 1024)} MiB")
     attribution_url = source_url
+    source_validity = None
+    source_period_supplied = False
     if suffix in TEXT_UPLOAD_TYPES:
         try:
             if suffix == ".json":
@@ -351,8 +364,8 @@ async def _process_upload(
                     metadata = submitted_metadata.storage_value()
                     with db.get_connection() as conn:
                         validate_schema_selection(conn, metadata)
-                valid_from = valid_from if valid_from is not None else submission.valid_from
-                valid_to = valid_to if valid_to is not None else submission.valid_to
+                source_validity = submission.validity
+                source_period_supplied = bool({"validity", "valid_from", "valid_to"} & submission.model_fields_set)
                 attribution_url = submission.source_url
             else:
                 extract_text_source(content, TEXT_UPLOAD_TYPES[suffix], filename)
@@ -360,13 +373,24 @@ async def _process_upload(
             raise HTTPException(422, "Invalid text file or canonical JSON document") from exc
 
     try:
-        if replace_doc:
-            start = valid_from if valid_from is not None else replace_doc.get("valid_from")
-            end = valid_to if valid_to is not None else replace_doc.get("valid_to")
-        else:
-            start, end = valid_from, valid_to
-        validity = document_validity.parse_period(start, end)
-    except document_validity.DocumentValidityError as exc:
+        if metadata is not None or replace_doc is None:
+            metadata = apply_intake_profile(doc_kind, metadata)
+    except IntakeProfileConfigurationError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+    try:
+        validity = source_validity if source_period_supplied else document_validity.read_validity(replace_doc or {})
+        bounds = document_validity.storage_value(validity) or {}
+        for key, value in (("startsAt", valid_from), ("endsAt", valid_to)):
+            if value is not None:
+                if value:
+                    bounds[key] = value
+                else:
+                    bounds.pop(key, None)
+        validity = document_validity.TimePeriod.model_validate(bounds) if bounds else None
+    except (ValueError, document_validity.DocumentValidityError) as exc:
         raise HTTPException(422, str(exc)) from exc
     # Validate PDF magic bytes (%PDF-) only for PDF uploads
     if suffix == ".pdf":
@@ -456,9 +480,9 @@ async def _process_upload(
                 )
             except db.DocumentReplacementConflict as exc:
                 raise HTTPException(409, str(exc)) from exc
-            if valid_from is not None or valid_to is not None:
+            if source_period_supplied or valid_from is not None or valid_to is not None:
                 db.update_document_fields(
-                    document_uuid, valid_from=validity.start_date, valid_to=validity.end_date, _conn=conn,
+                    document_uuid, validity=document_validity.storage_value(validity), _conn=conn,
                 )
         else:
             try:
@@ -477,8 +501,7 @@ async def _process_upload(
                     uploaded_by_username=actor.get("username") or None,
                     uploaded_by_email=actor.get("email") or None,
                     uploaded_by_roles=actor.get("roles_csv") or None,
-                    valid_from=validity.start_date,
-                    valid_to=validity.end_date,
+                    validity=validity,
                     with_workflow=False,
                     kind=doc_kind,
                     code=doc_code,

@@ -19,6 +19,7 @@ from fastapi import HTTPException
 
 from .models import AuthUser
 
+
 def default_instance() -> str:
     """Fallback instance code for new docs and legacy rows without a value."""
     return (os.environ.get("DEFAULT_INSTANCE") or "default").strip().lower() or "default"

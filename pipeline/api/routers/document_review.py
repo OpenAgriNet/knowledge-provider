@@ -3,16 +3,6 @@
 from fastapi import APIRouter, HTTPException
 
 from pipeline import db
-from pipeline.auth.deps import RequireAdmin, RequireApproveIngestion, RequirePipeline, RequireReview
-from pipeline.auth.models import AuthUser
-from pipeline.auth.permissions import Permission
-from pipeline.network.release_policy import index_only_mode, prod_stage_disabled
-from pipeline.documents.models import (
-    BulkWorkflowActionRequest,
-    BulkWorkflowActionResponse,
-    BulkWorkflowActionResult,
-)
-from pipeline.temporal.workflows import DocumentPipelineWorkflow, PromoteToProdWorkflow
 from pipeline.api import api as _api
 from pipeline.api.api import (
     _actor_from_user,
@@ -21,6 +11,16 @@ from pipeline.api.api import (
     _require_document_for_user,
 )
 from pipeline.api.routers.document_lifecycle import reingest_document
+from pipeline.auth.deps import RequireAdmin, RequireApproveIngestion, RequirePipeline, RequireReview
+from pipeline.auth.models import AuthUser
+from pipeline.auth.permissions import Permission
+from pipeline.documents.models import (
+    BulkWorkflowActionRequest,
+    BulkWorkflowActionResponse,
+    BulkWorkflowActionResult,
+)
+from pipeline.network.release_policy import index_only_mode, prod_stage_disabled
+from pipeline.temporal.workflows import DocumentPipelineWorkflow, PromoteToProdWorkflow
 
 router = APIRouter()
 

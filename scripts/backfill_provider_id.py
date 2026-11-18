@@ -13,7 +13,11 @@ from qdrant_client.http import models as qmodels  # noqa: E402
 
 from pipeline import db  # noqa: E402
 from pipeline.auth.tenancy import group_for_instance  # noqa: E402
-from pipeline.network.network_group import load_provider_naming, named_group, provider_for  # noqa: E402
+from pipeline.network.network_group import (  # noqa: E402
+    load_provider_naming,
+    named_group,
+    provider_for,
+)
 from pipeline.network.network_provider import InvalidProviderIdError, ProviderNaming  # noqa: E402
 from pipeline.vector_store import get_default_index_name  # noqa: E402
 from pipeline.vector_store.qdrant_store import get_qdrant_client  # noqa: E402

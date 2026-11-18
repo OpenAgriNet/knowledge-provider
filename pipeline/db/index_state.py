@@ -1,7 +1,6 @@
 """Persist per-document index state and enforce search visibility."""
 
 import json
-import os
 from typing import Optional
 
 from psycopg.types.json import Jsonb
@@ -14,22 +13,9 @@ from pipeline.search.index_identity import projection_owner
 from . import chunks as chunk_queries
 from . import common, connection, document_reads, jobs
 
-PROD_INDEX_KEY = "prod"
-
-
-DEV_INDEX_KEY = "dev"
-
-
-def _prod_collection_names() -> set[str]:
-    names = {
-        os.environ.get("PROD_VECTOR_DB_COLLECTION_NAME"),
-        os.environ.get("PROD_SCHEME_VECTOR_DB_COLLECTION_NAME"),
-    }
-    return {n.strip() for n in names if n and n.strip()}
-
 
 def index_key_for(index_name: str) -> str:
-    return PROD_INDEX_KEY if index_name in _prod_collection_names() else DEV_INDEX_KEY
+    return index_name
 
 
 def doc_id_used_by_other_document(doc_id: str, exclude_doc_uuid: Optional[str], env: str) -> bool:
@@ -78,44 +64,77 @@ def clear_superseded_doc_ids(workflow_id: str, env: str, doc_ids: list[str]) -> 
         )
 
 
-def visible_document_hits(hits: list[dict]) -> list[dict]:
-    """Validate document-owned index-only hits against current Postgres state."""
-    owners = [projection_owner(str(hit.get("doc_id") or "")) for hit in hits]
-    document_ids = list(dict.fromkeys(owner for owner in owners if owner))
-    if not document_ids:
-        return hits
+def visible_document_hits(hits: list[dict], *, index_name: str) -> list[dict]:
+    """Require a successful serving projection and PostgreSQL passage ownership."""
+    keys = list({str(hit.get("doc_id")) for hit in hits if hit.get("doc_id")})
+    if not keys:
+        return []
     with connection.get_connection() as conn:
         documents = conn.execute(
-            "SELECT d.id::text, i.name AS instance FROM documents d JOIN instances i ON i.id = d.provider_id "
-            "WHERE d.id = ANY(%s::uuid[]) AND NOT d.is_disabled",
+            """
+            SELECT d.id::text, i.name AS instance, state.value->>'doc_id' AS indexed_key,
+                   cw.id::text AS current_workflow_id, cw.temporal_workflow_id,
+                   frozen.workflow_id::text AS frozen_workflow_id, frozen.passages
+            FROM documents d JOIN instances i ON i.id = d.provider_id
+            CROSS JOIN LATERAL jsonb_each(COALESCE(d.metadata->'index_status', '{}'::jsonb)) state
+            LEFT JOIN document_current_workflow cw ON cw.document_id = d.id
+            LEFT JOIN LATERAL (
+                SELECT r.workflow_id, r.snapshot->'passages' AS passages
+                FROM document_revisions r JOIN workflows w ON w.id = r.workflow_id
+                WHERE r.document_id = d.id AND (
+                    r.snapshot->>'vector_doc_id' = state.value->>'doc_id'
+                    OR concat('document:', d.id, ':', r.id) = state.value->>'doc_id'
+                    OR (w.status = 'completed' AND concat('document:', d.id, ':', r.snapshot->'source'->>'source_file_fingerprint') = state.value->>'doc_id')
+                )
+                ORDER BY (r.snapshot->>'vector_doc_id' = state.value->>'doc_id') DESC NULLS LAST, r.created_at DESC
+                LIMIT 1
+            ) frozen ON TRUE
+            WHERE NOT d.is_disabled AND state.value->>'index_name' = %s
+              AND state.value->>'status' = 'indexed' AND state.value->>'doc_id' = ANY(%s::text[])
+            """,
+            (index_name, keys),
+        ).fetchall()
+        document_ids = list({row["id"] for row in documents})
+        chunks = conn.execute(
+            "SELECT document_id::text, chunk_number, is_excluded, COALESCE(edited_text, original_text) AS text FROM chunks "
+            "WHERE document_id = ANY(%s::uuid[])",
             (document_ids,),
         ).fetchall()
-        exclusions = conn.execute(
-            "SELECT document_id::text, chunk_number FROM chunks "
-            "WHERE document_id = ANY(%s::uuid[]) AND is_excluded",
-            (document_ids,),
-        ).fetchall()
-    providers = {row["id"]: row["instance"].lower() for row in documents}
-    excluded = {(row["document_id"], row["chunk_number"]) for row in exclusions}
-    return [
-        hit
-        for owner, hit in zip(owners, hits)
-        if owner is None
-        or (
-            owner in providers
-            and providers[owner] == hit.get("instance")
-            and (owner, hit.get("chunk_num")) not in excluded
-        )
-    ]
+    from pipeline.search.passage_projection import clean_text_for_ingestion
+
+    current_chunks = {(row["document_id"], row["chunk_number"]): row for row in chunks}
+    accepted = set()
+    for row in documents:
+        owner = projection_owner(row["indexed_key"])
+        if owner is not None and owner != row["id"]:
+            continue
+        for hit in hits:
+            if hit.get("doc_id") != row["indexed_key"] or hit.get("instance") != row["instance"].lower():
+                continue
+            if owner is None:
+                peers = [item for item in documents if item["indexed_key"] == row["indexed_key"] and item["instance"] == row["instance"]]
+                if len(peers) > 1 and hit.get("workflow_id") != row["temporal_workflow_id"]:
+                    continue
+            chunk = hit.get("chunk_num")
+            current = current_chunks.get((row["id"], chunk))
+            if row["passages"] is not None:
+                if not any(p.get("chunk_num") == chunk and p.get("text") == hit.get("text") for p in row["passages"]):
+                    continue
+                if row["frozen_workflow_id"] == row["current_workflow_id"] and current and current["is_excluded"]:
+                    continue
+            elif not current or current["is_excluded"] or clean_text_for_ingestion(current["text"]) != hit.get("text"):
+                continue
+            accepted.add(id(hit))
+    return [hit for hit in hits if id(hit) in accepted]
 
 
-def visible_release_hits(hits: list[dict]) -> list[dict]:
+def visible_release_hits(hits: list[dict], *, network_id: str | None = None) -> list[dict]:
     """Hide staged, superseded and withdrawn revision points from retrieval."""
     revision_ids = {
         hit.get("revision_id") for hit in hits if common._is_uuid(str(hit.get("revision_id")))
     }
     if not revision_ids and not any(hit.get("release_network_id") for hit in hits):
-        return hits
+        return [] if network_id else hits
     with connection.get_connection() as conn:
         rows = conn.execute(
             "SELECT n.revision_id::text, n.network_id FROM network_releases n "
@@ -128,8 +147,9 @@ def visible_release_hits(hits: list[dict]) -> list[dict]:
     return [
         hit
         for hit in hits
-        if (not hit.get("revision_id") and not hit.get("release_network_id"))
-        or (hit.get("revision_id"), hit.get("release_network_id")) in active
+        if (network_id is None or hit.get("release_network_id") == network_id)
+        and ((network_id is None and not hit.get("revision_id") and not hit.get("release_network_id"))
+             or (hit.get("revision_id"), hit.get("release_network_id")) in active)
     ]
 
 
@@ -181,11 +201,11 @@ def upsert_document_index_status(
     schema_version: Optional[str] = None,
     status: str = "unknown",
     details: Optional[dict] = None,
+    publication: bool | None = None,
 ) -> dict:
     """Merge one index's state into ``documents.metadata.index_status``.
 
-    The key is ``prod`` for the PROD collection names and ``dev`` otherwise;
-    the collection name is kept inside the entry. ``None`` arguments leave the
+    Each collection owns an independent entry. ``None`` arguments leave the
     stored value alone, except ``status`` which always replaces it.
     """
     key = index_key_for(index_name)
@@ -215,6 +235,7 @@ def upsert_document_index_status(
             "last_verified_at": last_verified_at,
             "schema_version": schema_version,
             "details": details or None,
+            "publication": publication,
         }
         merged = {
             **existing,

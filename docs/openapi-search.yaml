@@ -1,37 +1,32 @@
-openapi: 3.0.3
+openapi: 3.1.0
 info:
-  title: Bharat Vistaar Docs Pipeline — Search API
-  description: |
-    Contract for the two search endpoints exposed by the docs-pipeline API.
-    This is a hand-written companion spec (the running FastAPI app declares
-    these routes with untyped `dict` payloads, so no schema is generated at
-    `/openapi.json` for them) — reverse-engineered from `pipeline/api/`,
-    `pipeline/documents/models.py`, and `pipeline/vector_store/qdrant_store.py`.
-
-    Not the full API surface — only `/search` (vector/hybrid semantic search)
-    and `/chunks/search` (keyword search across chunk records).
-  version: "1.0.0"
+  title: Knowledge Provider Search API
+  description: Search and chunk lookup. SearchRequest is generated from the runtime model by scripts/export_search_contract.py.
+    See docs/SEARCH.md for authorization, ranking and BV examples.
+  version: 1.1.0
   contact:
     name: knowledge-provider (docs-pipeline)
-
 servers:
-  - url: http://localhost:8001
-    description: Local dev
-
+- url: http://localhost:8001
+  description: Local dev
 security:
-  - bearerAuth: []
-
+- bearerAuth: []
 paths:
   /search:
     post:
       operationId: runSearch
       summary: Vector / hybrid semantic search over an index
-      description: |
-        Runs a search against the configured vector store (Qdrant). Requires
+      description: 'Runs a search against the configured vector store (Qdrant). Requires
+
         the `search` permission. Any field omitted from the request body
+
         falls back to the persisted `SearchSettings` (see `GET /settings/search`),
+
         then to the hardcoded defaults shown below.
-      tags: [search]
+
+        '
+      tags:
+      - search
       requestBody:
         required: true
         content:
@@ -42,26 +37,49 @@ paths:
               minimal:
                 summary: Minimal request
                 value:
-                  query: "PM-KISAN eligibility"
+                  query: PM-KISAN eligibility
               full:
                 summary: Fully specified request
                 value:
-                  query: "soil health card scheme"
-                  index_name: "documents-index"
-                  search_mode: "HYBRID"
+                  query: soil health card scheme
+                  index_name: documents-index
+                  search_mode: HYBRID
                   top_k: 10
                   hybrid_alpha: 0.6
-                  rerank_mode: "none"
+                  rerank_mode: none
               one_group:
                 summary: Only one group's documents (e.g. a state's DSS)
                 value:
-                  query: "cotton pest advisory"
-                  group: "mh"
+                  query: cotton pest advisory
+                  group: mh
               one_provider:
                 summary: Only the chunks one network provider publishes
                 value:
-                  query: "cotton pest advisory"
-                  provider_id: "mh.provider.oan.dev"
+                  query: cotton pest advisory
+                  provider_id: mh.provider.oan.dev
+              bv_recorded_query:
+                summary: Recorded BV question with exact scheme identity
+                value:
+                  query: PM Kisan overview
+                  group: bv
+                  document_kind: scheme
+                  document_code: pk
+                  search_mode: TENSOR
+                  top_k: 10
+                  candidate_cap: 80
+                  max_chunks_per_doc: 10
+              network_release:
+                summary: Authorized serving network; requires a provisioned principal grant
+                value:
+                  query: PM Kisan overview
+                  group: bv
+                  document_kind: scheme
+                  document_code: pk
+                  search_mode: TENSOR
+                  top_k: 10
+                  candidate_cap: 80
+                  max_chunks_per_doc: 10
+                  network_id: oan.dev
       responses:
         '200':
           description: Search results
@@ -70,7 +88,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/SearchResponse'
         '400':
-          description: Missing/empty query, malformed valid_on, non-string group, non-string provider_id, or the underlying vector-store search failed
+          description: Missing/empty query, malformed valid_on, non-string group, non-string provider_id, or the underlying
+            vector-store search failed
           content:
             application/json:
               schema:
@@ -79,47 +98,50 @@ paths:
           description: Missing or invalid Bearer token
         '403':
           description: Caller lacks the `search` permission
-
   /chunks/search:
     get:
       operationId: searchChunksAcrossDocuments
       summary: Keyword search across chunk records (Postgres), for KB maintainer workflows
-      description: |
-        Distinct from `/search`: this queries chunk rows directly in Postgres by
+      description: 'Distinct from `/search`: this queries chunk rows directly in Postgres by
+
         substring/keyword match, not the vector index. Results are scoped to
-        the caller's instance(s) unless the caller is an unrestricted admin.
-      tags: [search]
+
+        the caller''s instance(s) unless the caller is an unrestricted admin.
+
+        '
+      tags:
+      - search
       parameters:
-        - name: q
-          in: query
-          description: Keyword search within chunk text
-          schema:
-            type: string
-            default: ""
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 500
-            default: 100
-        - name: offset
-          in: query
-          schema:
-            type: integer
-            minimum: 0
-            default: 0
-        - name: include_excluded
-          in: query
-          description: Include excluded chunks
-          schema:
-            type: boolean
-            default: false
-        - name: stage
-          in: query
-          description: Optional document stage filter
-          schema:
-            $ref: '#/components/schemas/DocumentStage'
+      - name: q
+        in: query
+        description: Keyword search within chunk text
+        schema:
+          type: string
+          default: ''
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 100
+      - name: offset
+        in: query
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+      - name: include_excluded
+        in: query
+        description: Include excluded chunks
+        schema:
+          type: boolean
+          default: false
+      - name: stage
+        in: query
+        description: Optional document stage filter
+        schema:
+          $ref: '#/components/schemas/DocumentStage'
       responses:
         '200':
           description: Matching chunks
@@ -131,177 +153,265 @@ paths:
           description: Missing or invalid Bearer token
         '403':
           description: Caller lacks the `search` permission
-
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: |
-        Keycloak-issued RS256 JWT. When the server runs with
-        AUTH_DISABLED=true (dev default) requests are accepted without a
-        valid token and are treated as a local unrestricted admin; a Bearer
-        token, if still sent, is decoded (unverified) only to surface the
-        caller's display identity.
+      description: 'Keycloak-issued RS256 JWT. When the server runs with
 
+        AUTH_DISABLED=true (dev default) requests are accepted without a
+
+        valid token and are treated as a local unrestricted admin; a Bearer
+
+        token, if still sent, is decoded (unverified) only to surface the
+
+        caller''s display identity.
+
+        '
   schemas:
     DocumentStage:
       type: string
       enum:
-        - registered
-        - ocr_processing
-        - ocr_review
-        - translation_processing
-        - translation_review
-        - chunking
-        - chunk_review
-        - ready_for_ingestion
-        - ingesting
-        - publishing_to_network
-        - approval_for_prod
-        - ingesting_prod
-        - completed
-        - failed
-
+      - registered
+      - ocr_processing
+      - ocr_review
+      - translation_processing
+      - translation_review
+      - chunking
+      - chunk_review
+      - ready_for_ingestion
+      - ingesting
+      - publishing_to_network
+      - approval_for_prod
+      - ingesting_prod
+      - completed
+      - failed
     SearchRequest:
-      type: object
-      required: [query]
+      additionalProperties: false
       properties:
         query:
-          type: string
+          maxLength: 4096
           minLength: 1
-          description: Search text. Required; a blank/whitespace-only value returns 400.
+          title: Query
+          type: string
+        network_id:
+          anyOf:
+          - maxLength: 256
+            minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Network Id
         index_name:
-          type: string
-          description: Vector index/collection to search.
-          default: "(persisted SearchSettings.indexName, else provider default)"
-        search_mode:
-          type: string
-          description: |
-            Requested mode. On the Qdrant backend, HYBRID currently maps
-            internally to TENSOR (dense) search — LEXICAL is a separate mode.
-          enum: [TENSOR, LEXICAL, HYBRID]
-          default: HYBRID
-        top_k:
-          type: integer
-          description: Number of final results to return, after per-doc capping. Clamped to [1, 50].
-          minimum: 1
-          maximum: 50
-          default: 12
-        candidate_multiplier:
-          type: integer
-          description: Used to derive candidate_cap when candidate_cap isn't given explicitly.
-          minimum: 1
-          default: 10
-        candidate_cap:
-          type: integer
-          description: |
-            Max candidates fetched from the vector store before per-doc
-            capping/rerank. If omitted, derived as
-            min(max(top_k * candidate_multiplier, top_k), settings.candidateCap),
-            then clamped to [top_k, 200].
-          minimum: 1
-          maximum: 200
-        max_chunks_per_doc:
-          type: integer
-          description: Max hits kept per source document when assembling final results.
-          minimum: 1
-          default: 2
-        use_e5_prefix:
-          type: boolean
-          description: Apply E5 embedding query/passage prefixes.
-          default: true
-        exclude_reference:
-          type: boolean
-          description: Exclude chunks flagged as reference material.
-          default: true
-        hybrid_alpha:
-          type: number
-          format: float
-          description: Hybrid blend weight; 0 = fully lexical, 1 = fully semantic.
-          minimum: 0
-          maximum: 1
-          default: 0.6
-        ranking_method:
-          type: string
-          enum: [rrf, normalize_linear]
-          default: rrf
-        ef_search:
-          type: integer
-          description: Qdrant HNSW ef_search parameter.
-          default: 256
-        query_expansion_profile:
-          type: string
-          description: Named query-expansion profile to apply before embedding/search.
-          default: "gu-v1"
-        rerank_mode:
-          type: string
-          description: Post-retrieval reranking strategy applied to hits.
-          default: "none"
-        hybrid_rrf_k:
-          type: integer
-          description: RRF constant `k`, used when ranking_method=rrf.
-          default: 60
-        include_raw_hits:
-          type: boolean
-          description: If true, also return the pre-cap/pre-rerank candidate list as raw_hits.
-          default: false
-        include_expired:
-          type: boolean
-          description: |
-            Drop the document-validity filter, returning chunks whose period
-            has ended or not yet started. An operator tool for inspecting what
-            an expired document still holds — not for a caller serving an end
-            user, who should never be answered from an expired document.
-          default: false
-        valid_on:
-          type: string
-          format: date
-          description: |
-            Answer as of this calendar day (`YYYY-MM-DD`) instead of today —
-            what search would have returned, or will return, on that date. A
-            malformed value returns 400. Ignored when include_expired is true.
-          default: "(today)"
+          anyOf:
+          - maxLength: 256
+            minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Index Name
+        document_kind:
+          anyOf:
+          - maxLength: 256
+            minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Document Kind
+        document_code:
+          anyOf:
+          - maxLength: 256
+            minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Document Code
+        document_workflow_id:
+          anyOf:
+          - maxLength: 256
+            minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Document Workflow Id
         group:
-          type: string
-          nullable: true
-          description: |
-            Limit results to chunks tagged with this group code (for example
-            `mh` for Maharashtra, `bv` for Bharat Vistaar). Case-insensitive
-            and trimmed: `MH` and ` mh ` both mean `mh`. One value only —
-            a caller belongs to one group; fallback to another group is the
-            caller's second request. Omitted, null or empty means no group
-            filter: chunks from every group are searched as one pool. An
-            unknown group is not an error:
-            the response is a success with zero hits. A non-string value
-            returns 400. Applies in every search mode. A filter, not an
-            access check: this endpoint applies no tenant scoping, so any
-            search-capable caller may ask for any group.
-          example: "mh"
+          anyOf:
+          - maxLength: 256
+            minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Group
         provider_id:
-          type: string
-          nullable: true
-          description: |
-            Limit results to chunks published under this network provider
-            id, the same `provider.id` Publish to Network sends (for example
-            `mh.provider.oan.dev`). Trimmed and lowercased. Omitted, null or
-            empty means no provider filter; an unknown id returns zero hits;
-            a non-string value returns 400. Only advisory and scheme chunks
-            carry a provider id, so a provider filter leaves other kinds out.
-            Combines with `group` and validity. Any other type returns 400.
-            A filter, not an access check.
-          example: "mh.provider.oan.dev"
-
+          anyOf:
+          - maxLength: 256
+            minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Provider Id
+        language:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Language
+        strict_language:
+          default: false
+          title: Strict Language
+          type: boolean
+        top_k:
+          anyOf:
+          - maximum: 50
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Top K
+        candidate_cap:
+          anyOf:
+          - maximum: 200
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Candidate Cap
+        candidate_multiplier:
+          anyOf:
+          - maximum: 100
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Candidate Multiplier
+        max_chunks_per_doc:
+          anyOf:
+          - maximum: 50
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Max Chunks Per Doc
+        ef_search:
+          anyOf:
+          - maximum: 10000
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Ef Search
+        search_mode:
+          anyOf:
+          - enum:
+            - HYBRID
+            - TENSOR
+            - LEXICAL
+            type: string
+          - type: 'null'
+          default: null
+          title: Search Mode
+        hybrid_alpha:
+          anyOf:
+          - maximum: 1
+            minimum: 0
+            type: number
+          - type: 'null'
+          default: null
+          title: Hybrid Alpha
+        hybrid_rrf_k:
+          anyOf:
+          - maximum: 1000
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Hybrid Rrf K
+        ranking_method:
+          anyOf:
+          - enum:
+            - rrf
+            - normalize_linear
+            type: string
+          - type: 'null'
+          default: null
+          title: Ranking Method
+        rerank_mode:
+          anyOf:
+          - enum:
+            - none
+            - bm25lite
+            - rrf-lite
+            - heuristic
+            type: string
+          - type: 'null'
+          default: null
+          title: Rerank Mode
+        query_expansion_profile:
+          anyOf:
+          - maxLength: 128
+            type: string
+          - type: 'null'
+          default: null
+          title: Query Expansion Profile
+        use_e5_prefix:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          default: null
+          title: Use E5 Prefix
+        exclude_reference:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          default: null
+          title: Exclude Reference
+        include_expired:
+          default: false
+          title: Include Expired
+          type: boolean
+        include_raw_hits:
+          default: false
+          title: Include Raw Hits
+          type: boolean
+        valid_on:
+          anyOf:
+          - maxLength: 32
+            type: string
+          - type: 'null'
+          default: null
+          title: Valid On
+        crop_subject_ids:
+          items:
+            type: string
+          maxItems: 32
+          title: Crop Subject Ids
+          type: array
+        applicability:
+          $ref: '#/components/schemas/KnowledgeFilters'
+        metadata_filters:
+          $ref: '#/components/schemas/MetadataFilters'
+      required:
+      - query
+      title: SearchRequest
+      type: object
     SearchHit:
       type: object
-      description: |
-        A single search result. `_id`/`_score` are always present; all other
-        fields are the Qdrant point's payload and vary by index type (a
+      description: 'A single search result. `_id`/`_score` are always present; all other
+
+        fields are the Qdrant point''s payload and vary by index type (a
+
         "scheme" index carries scheme_code/scheme_name/etc. instead of the
+
         document fields). Fields are omitted entirely when null in the
+
         underlying record, so treat every field but _id/_score as optional.
-      required: [_id, _score]
+
+        '
+      required:
+      - _id
+      - _score
       properties:
         _id:
           type: string
@@ -318,7 +428,8 @@ components:
           type: string
         provider_id:
           type: string
-          description: The network provider id this chunk's document publishes under. Absent for kinds other than advisory and scheme.
+          description: The network provider id this chunk's document publishes under. Absent for kinds other than advisory
+            and scheme.
         type:
           type: string
         source:
@@ -357,15 +468,19 @@ components:
         start_date:
           type: string
           format: date
-          description: |
-            First day this chunk's document answers searches. Absent on chunks
+          description: 'First day this chunk''s document answers searches. Absent on chunks
+
             ingested before validity existed, which are treated as current.
+
+            '
         end_date:
           type: string
           format: date
-          description: |
-            Last day this chunk's document answers searches (inclusive).
+          description: 'Last day this chunk''s document answers searches (inclusive).
+
             Absent on chunks ingested before validity existed.
+
+            '
         section:
           type: string
         token_count:
@@ -397,33 +512,51 @@ components:
         chunk_index:
           type: integer
       additionalProperties: true
-
     SearchEffectiveConfig:
       type: object
-      description: The fully-resolved config actually used for this search (request fields merged with settings/defaults), echoed back for debugging.
+      description: The fully-resolved config actually used for this search (request fields merged with settings/defaults),
+        echoed back for debugging.
       properties:
-        index_name: { type: string }
-        backend: { type: string, description: "Vector store backend, e.g. qdrant" }
-        query: { type: string }
-        search_mode: { type: string }
+        index_name:
+          type: string
+        backend:
+          type: string
+          description: Vector store backend, e.g. qdrant
+        query:
+          type: string
+        search_mode:
+          type: string
         store_search_mode:
           type: string
           description: Mode actually sent to the store (HYBRID is remapped to TENSOR on Qdrant).
-        top_k: { type: integer }
-        candidate_cap: { type: integer }
-        candidate_multiplier: { type: integer }
-        max_chunks_per_doc: { type: integer }
-        use_e5_prefix: { type: boolean }
-        exclude_reference: { type: boolean }
-        hybrid_alpha: { type: number, format: float }
-        ranking_method: { type: string }
-        hybrid_rrf_k: { type: integer }
-        ef_search: { type: integer }
-        query_expansion_profile: { type: string }
+        top_k:
+          type: integer
+        candidate_cap:
+          type: integer
+        candidate_multiplier:
+          type: integer
+        max_chunks_per_doc:
+          type: integer
+        use_e5_prefix:
+          type: boolean
+        exclude_reference:
+          type: boolean
+        hybrid_alpha:
+          type: number
+          format: float
+        ranking_method:
+          type: string
+        hybrid_rrf_k:
+          type: integer
+        ef_search:
+          type: integer
+        query_expansion_profile:
+          type: string
         query_expansion_applied:
           type: boolean
           description: True if the query-expansion profile actually rewrote the query.
-        rerank_mode: { type: string }
+        rerank_mode:
+          type: string
         group:
           type: string
           nullable: true
@@ -431,15 +564,19 @@ components:
         provider_id:
           type: string
           nullable: true
-          description: The normalised provider id the search was limited to (e.g. `mh.provider.oan.dev`), or null when no provider filter applied.
+          description: The normalised provider id the search was limited to (e.g. `mh.provider.oan.dev`), or null when no
+            provider filter applied.
         filter_string:
           type: string
           nullable: true
           description: Reserved; currently always null.
-
     SearchResponse:
       type: object
-      required: [effective_config, candidate_count, final_count, hits]
+      required:
+      - effective_config
+      - candidate_count
+      - final_count
+      - hits
       properties:
         effective_config:
           $ref: '#/components/schemas/SearchEffectiveConfig'
@@ -459,16 +596,23 @@ components:
           description: Only populated when the request sets include_raw_hits=true; the candidate list before per-doc capping/rerank.
           items:
             $ref: '#/components/schemas/SearchHit'
-
     ChunkSearchResponse:
       type: object
-      required: [items, total, limit, offset, query, include_excluded, stage]
+      required:
+      - items
+      - total
+      - limit
+      - offset
+      - query
+      - include_excluded
+      - stage
       properties:
         items:
           type: array
           items:
             type: object
-            description: Raw chunk record from Postgres (db.search_chunks); shape follows the chunks table, not formally typed here.
+            description: Raw chunk record from Postgres (db.search_chunks); shape follows the chunks table, not formally typed
+              here.
             additionalProperties: true
         total:
           type: integer
@@ -483,10 +627,124 @@ components:
         stage:
           description: Echoes the request's stage filter; absent/null when no filter was applied.
           allOf:
-            - $ref: '#/components/schemas/DocumentStage'
-
+          - $ref: '#/components/schemas/DocumentStage'
     ErrorResponse:
       type: object
       properties:
         detail:
           type: string
+    AdministrativeArea:
+      additionalProperties: false
+      properties:
+        codeScheme:
+          pattern: ^[A-Za-z0-9_.-]{1,64}$
+          title: Codescheme
+          type: string
+        areaCode:
+          maxLength: 128
+          minLength: 1
+          title: Areacode
+          type: string
+        areaLevel:
+          anyOf:
+          - maxLength: 128
+            minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Arealevel
+        areaName:
+          anyOf:
+          - maxLength: 128
+            minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Areaname
+      required:
+      - codeScheme
+      - areaCode
+      title: AdministrativeArea
+      type: object
+    KnowledgeFilters:
+      additionalProperties: false
+      properties:
+        subject_categories:
+          items:
+            maxLength: 128
+            minLength: 1
+            type: string
+          maxItems: 32
+          title: Subject Categories
+          type: array
+        agriculture_subject_ids:
+          items:
+            type: string
+          maxItems: 32
+          title: Agriculture Subject Ids
+          type: array
+        coverage_areas:
+          items:
+            $ref: '#/components/schemas/AdministrativeArea'
+          maxItems: 32
+          title: Coverage Areas
+          type: array
+        seasons:
+          items:
+            maxLength: 128
+            minLength: 1
+            type: string
+          maxItems: 12
+          title: Seasons
+          type: array
+        tags:
+          items:
+            maxLength: 128
+            minLength: 1
+            type: string
+          maxItems: 16
+          title: Tags
+          type: array
+      title: KnowledgeFilters
+      type: object
+    MetadataFilters:
+      additionalProperties: false
+      properties:
+        scope:
+          default: document
+          enum:
+          - document
+          - chunk
+          title: Scope
+          type: string
+        category:
+          anyOf:
+          - maxLength: 128
+            minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Category
+        crop:
+          anyOf:
+          - maxLength: 128
+            minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Crop
+        season:
+          anyOf:
+          - maxLength: 128
+            minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Season
+        area:
+          anyOf:
+          - $ref: '#/components/schemas/AdministrativeArea'
+          - type: 'null'
+          default: null
+      title: MetadataFilters
+      type: object

@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import json
+from pathlib import Path
 
 import pytest
 
@@ -89,6 +90,8 @@ def test_webhook_policy_receipts_replay_revision_and_revoke(
     test_client, db_connection, mock_temporal_client, mock_object_store, monkeypatch,
 ):
     db_connection.upsert_instance("/states/MH")
+    profiles = Path(__file__).resolve().parents[1] / "test_data" / "intake-metadata-profiles.example.yaml"
+    monkeypatch.setenv("INTAKE_METADATA_PROFILES", str(profiles))
     monkeypatch.setenv("KEYCLOAK_VERIFY_LIVE_GROUPS", "true")
     monkeypatch.setenv("KEYCLOAK_ISSUER", "https://issuer.example.test/realms/demo")
     monkeypatch.setenv("KEYCLOAK_AUDIENCE", "knowledge-intake")
@@ -146,6 +149,8 @@ def test_webhook_policy_receipts_replay_revision_and_revoke(
     preview = test_client.post("/knowledge/intake/mh/mapping-preview", json={"mapping": MAPPING, "fixture": PAYLOAD})
     assert preview.status_code == 200, preview.text
     assert [row["external_id"] for row in preview.json()["documents"]] == ["987"]
+    pin = preview.json()["documents"][0]["knowledge_metadata"]["attribute_profile"]
+    assert pin["id"] == "crop-advisory"
     mock_object_store.put.assert_not_called()
 
     mock_temporal_client.start_workflow.side_effect = TimeoutError("start reply lost")
@@ -177,7 +182,12 @@ def test_webhook_policy_receipts_replay_revision_and_revoke(
     item, = first.json()["items"]
     assert item["status"] == "start_pending"
     assert db_connection.get_document(item["document_id"])["name"] == PAYLOAD["title"]
-    assert db_connection.get_document(item["document_id"])["knowledge_metadata"] == PAYLOAD["metadata"]
+    doc = db_connection.get_document(item["document_id"])
+    assert "validity" in doc and doc["validity"] is None
+    assert doc["valid_from"] is None and doc["valid_to"] is None
+    assert db_connection.get_document(item["document_id"])["knowledge_metadata"] == {
+        **PAYLOAD["metadata"], "attribute_profile": pin,
+    }
     job = db_connection.get_latest_document_job(item["document_id"])
     assert job["config"]["release_network_id"] == "oan-dev.local"
     args = job["config"]["upload_start_args"]
@@ -206,7 +216,9 @@ def test_webhook_policy_receipts_replay_revision_and_revoke(
             "UPDATE workflows SET config = config - 'source_next_dispatch_at' WHERE id = %s::uuid", (job["id"],),
         )
     assert asyncio.run(reconcile_pending_sources(mock_temporal_client, queue)) == 1
-    replay = send("first-event")
+    with monkeypatch.context() as profile_changed:
+        profile_changed.setenv("INTAKE_METADATA_PROFILES", str(profiles.with_name("unavailable.yaml")))
+        replay = send("first-event")
     assert replay.status_code == 202
     assert replay.json()["mapping_version_id"] == first.json()["mapping_version_id"]
     mock_object_store.put.assert_called_once()
@@ -240,8 +252,6 @@ def test_webhook_policy_receipts_replay_revision_and_revoke(
 def test_named_intake_template_is_pinned_and_canonical_submission_preserves_text(
     test_client, db_connection, monkeypatch, tmp_path,
 ):
-    import json
-
     db_connection.upsert_instance("/states/MH")
     monkeypatch.setattr(webhook_sources.keycloak_admin, "find_webhook_service_subject", lambda _: "fixture-sender")
     monkeypatch.setitem(app.dependency_overrides, webhook_sources.require_webhook_sender, lambda: (

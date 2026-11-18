@@ -24,6 +24,7 @@ CREATE TABLE public.audit_logs (
 CREATE TABLE public.catalogs (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     instance_id uuid NOT NULL,
+    kind text DEFAULT 'document'::text NOT NULL,
     type text NOT NULL,
     name text NOT NULL,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
@@ -33,17 +34,13 @@ CREATE TABLE public.catalogs (
     CONSTRAINT catalogs_type_check CHECK ((type ~ '^[a-z0-9]+:[A-Za-z0-9]+$'::text))
 );
 
-CREATE VIEW public.legacy_document_catalog_types AS
- SELECT mapping.kind,
-    mapping.catalog_type
-   FROM ( VALUES ('scheme'::text,'openagrinet:AgricultureResource'::text), ('advisory'::text,'openagrinet:KnowledgeAdvisory'::text), ('video'::text,'openagrinet:VideoResource'::text)) mapping(kind, catalog_type);
-
 CREATE VIEW public.catalog_status AS
  SELECT d.id AS document_id,
     c.id AS catalog_id,
     d.provider_id AS instance_id,
     g.name AS instance_name,
-    COALESCE(m.catalog_type, d.kind) AS type,
+    COALESCE(c.type, d.kind) AS type,
+    d.kind,
     d.code,
     d.name,
     d.aliases,
@@ -63,15 +60,17 @@ CREATE VIEW public.catalog_status AS
           WHERE (ch.document_id = d.id)))::integer AS chunk_count,
     COALESCE(((d.metadata ->> 'network_visible'::text))::boolean, true) AS network_visible,
         CASE
-            WHEN x.is_live THEN ((((d.metadata -> 'index_status'::text) -> 'prod'::text) ->> 'last_indexed_at'::text))::timestamp with time zone
+            WHEN x.is_live THEN (SELECT max((entry.value->>'last_indexed_at')::timestamp with time zone)
+                                FROM jsonb_each(COALESCE(d.metadata->'index_status', '{}'::jsonb)) entry)
             ELSE NULL::timestamp with time zone
         END AS promoted_at
-   FROM (((((public.documents d
-     LEFT JOIN public.legacy_document_catalog_types m ON ((m.kind = d.kind)))
-     LEFT JOIN public.catalogs c ON (((c.instance_id = d.provider_id) AND (c.type = COALESCE(m.catalog_type, d.kind)))))
-     JOIN public.instances g ON ((g.id = d.provider_id)))
-     LEFT JOIN public.document_current_workflow cw ON ((cw.document_id = d.id)))
-     CROSS JOIN LATERAL ( SELECT ((cw.current_stage = 'completed'::text) AND (NOT d.is_disabled) AND COALESCE(((d.metadata ->> 'catalog_visible'::text))::boolean, true)) AS is_live) x);
+   FROM public.documents d
+     LEFT JOIN public.catalogs c ON c.instance_id = d.provider_id AND c.kind = d.kind
+     JOIN public.instances g ON g.id = d.provider_id
+     LEFT JOIN public.document_current_workflow cw ON cw.document_id = d.id
+     CROSS JOIN LATERAL ( SELECT ((cw.current_stage = 'completed'::text) AND (NOT d.is_disabled)
+         AND COALESCE(((d.metadata ->> 'catalog_visible'::text))::boolean, true)
+         AND NOT EXISTS (SELECT 1 FROM workflows w WHERE w.document_id = d.id AND w.config->>'release_network_id' IS NOT NULL)) AS is_live) x;
 
 CREATE TABLE public.search_settings (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -93,7 +92,7 @@ ALTER TABLE ONLY public.audit_logs
     ADD CONSTRAINT audit_logs_pkey PRIMARY KEY (id);
 
 ALTER TABLE ONLY public.catalogs
-    ADD CONSTRAINT catalogs_instance_id_type_key UNIQUE (instance_id, type);
+    ADD CONSTRAINT catalogs_instance_id_kind_key UNIQUE (instance_id, kind);
 
 ALTER TABLE ONLY public.catalogs
     ADD CONSTRAINT catalogs_pkey PRIMARY KEY (id);

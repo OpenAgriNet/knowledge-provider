@@ -6,8 +6,8 @@ import itertools
 import pytest
 from fastapi.testclient import TestClient
 
-from pipeline.search.passage_projection import prepare_ingestion_records
 from pipeline.api import app
+from pipeline.search.passage_projection import prepare_ingestion_records
 
 _code_seq = itertools.count(1)
 

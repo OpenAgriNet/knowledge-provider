@@ -24,11 +24,12 @@ from pydantic import (
 
 from pipeline import db
 from pipeline.documents import document_validity
-from pipeline.metadata.crop_metadata import CropSubjects, parse_crop_subjects
 from pipeline.documents.document_kinds import validate_document_kind
-from pipeline.network.release_policy import index_only_mode
+from pipeline.metadata.crop_metadata import CropSubjects, parse_crop_subjects
+from pipeline.metadata.intake_profiles import apply_intake_profile
 from pipeline.metadata.knowledge_metadata import KnowledgeMetadata, LocalizedDocumentMetadata
 from pipeline.metadata.localization import normalize_language_tag
+from pipeline.network.release_policy import index_only_mode
 from pipeline.object_storage import ObjectReference
 from pipeline.vector_store import get_default_index_name
 
@@ -52,8 +53,9 @@ class SourceDocumentMetadata(BaseModel):
     source_url: str | None = Field(default=None, max_length=2048)
     crop_subjects: CropSubjects = Field(default_factory=list)
     knowledge_metadata: KnowledgeMetadata | None = None
-    valid_from: str | None = None
-    valid_to: str | None = None
+    validity: document_validity.TimePeriod | None = None
+    valid_from: str | None = Field(default=None, exclude=True)
+    valid_to: str | None = Field(default=None, exclude=True)
 
     @field_validator("kind")
     @classmethod
@@ -71,14 +73,22 @@ class SourceDocumentMetadata(BaseModel):
 
     @model_validator(mode="after")
     def validate_metadata(self) -> "SourceDocumentMetadata":
-        if self.valid_from:
-            self.valid_from = document_validity.parse_day(self.valid_from, "valid_from")
-        if self.valid_to:
-            self.valid_to = document_validity.parse_day(self.valid_to, "valid_to")
-            if (self.valid_from or document_validity.today()) > self.valid_to:
-                raise ValueError("valid_to cannot precede valid_from")
+        if self.valid_from or self.valid_to:
+            if "validity" in self.model_fields_set:
+                raise ValueError("Supply one validity period")
+            self.validity = document_validity.read_validity({
+                "valid_from": self.valid_from, "valid_to": self.valid_to,
+            })
+            self.valid_from = self.valid_to = None
         parse_crop_subjects(json.dumps([crop.model_dump(exclude_none=True) for crop in self.crop_subjects]))
         return self
+
+    def with_intake_profile(self):
+        metadata = self.knowledge_metadata.storage_value() if self.knowledge_metadata else None
+        validated = apply_intake_profile(self.kind, metadata)
+        if validated is None or validated == metadata:
+            return self
+        return self.model_copy(update={"knowledge_metadata": KnowledgeMetadata.model_validate(validated)})
 
 
 TranslationText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=250_000)]
@@ -198,7 +208,16 @@ def canonical_json_sha256(payload: object) -> str:
 
 
 def crawl_record_key(record: object, document: SourceDocumentMetadata) -> str:
-    return canonical_json_sha256([record, document.model_dump(mode="json")])
+    return canonical_json_sha256([record, _source_semantics(document)])
+
+
+def _source_semantics(document: SourceDocumentMetadata) -> dict:
+    values = document.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
+    if values.get("knowledge_metadata"):
+        values["knowledge_metadata"].pop("attribute_profile", None)
+        if not values["knowledge_metadata"]:
+            values.pop("knowledge_metadata")
+    return values
 
 
 def get_source_receipt(conn, receipt_id: str) -> dict | None:
@@ -259,6 +278,35 @@ def register_source_document(
         return _replay_source_receipt(conn, previous["id"], source_kind, release_target, explicit_release_network)
 
     if source_kind == "crawl":
+        # Model defaults and canonical date names can change across releases.
+        # Retain a verified prior receipt when the source and mapped values agree.
+        with conn.cursor(name="receipt_replay_" + uuid4().hex) as candidates:
+            candidates.itersize = 64
+            candidates.execute(
+                "SELECT id::text, normalized_document, raw_sha256, raw_payload "
+                "FROM source_intake_receipts WHERE instance_id = %s AND source_kind = %s AND source_id = %s "
+                "AND external_id = %s ORDER BY created_at DESC, id DESC",
+                (*scope, document.external_id),
+            )
+            for candidate in candidates:
+                try:
+                    source_model = SourceDocumentMetadata if binary else NormalizedSourceDocument
+                    previous_document = source_model.model_validate(candidate["normalized_document"])
+                    if _source_semantics(previous_document) != _source_semantics(document):
+                        continue
+                    raw_matches = candidate["raw_sha256"] == raw_sha
+                    if not raw_matches:
+                        previous_raw = candidate["raw_payload"]
+                        if (_source_semantics(source_model.model_validate(previous_raw)) != _source_semantics(previous_document)
+                                or _source_semantics(source_model.model_validate(raw_payload)) != _source_semantics(document)):
+                            continue
+                except ValueError:
+                    continue
+                return _replay_source_receipt(
+                    conn, candidate["id"], source_kind, release_target, explicit_release_network, verified_raw=raw_matches,
+                )
+
+    if source_kind == "crawl":
         observed = conn.execute(
             "SELECT id::text, replay_evidence_sha256 FROM source_intake_receipts "
             "WHERE instance_id = %s AND source_kind = %s AND source_id = %s AND replay_evidence_key = %s",
@@ -305,10 +353,11 @@ def register_source_document(
     canonical_input_type = "structured_text"
     if binary:
         canonical_input_type = "spreadsheet" if Path(binary.filename).suffix.lower() in {".csv", ".xlsx"} else "pdf"
+    document = document.with_intake_profile()
     normalized = document.model_dump(mode="json", exclude_none=True)
     crops = [crop.model_dump(exclude_none=True) for crop in document.crop_subjects]
     knowledge_metadata = document.knowledge_metadata.storage_value() if document.knowledge_metadata else {}
-    valid_from = document.valid_from or document_validity.today()
+    validity = document_validity.storage_value(document.validity)
     if prior_document:
         if (prior_document["kind"] or "advisory") != document.kind:
             raise IntakeConflict("An existing source document cannot change its knowledge kind")
@@ -328,16 +377,18 @@ def register_source_document(
         except db.DocumentReplacementConflict as exc:
             raise IntakeConflict(str(exc)) from exc
         db.update_document_fields(
-            document_id, name=document.title, valid_from=valid_from, valid_to=document.valid_to, _conn=conn,
+            document_id, name=document.title, validity=validity, _conn=conn,
         )
     else:
         stable_code = canonical_json_sha256([source_id, document.external_id])[:32]
         document_id = db.upsert_document(
             workflow_id, fingerprint, filename, filepath, name=document.title, source_type=source_kind,
-            canonical_input_type=canonical_input_type, instance=instance, valid_from=valid_from,
-            valid_to=document.valid_to, kind=document.kind, code=f"{source_kind}-{stable_code}",
+            canonical_input_type=canonical_input_type, instance=instance, validity=document.validity,
+            kind=document.kind, code=f"{source_kind}-{stable_code}",
             crop_subjects=crops, knowledge_metadata=knowledge_metadata, with_workflow=False, _conn=conn,
         )
+        if validity is None:
+            db.update_document_fields(document_id, validity=None, _conn=conn)
 
     network, collection = release_target or (None, get_default_index_name())
     args = [fingerprint, filename, filepath, 450, 128, 1, collection, True, False, True]

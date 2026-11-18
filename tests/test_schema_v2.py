@@ -121,7 +121,7 @@ class TestCatalogs:
         mh = _instance(db, "mh")
         with db.get_connection() as conn:
             seeded = conn.execute(
-                "SELECT id FROM catalogs WHERE instance_id = %s::uuid AND type = 'openagrinet:AgricultureResource'",
+                "SELECT id FROM catalogs WHERE instance_id = %s::uuid AND kind = 'scheme'",
                 (mh,),
             ).fetchone()["id"]
             before = conn.execute("SELECT count(*) AS n FROM catalogs").fetchone()["n"]
@@ -137,7 +137,7 @@ class TestCatalogs:
         mh = _instance(db, "mh")
         with db.get_connection() as conn:
             conn.execute(
-                "DELETE FROM catalogs WHERE instance_id = %s::uuid AND type = 'openagrinet:KnowledgeAdvisory'",
+                "DELETE FROM catalogs WHERE instance_id = %s::uuid AND kind = 'scheme'",
                 (mh,),
             )
         _doc(db, "wf-fallback", instance="mh", code="fallback", kind="advisory")
@@ -151,7 +151,7 @@ class TestCatalogs:
         with db.get_connection() as conn:
             conn.execute("DELETE FROM catalogs WHERE type = 'openagrinet:VideoResource'")
             conn.execute(
-                "DELETE FROM catalogs WHERE instance_id = %s::uuid AND type = 'openagrinet:KnowledgeAdvisory'", (up,)
+                "DELETE FROM catalogs WHERE instance_id = %s::uuid AND kind = 'scheme'", (up,)
             )
         assert db.sync_catalogs_for_all_instances() == 3
         assert db.sync_catalogs_for_all_instances() == 0
@@ -169,7 +169,7 @@ class TestCatalogs:
         mh = _instance(db, "mh")
         scheme = db.get_or_create_catalog(mh, "scheme")
         assert db.get_or_create_catalog(mh, "scheme")["id"] == scheme["id"]
-        assert scheme["type"] == "openagrinet:AgricultureResource"
+        assert scheme["type"] == "openagrinet:KnowledgeAdvisory"
         assert scheme["name"] == "MH scheme catalog"
         advisory = db.get_or_create_catalog(mh, "advisory")
         assert advisory["id"] != scheme["id"]
@@ -184,7 +184,7 @@ class TestCatalogs:
 
     @pytest.mark.db
     @pytest.mark.unit
-    def test_one_catalog_per_instance_and_type(self, db_connection):
+    def test_one_catalog_per_instance_and_kind(self, db_connection):
         db = db_connection
         instance_id = _instance(db)
         with db.get_connection() as conn:
@@ -335,7 +335,7 @@ class TestReupload:
         assert [j["job_type"] for j in db.list_document_jobs("wf-re")] == ["pipeline"]
         assert db.get_document_artifact("wf-re", artifact_id) is not None
         assert (doc["valid_from"], doc["valid_to"]) == ("2026-01-01", "2026-12-31")
-        assert "dev" in doc["index_status"]
+        assert "documents-index" in doc["index_status"]
         assert doc["code"] == "wf-re"
         with db.get_connection() as conn:
             assert "chunking" not in conn.execute(
@@ -485,7 +485,7 @@ class TestCatalogStatusView:
         assert rows["alpha"]["catalog_id"] == rows["beta"]["catalog_id"] != rows["gamma"]["catalog_id"]
         assert str(rows["alpha"]["instance_id"]) == _instance(db, "mh")
         assert (rows["alpha"]["instance_name"], rows["gamma"]["instance_name"]) == ("mh", "up")
-        assert rows["alpha"]["type"] == "openagrinet:AgricultureResource"
+        assert rows["alpha"]["type"] == "openagrinet:KnowledgeAdvisory"
         assert rows["gamma"]["type"] == "openagrinet:KnowledgeAdvisory"
         assert rows["alpha"]["workflow_id"] == "wf-1"
         assert rows["alpha"]["name"] == "alpha"
@@ -540,7 +540,7 @@ class TestCatalogStatusView:
 
     @pytest.mark.db
     @pytest.mark.unit
-    def test_promoted_at_comes_from_the_prod_index_of_live_documents_only(self, db_connection, monkeypatch):
+    def test_local_catalog_indexed_at_comes_from_live_collections(self, db_connection, monkeypatch):
         monkeypatch.setenv("PROD_VECTOR_DB_COLLECTION_NAME", "prod-docs")
         db = db_connection
         _doc(db, "wf-p1", code="promoted", stage="completed")
@@ -553,7 +553,7 @@ class TestCatalogStatusView:
         assert rows["promoted"]["promoted_at"] is not None
         assert rows["promoted"]["promoted_at"].isoformat().startswith("2026-05-01T10:00:00")
         assert rows["not-live"]["promoted_at"] is None
-        assert rows["dev-only"]["promoted_at"] is None
+        assert rows["dev-only"]["promoted_at"].isoformat().startswith("2026-05-02T10:00:00")
 
     @pytest.mark.db
     @pytest.mark.unit
@@ -666,7 +666,7 @@ class TestSupersededIndexKeys:
             doc_uuid, filename="n.pdf", filepath="minio://documents/n.pdf", fingerprint="b" * 32
         )
 
-        assert db.get_document(doc_uuid)["superseded_doc_ids"] == {"dev": [old_key], "prod": [old_key]}
+        assert db.get_document(doc_uuid)["superseded_doc_ids"] == {"documents-index": [old_key], "prod-index": [old_key]}
 
     @pytest.mark.db
     @pytest.mark.unit
@@ -678,7 +678,7 @@ class TestSupersededIndexKeys:
             doc_uuid, filename="n.pdf", filepath="minio://documents/n.pdf", fingerprint="c" * 32
         )
 
-        assert db.get_document(doc_uuid)["superseded_doc_ids"] == {"dev": [old_key]}
+        assert db.get_document(doc_uuid)["superseded_doc_ids"] == {"documents-index": [old_key]}
 
     @pytest.mark.db
     @pytest.mark.unit
@@ -704,9 +704,9 @@ class TestSupersededIndexKeys:
         db.reset_document_for_reupload(
             doc_uuid, filename="m.pdf", filepath="minio://documents/m.pdf", fingerprint="e" * 32
         )
-        assert db.get_document(doc_uuid)["superseded_doc_ids"] == {"dev": [first_key]}
+        assert db.get_document(doc_uuid)["superseded_doc_ids"] == {"documents-index": [first_key]}
 
-        db.clear_superseded_doc_ids(doc_uuid, "dev", [first_key])
+        db.clear_superseded_doc_ids(doc_uuid, "documents-index", [first_key])
 
         assert db.get_document(doc_uuid)["superseded_doc_ids"] == {}
 
@@ -730,7 +730,7 @@ class TestSharedIndexKeys:
         first = _doc(db, "wf-twin-a", document_id="f" * 32)
         self._indexed_twin(db, "wf-twin-b", "f" * 32, env="dev")
 
-        assert db.doc_id_used_by_other_document("f" * 32, first, "dev") is True
+        assert db.doc_id_used_by_other_document("f" * 32, first, "documents-index") is True
         # Another environment is checked on its own index entry.
         assert db.doc_id_used_by_other_document("f" * 32, first, "prod") is False
         assert db.doc_id_used_by_other_document("0" * 32, first, "dev") is False
@@ -750,11 +750,11 @@ class TestSharedIndexKeys:
         db = db_connection
         first = _doc(db, "wf-dis-a", document_id="d" * 32)
         self._indexed_twin(db, "wf-dis-b", "d" * 32)
-        assert db.doc_id_used_by_other_document("d" * 32, first, "dev") is True
+        assert db.doc_id_used_by_other_document("d" * 32, first, "documents-index") is True
 
         db.set_document_disabled("wf-dis-b", True)
 
-        assert db.doc_id_used_by_other_document("d" * 32, first, "dev") is False
+        assert db.doc_id_used_by_other_document("d" * 32, first, "documents-index") is False
 
     @pytest.mark.db
     @pytest.mark.unit

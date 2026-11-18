@@ -12,7 +12,6 @@ from temporalio.exceptions import ApplicationError
 
 from pipeline.db.index_state import index_key_for
 from pipeline.documents.document_repository import DocumentRepository
-from pipeline.network.release_policy import managed_release_targets, publish_to_network_enabled
 from pipeline.documents.models import PUBLISH_SKIPPED_DISABLED, PUBLISH_SKIPPED_UNMAPPED_KIND
 from pipeline.network.network_constants import RESULT_ACCEPTED
 from pipeline.network.network_publisher import (
@@ -20,6 +19,7 @@ from pipeline.network.network_publisher import (
     PublishConfigError,
     get_network_publisher,
 )
+from pipeline.network.release_policy import managed_release_targets, publish_to_network_enabled
 from pipeline.search.passage_projection import _release_passages
 from pipeline.temporal.activities.artifacts import _upload_artifact, _write_json_temp
 from pipeline.temporal.activities.indexing import (

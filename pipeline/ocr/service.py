@@ -11,10 +11,10 @@ from pypdf import PdfReader
 from .base import OcrConfig, OcrProvider, PageDict
 from .chandra_vllm import ChandraVllmOcrProvider
 from .configuration import read_profiles, resolve_profile
+from .extensions import ExtensionParserConfig, load_extension
 from .liteparse import LiteParseProvider
 from .mistral_ocr import MistralOcrProvider
 from .mock import MockOcrProvider
-from .extensions import ExtensionParserConfig, load_extension
 from .text_layer import group_contiguous_ranges, split_pdf_range
 
 PROVIDERS: dict[str, type[OcrProvider]] = {

@@ -2,6 +2,7 @@
 
 from typing import Optional
 
+from pipeline.documents import document_validity
 from pipeline.search.index_identity import projection_owner
 
 from . import common, connection
@@ -83,7 +84,8 @@ _DOC_SELECT = """
         cw.current_stage AS current_stage,
         cw.error_message AS current_error_message,
         EXISTS (SELECT 1 FROM workflows w WHERE w.document_id = d.id
-                AND w.config->>'release_network_id' IS NOT NULL) AS uses_network_releases,
+                AND w.config->>'release_network_id' IS NOT NULL)
+            OR EXISTS (SELECT 1 FROM network_releases n WHERE n.document_id = d.id) AS uses_network_releases,
         u.keycloak_user_id AS up_user_id, u.username AS up_username,
         u.email AS up_email, u.roles AS up_roles,
         ts.ocr_completed_at, ts.translation_completed_at, ts.chunks_completed_at,
@@ -94,8 +96,7 @@ _DOC_SELECT = """
         oa.id AS original_artifact_id,
         na.id AS normalized_artifact_id
     FROM documents d
-    LEFT JOIN legacy_document_catalog_types m ON m.kind = d.kind
-    LEFT JOIN catalogs c ON c.instance_id = d.provider_id AND c.type = COALESCE(m.catalog_type, d.kind)
+    LEFT JOIN catalogs c ON c.instance_id = d.provider_id AND c.kind = d.kind
     JOIN instances g ON g.id = d.provider_id
     LEFT JOIN document_current_workflow cw ON cw.document_id = d.id
     LEFT JOIN LATERAL (
@@ -139,6 +140,8 @@ def _document_from_row(row: Optional[dict]) -> Optional[dict]:
         return None
     source = row["source"] or {}
     meta = row["metadata"] or {}
+    period = document_validity.read_validity(meta)
+    days = period.calendar_days() if period else {"valid_from": None, "valid_to": None}
     fingerprint = source.get("fingerprint")
     roles = row["up_roles"] or []
     entry_aliases = row["aliases"]
@@ -171,10 +174,12 @@ def _document_from_row(row: Optional[dict]) -> Optional[dict]:
         "catalog_visible": bool(meta.get("catalog_visible", True)),
         "network_visible": bool(meta.get("network_visible", True)),
         "uses_network_releases": bool(row["uses_network_releases"]),
-        "valid_from": meta.get("valid_from"),
-        "valid_to": meta.get("valid_to"),
+        **days,
+        **({"validity": document_validity.storage_value(period)}
+           if {"validity", "valid_from", "valid_to"} & meta.keys() else {}),
         "crop_subjects": meta.get("crop_subjects") or [],
         "knowledge_metadata": meta.get("knowledge_metadata") or {},
+        "metadata_review": meta.get("metadata_review") or {},
         "uploaded_by_user_id": row["up_user_id"],
         "uploaded_by_username": row["up_username"],
         "uploaded_by_email": row["up_email"],

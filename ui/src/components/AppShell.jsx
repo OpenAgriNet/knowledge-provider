@@ -112,9 +112,9 @@ export default function AppShell({ children }) {
         <SidebarInset className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
           <AppHeader />
           {/* Main scrolls only when a page needs it; document cockpit uses its own panel scroll. */}
-          <main className="min-h-0 min-w-0 flex-1 overflow-auto bg-card">
+          <div className="console-content min-h-0 min-w-0 flex-1 overflow-auto bg-card">
             {children}
-          </main>
+          </div>
         </SidebarInset>
       </div>
     </SidebarProvider>

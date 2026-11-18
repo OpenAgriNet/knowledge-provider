@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from pipeline.temporal import worker
 from pipeline.api import api
+from pipeline.temporal import worker
 
 
 @pytest.fixture

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 from urllib.parse import urldefrag, urljoin, urlsplit
@@ -71,6 +72,42 @@ def _load_file(root: Path, relative_path: str) -> dict:
     value = yaml.safe_load(contents)
     if not isinstance(value, dict):
         raise ValueError("A schema artifact must contain an object")
+    return value
+
+
+def intake_subject_categories() -> list[str]:
+    """Read a shared subject-category enum from a deployment's approved local schema."""
+    configured = os.environ.get("INTAKE_SUBJECT_SCHEMA")
+    if not configured:
+        return []
+    path = Path(configured).resolve()
+    schema = _load_file(path.parent, path.name)
+    components = schema.get("components", {}).get("schemas", {})
+    candidates = []
+    for component in (schema, *components.values()):
+        if not isinstance(component, dict):
+            continue
+        subject = component.get("properties", {}).get("subjectCategories", {})
+        enum = subject.get("items", {}).get("enum")
+        if enum is not None:
+            candidates.append(enum)
+    if len(candidates) != 1:
+        raise ValueError("Intake schema must declare one subjectCategories items enum")
+    categories = candidates[0]
+    if not isinstance(categories, list) or not 1 <= len(categories) <= 32 or any(
+        not isinstance(value, str) or not value.strip() or len(value) > 128 or "," in value for value in categories
+    ):
+        raise ValueError("Subject categories must be a list of up to 32 distinct labels")
+    if len({value.strip().casefold() for value in categories}) != len(categories):
+        raise ValueError("Subject categories must be distinct")
+    return [value.strip() for value in categories]
+
+
+def validate_subject_category(value: str) -> str:
+    """Use the installed enum when present; otherwise categories are labels."""
+    categories = intake_subject_categories()
+    if categories and value not in categories:
+        raise ValueError("Choose a subject category from the installed schema")
     return value
 
 

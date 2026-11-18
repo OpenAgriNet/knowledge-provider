@@ -18,8 +18,8 @@ from typing import Any, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from pipeline import db
-from pipeline.documents import document_validity
 from pipeline.documents import display_name as display_name_rules
+from pipeline.documents import document_validity
 from pipeline.vector_store.embeddings import get_embedding_model_name
 
 SCHEME_CODE_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -76,6 +76,11 @@ def default_network_visible(instance: str | None) -> bool:
 
 
 def scheme_collection_name() -> str:
+    from pipeline.network.release_policy import index_only_mode
+    from pipeline.vector_store import get_default_index_name
+
+    if index_only_mode():
+        return get_default_index_name()
     return (
         os.environ.get("PROD_SCHEME_VECTOR_DB_COLLECTION_NAME")
         or "schemes-index"
@@ -83,6 +88,11 @@ def scheme_collection_name() -> str:
 
 
 def documents_collection_name() -> str:
+    from pipeline.network.release_policy import index_only_mode
+    from pipeline.vector_store import get_default_index_name
+
+    if index_only_mode():
+        return get_default_index_name()
     return (
         os.environ.get("PROD_VECTOR_DB_COLLECTION_NAME")
         or os.environ.get("VECTOR_DB_COLLECTION_NAME")
@@ -317,6 +327,7 @@ def build_snapshot(
     status: str = "live",
     include_pending: bool = False,
     network_visible: Optional[bool] = None,
+    network_id: str | None = None,
 ) -> dict[str, Any]:
     meta = db.get_catalog_meta()
     version = int(meta.get("version") or 0)
@@ -326,7 +337,15 @@ def build_snapshot(
     if include_pending:
         statuses |= {"pending_prod", "pending_reindex"}
 
-    entries = db.list_catalog_entries()
+    from pipeline.network.release_policy import managed_release_targets, publish_to_network_enabled
+    from pipeline.vector_store import get_default_index_name
+
+    if publish_to_network_enabled() and not network_id:
+        raise ValueError("network_id is required for a released catalog")
+    serving_collection = managed_release_targets("scheme").get(network_id) if network_id else get_default_index_name()
+    if not serving_collection:
+        raise ValueError("The network has no scheme serving collection")
+    entries = db.list_catalog_entries(**({"network_id": network_id} if network_id else {}))
     vector_schemes: list[dict[str, Any]] = []
     for e in entries:
         st = e.get("status") or "disabled"
@@ -359,32 +378,37 @@ def build_snapshot(
                 "promoted_at": e.get("promoted_at"),
                 "source": e.get("source") or "pipeline",
                 "status": st,
+                **({"network_id": network_id, "revision_id": e.get("revision_id")} if network_id else {}),
             }
         )
 
     vector_schemes.sort(key=lambda s: s["scheme_code"])
     profile = load_legacy_scheme_profile()
     model = get_embedding_model_name()
-    etag_src = f"{version}-" + hashlib.sha256(json.dumps({
-        "schemes": [s["scheme_code"] for s in vector_schemes],
+    etag_src = hashlib.sha256(json.dumps({
+        "schemes": vector_schemes,
+        "network_id": network_id,
+        "serving_collection": serving_collection,
         "profile": profile.model_dump(),
         "model": model,
-    }, sort_keys=True).encode()).hexdigest()[:8]
+    }, sort_keys=True).encode()).hexdigest()
     etag = f'"{etag_src}"'
 
     return {
         "api_version": "1",
+        "scope": "network" if network_id else "local",
+        "network_id": network_id,
         "catalog_version": version,
         "updated_at": updated_at,
         "etag": etag,
         "collections": {
             "scheme_qdrant": {
-                "name": scheme_collection_name(),
+                "name": serving_collection,
                 "embedding_model": model,
                 "filter_type": "scheme",
             },
             "documents": {
-                "name": documents_collection_name(),
+                "name": managed_release_targets().get(network_id) if network_id else get_default_index_name(),
             },
         },
         "legacy_schemes": [scheme.model_dump() for scheme in profile.legacy_schemes],
@@ -445,7 +469,9 @@ def apply_scheme_metadata(
             code_renamed = True
 
     if name is not None:
-        updates["name"] = name.strip() if name else None
+        if name != stored_display_name:
+            display_name_rules.ensure_editable(doc)
+        updates["name"] = display_name_rules.normalize(name)
 
     # Auto-derive the code from the title when the caller set a name but no
     # explicit code (the UI form only collects a name and previews the code;

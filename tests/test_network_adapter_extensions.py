@@ -6,11 +6,11 @@ import pytest
 from qdrant_client import QdrantClient
 from temporalio.exceptions import ApplicationError
 
-from pipeline.temporal.activities import indexing, publication
 from pipeline.intake import scheduled_intake
 from pipeline.intake.source_fetch import SourceFile
-from pipeline.network.release_policy import upload_release_target
 from pipeline.network.network_publisher import PublishConfigError, validate_network_adapters
+from pipeline.network.release_policy import upload_release_target
+from pipeline.temporal.activities import indexing, publication
 from pipeline.vector_store import qdrant_store
 
 
@@ -60,6 +60,7 @@ class NoticeAdapter:
     monkeypatch.syspath_prepend(str(tmp_path))
     for key, value in {
         "DOCUMENT_KINDS": "notice,advisory",
+        "DOCUMENT_KIND_SCHEMAS": '{"notice":"example:Notice"}',
         "ENABLE_PUBLISH_TO_NETWORK": "true",
         "NETWORK_CONNECTIONS": "external",
         "NETWORK_CONNECTION_DEFAULT": "external",
@@ -226,7 +227,7 @@ async def test_installed_adapter_releases_and_searches_a_frozen_notice(
     revision_id, transaction_id, point_id = (str(uuid4()) for _ in range(3))
     db.save_draft_revision_snapshot(document_id, workflow_id, revision_id, {
         "metadata": {"kind": "notice"},
-        "passages": [{"_id": point_id, "doc_id": revision_id, "text": "Inspection notice", "is_reference": False}],
+        "passages": [{"_id": point_id, "doc_id": revision_id, "text": "Inspection notice", "is_reference": False, "type": "notice"}],
     })
     selected = test_client.put(f"/documents/{workflow_id}/releases/external.test", json={"revision_id": revision_id})
     assert selected.status_code == 202, selected.text
@@ -260,8 +261,17 @@ async def test_installed_adapter_releases_and_searches_a_frozen_notice(
     assert request.transaction_id == transaction_id
     assert db.visible_release_hits([point]) == [point]
 
+    from pipeline.api import api
+    from pipeline.auth import deps
+    from pipeline.auth.models import AuthUser
+    from pipeline.auth.permissions import Permission
+
+    monkeypatch.setenv("SEARCH_NETWORK_PRINCIPALS", '{"adapter-reader":["external.test"]}')
+    monkeypatch.setitem(api.app.dependency_overrides, deps.get_current_user,
+                        lambda: AuthUser("adapter-reader", roles=["superadmin"], permissions={Permission.SEARCH}))
     search = test_client.post("/search", json={
         "query": "Inspection", "search_mode": "TENSOR", "index_name": "published-notices",
+        "network_id": "external.test", "document_kind": "notice",
         "provider_id": "account:example",
     })
     assert search.status_code == 200, search.text
@@ -271,6 +281,8 @@ async def test_installed_adapter_releases_and_searches_a_frozen_notice(
     )
     collections = test_client.get("/search/collections")
     assert collections.json() == [{"label": "Published documents", "name": "published-notices", "network_id": "external.test"}]
+    assert test_client.get(f"/documents/{workflow_id}").status_code == 403
+    api.app.dependency_overrides.pop(deps.get_current_user)
 
     installed_adapter.matched = False
     generation = db.list_document_revisions(document_id)["releases"][0]["generation"]

@@ -19,10 +19,12 @@ CREATE TABLE public.chunks (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     tags text[] DEFAULT '{}'::text[] NOT NULL,
+    metadata_review jsonb DEFAULT '{}'::jsonb NOT NULL,
     CONSTRAINT chunks_check CHECK ((page_end >= page_start)),
     CONSTRAINT chunks_chunk_number_check CHECK ((chunk_number >= 1)),
     CONSTRAINT chunks_page_start_check CHECK ((page_start >= 1)),
     CONSTRAINT chunks_source_spans_check CHECK ((jsonb_typeof(source_spans) = 'array'::text)),
+    CONSTRAINT chunks_metadata_review_object CHECK ((jsonb_typeof(metadata_review) = 'object'::text)),
     CONSTRAINT chunks_tags_max_count CHECK ((cardinality(tags) <= 16)),
     CONSTRAINT chunks_token_count_check CHECK ((token_count >= 0))
 );

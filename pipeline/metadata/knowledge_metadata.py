@@ -4,13 +4,24 @@ import json
 from datetime import datetime
 from typing import Annotated
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints, field_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    StringConstraints,
+    field_validator,
+)
 
 from pipeline.metadata.crop_metadata import (
+    AgricultureSubjectReference,
     CropSubjects,
     parse_crop_subject_ids,
     parse_crop_subjects,
 )
+from pipeline.metadata.intake_profiles import ProfileID, ProfilePin
+from pipeline.metadata.keys import season_key
 from pipeline.metadata.localization import normalize_language_tag
 from pipeline.metadata.schema_packs import SchemaSelection
 
@@ -46,8 +57,21 @@ class ApplicabilityGroup(BaseModel):
     def index_value(self) -> dict[str, list[str]]:
         return {
             "coverage_area_keys": list(dict.fromkeys(area.lookup_key() for area in self.coverage_areas)),
-            "season_keys": list(dict.fromkeys(season.casefold() for season in self.seasons)),
+            "season_keys": list(dict.fromkeys(season_key(season) for season in self.seasons)),
         }
+
+
+def _bounded_attributes(attributes: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    if len(json.dumps(attributes, ensure_ascii=False, allow_nan=False).encode()) > 32_768:
+        raise ValueError("Attributes must be at most 32,768 bytes")
+    return attributes
+
+
+class TypedSubject(AgricultureSubjectReference):
+    type: ProfileID
+    attributes: dict[str, JsonValue] = Field(default_factory=dict, max_length=128)
+
+    _check_attributes = field_validator("attributes")(_bounded_attributes)
 
 
 class KnowledgeMetadata(BaseModel):
@@ -57,6 +81,7 @@ class KnowledgeMetadata(BaseModel):
     localized: dict[str, LocalizedDocumentMetadata] = Field(default_factory=dict, max_length=16)
     subject_categories: list[Label] = Field(default_factory=list, max_length=32)
     agriculture_subjects: CropSubjects = Field(default_factory=list)
+    subjects: list[TypedSubject] = Field(default_factory=list, max_length=32)
     coverage_areas: list[AdministrativeArea] = Field(default_factory=list, max_length=32)
     excluded_coverage_areas: list[AdministrativeArea] = Field(default_factory=list, max_length=32)
     seasons: list[Label] = Field(default_factory=list, max_length=12)
@@ -66,6 +91,10 @@ class KnowledgeMetadata(BaseModel):
     tags: list[Label] = Field(default_factory=list, max_length=16)
     issued_at: AwareDatetime | None = None
     schema_pack: SchemaSelection | None = None
+    attribute_profile: ProfilePin | None = None
+    attributes: dict[str, JsonValue] = Field(default_factory=dict, max_length=128)
+
+    _check_attributes = field_validator("attributes")(_bounded_attributes)
 
     @field_validator("localized")
     @classmethod
@@ -137,7 +166,7 @@ class KnowledgeFilters(BaseModel):
             "subject_categories": self.subject_categories,
             "agriculture_subject_ids": self.agriculture_subject_ids,
             "coverage_area_keys": [area.lookup_key() for area in self.coverage_areas],
-            "season_keys": [season.casefold() for season in self.seasons],
+            "season_keys": [season_key(season) for season in self.seasons],
             "tag_keys": [tag.casefold() for tag in self.tags],
         }
         return {key: list(dict.fromkeys(values)) for key, values in filters.items() if values}

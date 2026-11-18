@@ -43,6 +43,18 @@ _SETTINGS_ROW_SQL = (
     "SELECT retrieval, candidates, results, query FROM search_settings WHERE singleton"
 )
 
+_STORED_LIMITS = {"efSearch": 10000, "candidateCap": 200, "candidateMultiplier": 100,
+                  "limit": 50, "maxChunksPerDoc": 50, "hybridRrfK": 1000}
+
+
+def _stored_group(model, values):
+    """Apply the effective request caps to previously valid saved settings."""
+    values = dict(values or {})
+    for key, upper in _STORED_LIMITS.items():
+        if key in values and isinstance(values[key], (int, float)):
+            values[key] = min(upper, max(1, values[key]))
+    return model.model_validate(values)
+
 
 def _settings_row(conn, lock: bool = False) -> dict:
     sql = _SETTINGS_ROW_SQL + (" FOR UPDATE" if lock else "")
@@ -58,7 +70,7 @@ def _settings_row(conn, lock: bool = False) -> dict:
 def _flatten_settings(row: dict) -> dict:
     flat: dict[str, Any] = {}
     for group, model in _GROUP_MODELS.items():
-        flat.update(model.model_validate(row[group] or {}).model_dump())
+        flat.update(_stored_group(model, row[group]).model_dump())
     return flat
 
 
@@ -100,7 +112,7 @@ def update_search_settings(settings: dict) -> dict:
                 continue
             try:
                 validated = model.model_validate(
-                    {**model.model_validate(row[group] or {}).model_dump(), **patch}
+                    {**_stored_group(model, row[group]).model_dump(), **patch}
                 )
             except Exception as exc:
                 raise ValueError(str(exc)) from exc

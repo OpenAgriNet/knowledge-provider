@@ -59,6 +59,7 @@ class FieldMapping(BaseModel):
     translations: JsonPointer | Selector | None = None
     crop_subjects: JsonPointer | Selector | None = None
     knowledge_metadata: JsonPointer | Selector | None = None
+    validity: JsonPointer | Selector | None = None
     valid_from: JsonPointer | Selector | None = None
     valid_to: JsonPointer | Selector | None = None
 

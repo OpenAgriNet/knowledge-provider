@@ -157,9 +157,7 @@
             { "value": "none", "label": "none" },
             { "value": "bm25lite", "label": "bm25lite" },
             { "value": "rrf-lite", "label": "rrf-lite" },
-            { "value": "heuristic", "label": "heuristic" },
-            { "value": "cross-encoder", "label": "cross-encoder" },
-            { "value": "colbert", "label": "colbert" }
+            { "value": "heuristic", "label": "heuristic" }
           ]
         }
       ]

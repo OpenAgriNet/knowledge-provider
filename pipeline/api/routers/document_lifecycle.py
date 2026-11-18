@@ -9,20 +9,6 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query
 
 from pipeline import db
-from pipeline.network.catalog import scheme_catalog
-from pipeline.documents import display_name as display_name_rules
-from pipeline.auth.deps import CurrentUser, RequireAdmin, RequirePipeline, RequireReview
-from pipeline.auth.permissions import Permission
-from pipeline.search.index_identity import projection_doc_id, recorded_doc_id
-from pipeline.network.release_policy import index_only_mode, intake_index_options
-from pipeline.documents.models import ReindexStateRequest, SchemeMetadataUpdate
-from pipeline.object_storage import is_object_uri, parse_object_uri
-from pipeline.temporal.workflows import (
-    ChunkingOnlyWorkflow,
-    OcrOnlyWorkflow,
-    ReingestionWorkflow,
-    TranslationOnlyWorkflow,
-)
 from pipeline.api import api as _api
 from pipeline.api.api import (
     _actor_from_user,
@@ -32,6 +18,20 @@ from pipeline.api.api import (
     _mark_reindex_required,
     _require_document_for_user,
     delete_chunks_from_index,
+)
+from pipeline.auth.deps import CurrentUser, RequireAdmin, RequirePipeline, RequireReview
+from pipeline.auth.permissions import Permission
+from pipeline.documents import display_name as display_name_rules
+from pipeline.documents.models import ReindexStateRequest, SchemeMetadataUpdate
+from pipeline.network.catalog import scheme_catalog
+from pipeline.network.release_policy import index_only_mode, intake_index_options
+from pipeline.object_storage import is_object_uri, parse_object_uri
+from pipeline.search.index_identity import projection_doc_id, recorded_doc_id
+from pipeline.temporal.workflows import (
+    ChunkingOnlyWorkflow,
+    OcrOnlyWorkflow,
+    ReingestionWorkflow,
+    TranslationOnlyWorkflow,
 )
 
 router = APIRouter()
@@ -45,7 +45,9 @@ def _vector_doc_ids(doc: dict, env: str) -> list[str]:
     vectors too.
     """
     ids = [recorded_doc_id(doc, env)]
-    if env == "dev" and index_only_mode() and doc.get("id") and doc.get("document_id"):
+    from pipeline.vector_store import get_default_index_name
+
+    if env == get_default_index_name() and index_only_mode() and doc.get("id") and doc.get("document_id"):
         ids.append(projection_doc_id(doc))
     ids.extend((doc.get("superseded_doc_ids") or {}).get(env, []))
     return [
@@ -68,7 +70,8 @@ def _delete_all_doc_ids(store, collection: str, doc_ids: list[str]) -> dict:
 
 def _delete_document_points_from_prod(doc: dict) -> dict:
     """Best-effort delete of a promoted (non-scheme) document's vectors from PROD documents-index."""
-    doc_ids = _vector_doc_ids(doc, "prod")
+    collection = (os.environ.get("PROD_VECTOR_DB_COLLECTION_NAME") or os.environ.get("VECTOR_DB_COLLECTION_NAME") or "documents-index").strip()
+    doc_ids = _vector_doc_ids(doc, collection)
     if not doc_ids:
         return {"deleted": False, "reason": "no_doc_id"}
     prod_url = (os.environ.get("PROD_VECTOR_DB_URL") or "").strip()
@@ -93,7 +96,8 @@ def _delete_document_points_from_prod(doc: dict) -> dict:
 
 def _delete_scheme_points_from_prod(doc: dict) -> dict:
     """Best-effort delete of scheme vectors from PROD schemes-index."""
-    doc_ids = _vector_doc_ids(doc, "prod")
+    collection = (os.environ.get("PROD_SCHEME_VECTOR_DB_COLLECTION_NAME") or "schemes-index").strip()
+    doc_ids = _vector_doc_ids(doc, collection)
     if not doc_ids:
         return {"deleted": False, "reason": "no_doc_id"}
     prod_url = (
@@ -249,7 +253,9 @@ async def disable_document(
     if remove_from_search:
         # The current index key plus keys of earlier file versions still in DEV
         # (see metadata.superseded_doc_ids).
-        for index, doc_id in enumerate(_vector_doc_ids(doc, "dev")):
+        from pipeline.vector_store import get_default_index_name
+
+        for index, doc_id in enumerate(_vector_doc_ids(doc, get_default_index_name())):
             vector_result = delete_chunks_from_index(doc_id)
             if index == 0:
                 result["vector_deleted"] = vector_result.get("deleted", 0)
@@ -260,7 +266,7 @@ async def disable_document(
         # promoted as a scheme lives in the scheme index even if its kind was
         # changed since, so the PROD index entry decides, not only the kind.
         kind = (doc.get("kind") or "").strip().lower()
-        prod_entry = (doc.get("index_status") or {}).get("prod") or {}
+        prod_entry = (doc.get("index_status") or {}).get(scheme_catalog.scheme_collection_name()) or {}
         prod_is_scheme = (
             kind == "scheme"
             or prod_entry.get("index_name") == scheme_catalog.scheme_collection_name()
@@ -425,7 +431,10 @@ async def reingest_document(
     The document must have chunks stored in Postgres (typically from a
     completed or previously ingested document).
     """
-    index_name, _ = intake_index_options(index_name, False)
+    try:
+        index_name, _ = intake_index_options(index_name, False)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     doc = _require_document_for_user(workflow_id, user, Permission.PIPELINE)
     _assert_upload_start_resolved(workflow_id)
 

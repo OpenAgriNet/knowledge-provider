@@ -3,9 +3,9 @@
 from fastapi import APIRouter, Query
 
 from pipeline import db
+from pipeline.api.api import _instance_scope_for_user, _require_document_for_user
 from pipeline.auth.deps import RequireSearch
 from pipeline.documents.models import AuditLogResponse
-from pipeline.api.api import _instance_scope_for_user, _require_document_for_user
 
 router = APIRouter()
 

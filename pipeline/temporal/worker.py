@@ -9,41 +9,38 @@ import os
 from temporalio.client import Client
 from temporalio.worker import Worker
 
-from pipeline.translation.service import (
-    PROVIDERS as TRANSLATION_PROVIDERS,
-    configured_translation_endpoint,
-    configured_translation_type,
-)
-
 from pipeline import db
-from pipeline.temporal.activities.state import (
-    auto_tag_chunks_from_db,
-    persist_document_content,
-    update_document_state,
-)
-from pipeline.temporal.activities.processing import (
-    create_chunks,
-    create_chunks_from_db,
-    detect_and_translate_pages,
-    detect_and_translate_pages_from_db,
-)
+from pipeline.documents.document_formats import installed_formats
+from pipeline.documents.document_kinds import configured_document_kinds
+from pipeline.intake.scheduled_intake import poll_due_sources
+from pipeline.intake.source_intake import reconcile_pending_sources
+from pipeline.metadata.intake_profiles import load_intake_profiles
+from pipeline.network.network_publisher import validate_network_adapters
+from pipeline.network.release_policy import validate_projection_destinations
+from pipeline.telemetry.logs import configure_logs, reset_logs
 from pipeline.temporal.activities.indexing import (
     ingest_document_from_db,
     ingest_to_vector_db,
     prepare_for_ingestion,
     promote_document_to_prod_qdrant,
 )
+from pipeline.temporal.activities.logging import ActivityLogging
+from pipeline.temporal.activities.processing import (
+    create_chunks,
+    create_chunks_from_db,
+    detect_and_translate_pages,
+    detect_and_translate_pages_from_db,
+)
 from pipeline.temporal.activities.publication import (
     publish_catalog_to_network,
     release_saved_revision,
 )
 from pipeline.temporal.activities.source import run_ocr, run_ocr_and_store
-from pipeline.temporal.activities.logging import ActivityLogging
-from pipeline.documents.document_formats import installed_formats
-from pipeline.network.network_publisher import validate_network_adapters
-from pipeline.telemetry.logs import configure_logs, reset_logs
-from pipeline.intake.source_intake import reconcile_pending_sources
-from pipeline.intake.scheduled_intake import poll_due_sources
+from pipeline.temporal.activities.state import (
+    auto_tag_chunks_from_db,
+    persist_document_content,
+    update_document_state,
+)
 from pipeline.temporal.workflows import (
     ChunkingOnlyWorkflow,
     DocumentPipelineWorkflow,
@@ -52,6 +49,13 @@ from pipeline.temporal.workflows import (
     ReingestionWorkflow,
     SelectNetworkRevisionWorkflow,
     TranslationOnlyWorkflow,
+)
+from pipeline.translation.service import (
+    PROVIDERS as TRANSLATION_PROVIDERS,
+)
+from pipeline.translation.service import (
+    configured_translation_endpoint,
+    configured_translation_type,
 )
 
 LOG_LEVEL = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").strip().upper(), logging.INFO)
@@ -107,6 +111,9 @@ async def main():
 async def _run():
     validate_network_adapters()
     installed_formats()
+    load_intake_profiles()
+    configured_document_kinds()
+    validate_projection_destinations()
 
     if configured_translation_type() in TRANSLATION_PROVIDERS and not configured_translation_endpoint():
         raise RuntimeError("TRANSLATION_BASE_URL is required for the configured translation provider")

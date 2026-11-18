@@ -24,14 +24,10 @@ COPY src ./src
 
 ARG VITE_API_BASE=/knowledge-provider-api
 ARG VITE_AUTH_ENABLED=true
-# Feature flag: shows the document validity date fields. Off by default —
-# the backend applies validity regardless, this only exposes the entry fields.
-ARG VITE_DOCUMENT_VALIDITY_ENABLED=true
 ARG VITE_BASE=/knowledge-provider/
 
 ENV VITE_API_BASE=$VITE_API_BASE \
-    VITE_AUTH_ENABLED=$VITE_AUTH_ENABLED \
-    VITE_DOCUMENT_VALIDITY_ENABLED=$VITE_DOCUMENT_VALIDITY_ENABLED
+    VITE_AUTH_ENABLED=$VITE_AUTH_ENABLED
 
 # Vite base path for assets under /knowledge-provider/
 RUN npm run build -- --base=${VITE_BASE}

@@ -70,6 +70,32 @@ def test_language_tag_handles_script_region_extensions_and_rejects_ranges():
     assert normalize_language_tag("hi_IN") is None
 
 
+def test_older_passage_labels_are_preserved_without_language_specific_payload_fields(monkeypatch):
+    monkeypatch.setenv("EMBEDDING_VECTOR_SIZE", "2")
+    monkeypatch.setattr(qdrant_store, "embed_passages", lambda passages, **_: [[1.0, 0.0] for _ in passages])
+    store = qdrant_store.QdrantVectorStore(client=QdrantClient(":memory:"))
+    store.upsert("older-labels", [{
+        "doc_id": "advisory", "text": SOURCE, "name": "Source title", "doc_language": "gu",
+        "title_gu": "જૂનું શીર્ષક", "name_hi": "स्थानीय शीर्षक", "title_sr_Latn_RS": "Naslov",
+        "name_en": "English name", "title_en": "English title",
+        "localized_labels": {"gu": {"title": "સાચવેલું શીર્ષક"}},
+        "instance": "bv", "instance_name": "Bv", "provider_id": "bv.example.org",
+        "pop_id": "old-pop", "season": "old-label", "category_tags": "crop",
+        "doc_short_description": "Old response alias", "quality_score": 0,
+    }])
+    payload, = store.list_by_doc_id("older-labels", "advisory", raw_payload=True)
+    assert payload["localized_labels"] == {
+        "gu": {"title": "સાચવેલું શીર્ષક"}, "hi": {"title": "स्थानीय शीर्षक"},
+        "sr-latn-rs": {"title": "Naslov"}, "en": {"title": "English title"},
+    }
+    assert payload["primary_language"] == "gu"
+    assert payload["name"] == "Source title"
+    assert payload["provider_id"] == "bv.example.org" and payload["instance"] == "bv"
+    assert not {"name_en", "name_hi", "title_en", "title_gu", "title_sr_Latn_RS",
+                "doc_language", "instance_name", "pop_id", "season", "category_tags",
+                "doc_short_description", "quality_score"}.intersection(payload)
+
+
 @pytest.mark.asyncio
 async def test_search_localizes_one_vector_and_filters_exact_language_before_ranking(monkeypatch):
     indexed_inputs = []
@@ -82,6 +108,8 @@ async def test_search_localizes_one_vector_and_filters_exact_language_before_ran
     monkeypatch.setattr(qdrant_store, "embed_passages", embed)
     monkeypatch.setattr(qdrant_store, "embed_query", lambda *_, **__: [1.0, 0.0])
     monkeypatch.setattr(db, "get_search_settings", dict)
+    monkeypatch.setenv("VECTOR_DB_COLLECTION_NAME", "language-test")
+    monkeypatch.setattr(db, "visible_document_hits", lambda hits, **_: hits)
     store = qdrant_store.QdrantVectorStore(client=QdrantClient(":memory:"))
     monkeypatch.setattr("pipeline.vector_store.get_vector_store", lambda: store)
     source = project_chunk_localization(_chunk(SOURCE), [_page()], source_first=True)
@@ -90,7 +118,7 @@ async def test_search_localizes_one_vector_and_filters_exact_language_before_ran
         {
             "doc_id": "advisory", "text": SOURCE, "is_reference": False, **source,
             "name": "મૂળ શીર્ષક", "description": "મૂળ વર્ણન",
-            "knowledge_metadata": {"localized": {"hi": {"title": "स्थानीय शीर्षक", "description": "स्थानीय विवरण"}}},
+            "localized_labels": {"hi": {"title": "स्थानीय शीर्षक", "description": "स्थानीय विवरण"}},
         },
     ])
     assert indexed_inputs == ["English only", SOURCE]
@@ -101,7 +129,9 @@ async def test_search_localizes_one_vector_and_filters_exact_language_before_ran
 
     user = AuthUser(user_id="test-user", roles=["superadmin"])
     search = {"query": "cotton", "index_name": "language-test", "top_k": 1, "candidate_cap": 1}
-    strict_hit, = (await run_search({**search, "language": "hi", "strict_language": True}, user))["hits"]
+    from pipeline.search.models import SearchRequest
+
+    strict_hit, = (await run_search(SearchRequest(**search, language="hi", strict_language=True), user))["hits"]
     assert strict_hit["text"] == HINDI
     assert strict_hit["text_language"] == "hi"
     assert strict_hit["primary_language"] == "gu"
@@ -112,7 +142,7 @@ async def test_search_localizes_one_vector_and_filters_exact_language_before_ran
     assert strict_hit["description"] == "स्थानीय विवरण"
     assert strict_hit["name_en"] == "મૂળ શીર્ષક"
 
-    lookup = await run_search({**search, "candidate_cap": 2, "top_k": 2, "language": "en-IN"}, user)
+    lookup = await run_search(SearchRequest(**{**search, "candidate_cap": 2, "top_k": 2, "language": "en-IN"}), user)
     english = next(hit for hit in lookup["hits"] if hit["doc_id"] == "advisory")
     assert english["text"] == ENGLISH
     assert english["text_language"] == "en"
@@ -120,5 +150,28 @@ async def test_search_localizes_one_vector_and_filters_exact_language_before_ran
     assert english["language_fallback"] is True
 
     with pytest.raises(HTTPException) as error:
-        await run_search({**search, "language": "en;q=1"}, user)
+        await run_search(SearchRequest(**search, language="en;q=1"), user)
     assert error.value.status_code == 422
+
+
+def test_qdrant_inspects_one_chunk_without_search_aliases(monkeypatch):
+    monkeypatch.setenv("EMBEDDING_VECTOR_SIZE", "2")
+    monkeypatch.setattr(qdrant_store, "embed_passages", lambda passages, **_: [[1.0, 0.0] for _ in passages])
+    store = qdrant_store.QdrantVectorStore(client=QdrantClient(":memory:"))
+    store.upsert("chunk-payloads", [
+        {
+            "doc_id": "example", "chunk_num": 1, "text": "First paragraph",
+            "document_tags": ["field notes"], "chunk_tags": ["planting"],
+            "subjects": [{"type": "crop", "name": "Wheat"}],
+        },
+        {"doc_id": "example", "chunk_num": 2, "text": "Second paragraph"},
+        {"doc_id": "other", "chunk_num": 1, "text": "Another document"},
+    ])
+
+    payload, = store.list_by_doc_id("chunk-payloads", "example", chunk_num=1, raw_payload=True)
+    assert payload["chunk_num"] == 1 and payload["doc_id"] == "example"
+    assert payload["document_tags"] == ["field notes"]
+    assert payload["chunk_tags"] == ["planting"]
+    assert payload["subjects"] == [{"type": "crop", "name": "Wheat"}]
+    assert not {"crop_subjects", "chunk_number", "_id", "_score"}.intersection(payload)
+    assert store.list_by_doc_id("chunk-payloads", "example", chunk_num=3, raw_payload=True) == []

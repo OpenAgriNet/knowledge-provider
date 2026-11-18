@@ -7,6 +7,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from pipeline.documents.document_kinds import configured_document_kinds
+from pipeline.metadata.intake_profiles import load_intake_profiles
+from pipeline.network.release_policy import validate_projection_destinations
+
 from . import api as _api
 
 
@@ -28,6 +32,9 @@ async def lifespan(app: FastAPI):
 async def _start_services():
     _api.validate_network_adapters()
     _api.installed_formats()
+    load_intake_profiles()
+    configured_document_kinds()
+    validate_projection_destinations()
 
     auth_cfg = _api.load_auth_config()
     _api.validate_auth_config(auth_cfg)

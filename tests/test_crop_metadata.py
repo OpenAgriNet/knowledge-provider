@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from pipeline.metadata.crop_metadata import parse_crop_subject_ids, parse_crop_subjects
 from pipeline.documents.models import DocumentMetadata, DocumentSummary
+from pipeline.metadata.crop_metadata import parse_crop_subject_ids, parse_crop_subjects
 
 CROPS = [{
     "subjectId": "https://taxonomy.openagrinet.global/crops/cotton",
@@ -53,10 +53,11 @@ def test_crop_context_survives_chunk_payload_and_hit_projection():
     record, = passage_projection._prepare_records(
         "doc", "cotton.pdf", [{"chunk_number": 1, "original_text": "Irrigate cotton carefully."}],
         workflow_id="wf",
-        **passage_projection._scheme_fields_from_doc({"kind": "advisory", "crop_subjects": CROPS}),
+        **passage_projection._document_fields_from_doc({"kind": "advisory", "crop_subjects": CROPS}),
     )
     payload = _record_payload(record)
-    assert payload["crop_subjects"] == CROPS
+    assert payload["subjects"] == [{**crop, "type": "crop"} for crop in CROPS]
+    assert "crop_subjects" not in payload
     hit = _hit_from_point(SimpleNamespace(payload=payload, id=record["_id"], score=1.0))
     assert hit["crop_subjects"] == CROPS
 
@@ -134,8 +135,8 @@ def test_release_upsert_verifies_the_readable_point(monkeypatch, damaged_field):
 def test_upload_persists_crop_context_and_search_returns_it(
     test_client, db_connection, sample_pdf_content, capturing_store, monkeypatch,
 ):
-    from pipeline.search import passage_projection
     from pipeline.api import api
+    from pipeline.search import passage_projection
     from pipeline.vector_store.qdrant_store import _hit_from_point, _record_payload
 
     api.limiter.reset()
@@ -158,7 +159,7 @@ def test_upload_persists_crop_context_and_search_returns_it(
     record, = passage_projection._prepare_records(
         document["document_id"], document["filename"],
         [{"chunk_number": 1, "original_text": "Cotton irrigation guidance."}],
-        workflow_id=workflow_id, **passage_projection._scheme_fields_from_doc(document),
+        workflow_id=workflow_id, **passage_projection._document_fields_from_doc(document),
     )
     capturing_store.hits = [_hit_from_point(SimpleNamespace(
         id=record["_id"], score=1.0, payload=_record_payload(record),

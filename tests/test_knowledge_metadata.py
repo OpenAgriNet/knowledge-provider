@@ -3,8 +3,8 @@ import json
 import pytest
 from qdrant_client import QdrantClient
 
-from pipeline.search.passage_projection import _prepare_records
 from pipeline.metadata.knowledge_metadata import KnowledgeFilters, parse_knowledge_metadata
+from pipeline.search.passage_projection import _prepare_records
 from pipeline.vector_store import qdrant_store
 
 

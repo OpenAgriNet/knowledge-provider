@@ -3,6 +3,8 @@
 import os
 import re
 
+from pipeline.network.network_constants import document_kind_schemas
+
 _KIND = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
 
 
@@ -11,6 +13,8 @@ def configured_document_kinds() -> tuple[str, ...]:
     kinds = tuple(item.strip().lower() for item in raw.split(","))
     if len(set(kinds)) != len(kinds) or any(len(kind) > 64 or not _KIND.fullmatch(kind) for kind in kinds):
         raise ValueError("DOCUMENT_KINDS must list distinct, lowercase document kinds")
+    if set(kinds) - document_kind_schemas().keys():
+        raise ValueError("Every DOCUMENT_KINDS entry requires a DOCUMENT_KIND_SCHEMAS mapping")
     return kinds
 
 

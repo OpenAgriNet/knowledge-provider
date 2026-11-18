@@ -15,6 +15,7 @@ import os
 from unittest.mock import MagicMock
 
 import pytest
+from temporalio.exceptions import ApplicationError
 
 
 @pytest.mark.db
@@ -40,7 +41,6 @@ async def test_source_first_chunking_keeps_short_advisories(
     chunk, = db_connection.get_chunks(workflow_id)
     assert chunk["original_text"] == body
     assert chunk["page_start"] == chunk["page_end"] == 1
-from temporalio.exceptions import ApplicationError
 
 os.environ["MINIO_ACCESS_KEY"] = "test-access"
 os.environ["MINIO_SECRET_KEY"] = "test-secret"
@@ -181,13 +181,13 @@ class TestPrepareIngestionRecords:
             assert record["doc_id"] == "test-doc"
 
     @pytest.mark.unit
-    def test_prepare_records_carries_instance_name(self):
-        """Payload ships the readable state name beside the instance code."""
+    def test_prepare_records_keeps_the_instance_code_without_a_display_label(self):
+        """Display names belong to the instance directory."""
         from pipeline.search.passage_projection import _prepare_records
 
         chunks = [{"chunk_number": 1, "original_text": "Test chunk", "token_count": 5}]
 
-        for code, expected in (("bv", "Bharat Vistaar"), ("mh", "Maharashtra"), ("ka", "Karnataka")):
+        for code in ("bv", "mh", "ka"):
             records = _prepare_records(
                 document_id="test-doc",
                 filename="test.pdf",
@@ -195,7 +195,7 @@ class TestPrepareIngestionRecords:
                 instance=code,
             )
             assert records[0]["instance"] == code
-            assert records[0]["instance_name"] == expected
+            assert "instance_name" not in records[0]
 
     @pytest.mark.unit
     def test_prepare_records_type_carries_kind(self):
@@ -247,11 +247,11 @@ class TestPrepareIngestionRecords:
 
         record = records[0]
         assert record["type"] == "scheme"
-        assert record["scheme_aliases"], "aliases must be populated at ingest"
-        lowered = {a.lower() for a in record["scheme_aliases"]}
+        assert record["document_identity"]["aliases"], "aliases must be populated at ingest"
+        lowered = {a.lower() for a in record["document_identity"]["aliases"]}
         assert "nmeoop" in lowered
         assert "oil palm" in lowered
-        assert record["instance_name"] == "Bharat Vistaar"
+        assert record["instance"] == "bv"
 
     @pytest.mark.unit
     def test_prepare_records_non_scheme_has_no_aliases(self):
@@ -270,7 +270,7 @@ class TestPrepareIngestionRecords:
 
         assert "scheme_aliases" not in records[0]
         assert records[0]["type"] == "document"
-        assert records[0]["instance_name"] == "Maharashtra"
+        assert records[0]["instance"] == "mh"
 
     @pytest.mark.unit
     def test_prepare_records_excludes_excluded_chunks(self):
@@ -392,7 +392,7 @@ class TestPrepareRecordsValidity:
     def test_the_period_is_in_the_passage_schema(self):
         from pipeline.search.passage_projection import _passage_schema_field_names
 
-        assert {"start_date", "end_date"} <= _passage_schema_field_names()
+        assert {"validity", "start_date", "end_date"} <= _passage_schema_field_names()
 
 
 class TestValidityFieldsFromDoc:
@@ -406,42 +406,17 @@ class TestValidityFieldsFromDoc:
             {"valid_from": "2026-10-01", "valid_to": "2026-12-31"}
         )
 
-        assert fields == {"valid_from": "2026-10-01", "valid_to": "2026-12-31"}
-
-    @pytest.mark.unit
-    def test_falls_back_to_the_upload_day_for_a_row_with_no_period(self):
-        # A document uploaded before validity existed, being reingested: its
-        # own upload day is a truer start than today, which would date it as
-        # though it arrived this morning.
-        from pipeline.search.passage_projection import _validity_fields_from_doc
-
-        fields = _validity_fields_from_doc({"created_at": "2024-05-01T09:30:00"})
-
-        assert fields == {"valid_from": "2024-05-01", "valid_to": None}
-
-    @pytest.mark.unit
-    def test_falls_back_to_today_when_the_row_has_no_upload_day_either(self):
-        from datetime import datetime, timezone
-
-        from pipeline.search.passage_projection import _validity_fields_from_doc
-
-        fields = _validity_fields_from_doc({})
-
-        assert fields["valid_from"] == datetime.now(timezone.utc).date().isoformat()
+        assert fields["validity"]["startsAt"].startswith("2026-10-01T00:00:00")
+        assert fields["validity"]["endsAt"].startswith("2026-12-31T23:59:59")
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
-        "doc", [{}, None, {"valid_from": "2026-01-01"}, {"created_at": "bogus"}]
+        "doc", [{}, None, {"created_at": "2024-05-01T09:30:00"}, {"validity_unspecified": True}]
     )
-    def test_always_returns_a_start(self, doc):
-        # The ingest path must never write a period with no start. The end is
-        # optional by design — None means the document never expires.
+    def test_no_period_when_the_document_has_no_stated_bounds(self, doc):
         from pipeline.search.passage_projection import _validity_fields_from_doc
 
-        fields = _validity_fields_from_doc(doc)
-
-        assert fields["valid_from"]
-        assert "valid_to" in fields
+        assert _validity_fields_from_doc(doc) == {"validity": None}
 
     @pytest.mark.unit
     def test_a_stored_open_ended_period_survives(self):
@@ -451,7 +426,8 @@ class TestValidityFieldsFromDoc:
             {"valid_from": "2026-01-01", "valid_to": None}
         )
 
-        assert fields == {"valid_from": "2026-01-01", "valid_to": None}
+        assert fields["validity"]["startsAt"].startswith("2026-01-01T")
+        assert "endsAt" not in fields["validity"]
 
 
 class TestUpdateDocumentState:
@@ -575,9 +551,9 @@ class TestPublishCatalogToNetworkActivity:
     @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_activity_accepts_a_publisher_without_a_beckn_envelope(self, monkeypatch):
-        from pipeline.temporal.activities import publication as activities
         import pipeline.db as db
         from pipeline.network.network_publisher import PublicationReceipt
+        from pipeline.temporal.activities import publication as activities
 
         class TestPublisher:
             def publish(self, transaction_id, document_kind, workflow_id, group):
@@ -610,8 +586,8 @@ class TestPublishCatalogToNetworkActivity:
     @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_publish_records_artifact_on_success(self, monkeypatch):
-        from pipeline.temporal.activities import publication as activities
         import pipeline.db as db
+        from pipeline.temporal.activities import publication as activities
 
         fake_result = {
             "skipped": False,
@@ -682,8 +658,8 @@ class TestPublishCatalogToNetworkActivity:
     @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_publish_failure_propagates_and_records_nothing(self, monkeypatch):
-        from pipeline.temporal.activities import publication as activities
         import pipeline.db as db
+        from pipeline.temporal.activities import publication as activities
 
         class FakeService:
             def publish(self, transaction_id, kind, workflow_id=None, group=None):
@@ -705,10 +681,9 @@ class TestPublishCatalogToNetworkActivity:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("unset", ["DISCOVERY_SERVICE_ENDPOINT", "NETWORK_SENDER_ID"])
     async def test_missing_publish_config_fails_without_retry(self, monkeypatch, unset):
-        from temporalio.exceptions import ApplicationError
 
-        from pipeline.temporal.activities import publication as activities
         import pipeline.db as db
+        from pipeline.temporal.activities import publication as activities
 
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
         monkeypatch.setenv("NETWORK_SENDER_ID", "provider.oan.dev")
@@ -723,8 +698,8 @@ class TestPublishCatalogToNetworkActivity:
     @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_unmapped_kind_records_a_skipped_artifact(self, monkeypatch):
-        from pipeline.temporal.activities import publication as activities
         import pipeline.db as db
+        from pipeline.temporal.activities import publication as activities
 
         class FakeService:
             def publish(self, transaction_id, kind, workflow_id=None, group=None):
@@ -771,8 +746,8 @@ class TestPublishCatalogToNetworkActivity:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("flag", [None, "false", "0", "no", ""])
     async def test_disabled_publish_records_a_skip_without_calling_the_network(self, monkeypatch, flag):
-        from pipeline.temporal.activities import publication as activities
         import pipeline.db as db
+        from pipeline.temporal.activities import publication as activities
 
         if flag is None:
             monkeypatch.delenv("ENABLE_PUBLISH_TO_NETWORK", raising=False)
@@ -803,8 +778,8 @@ class TestPublishCatalogToNetworkActivity:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("result_status", ["ACCEPTED", "PARTIAL", None])
     async def test_non_rejected_results_complete_the_stage(self, monkeypatch, result_status):
-        from pipeline.temporal.activities import publication as activities
         import pipeline.db as db
+        from pipeline.temporal.activities import publication as activities
 
         class FakeService:
             def publish(self, transaction_id, kind, workflow_id=None, group=None):
@@ -835,8 +810,8 @@ class TestPublishCatalogToNetworkActivity:
     @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_rejected_result_records_the_errors_then_fails(self, monkeypatch):
-        from pipeline.temporal.activities import publication as activities
         import pipeline.db as db
+        from pipeline.temporal.activities import publication as activities
 
         errors = [{"code": "SCH_SCHEMA_VALIDATION_FAILED", "message": "topics is required"}]
 
@@ -879,8 +854,8 @@ class TestPublishCatalogToNetworkGroups:
 
     @staticmethod
     def _wire(monkeypatch, document, service_result, seen):
-        from pipeline.temporal.activities import publication as activities
         import pipeline.db as db
+        from pipeline.temporal.activities import publication as activities
 
         class FakeService:
             def publish(self, transaction_id, document_kind, workflow_id=None, group=None):
@@ -959,9 +934,9 @@ class TestPublishCatalogToNetworkGroups:
     @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_an_invalid_provider_id_fails_without_retry_or_artifact(self, monkeypatch):
-        from pipeline.temporal.activities import publication as activities
         import pipeline.db as db
         from pipeline.network.network_provider import InvalidProviderIdError
+        from pipeline.temporal.activities import publication as activities
 
         class FakeService:
             def publish(self, transaction_id, document_kind, workflow_id=None, group=None):
@@ -992,11 +967,10 @@ class TestWorkerActivityRegistration:
     @pytest.mark.unit
     def test_every_defined_activity_is_registered_on_the_worker(self):
         import inspect
-
-        from temporalio.activity import _Definition
-
         from importlib import import_module
         from pkgutil import iter_modules
+
+        from temporalio.activity import _Definition
 
         from pipeline.temporal import activities, worker
 
@@ -1057,7 +1031,7 @@ class TestSupersededPoints:
         store = self._Store()
 
         await activities._drop_superseded_points(
-            "dev", "wf-sup-act", db_connection.get_document(doc_uuid), "c" * 32, "documents-index", store=store
+            "documents-index", "wf-sup-act", db_connection.get_document(doc_uuid), "c" * 32, "documents-index", store=store
         )
 
         assert store.calls == [("documents-index", "a" * 32)]
@@ -1073,10 +1047,10 @@ class TestSupersededPoints:
         store = self._Store(failing={"a" * 32})
 
         await activities._drop_superseded_points(
-            "dev", "wf-sup-act", db_connection.get_document(doc_uuid), "c" * 32, "documents-index", store=store
+            "documents-index", "wf-sup-act", db_connection.get_document(doc_uuid), "c" * 32, "documents-index", store=store
         )
 
-        assert db_connection.get_document(doc_uuid)["superseded_doc_ids"] == {"dev": ["a" * 32]}
+        assert db_connection.get_document(doc_uuid)["superseded_doc_ids"] == {"documents-index": ["a" * 32]}
 
     @pytest.mark.asyncio
     @pytest.mark.db
@@ -1096,17 +1070,17 @@ class TestSupersededPoints:
         store = self._Store()
 
         await activities._drop_superseded_points(
-            "dev", "wf-sup-act", db_connection.get_document(doc_uuid), "c" * 32, "documents-index", store=store
+            "documents-index", "wf-sup-act", db_connection.get_document(doc_uuid), "c" * 32, "documents-index", store=store
         )
 
         # Points stay for the twin, and the key stays on the list for a later cleanup.
         assert store.calls == []
-        assert db_connection.get_document(doc_uuid)["superseded_doc_ids"] == {"dev": ["a" * 32]}
+        assert db_connection.get_document(doc_uuid)["superseded_doc_ids"] == {"documents-index": ["a" * 32]}
 
         # Once the twin is gone the same cleanup removes them.
         db_connection.set_document_disabled("wf-twin", True)
         await activities._drop_superseded_points(
-            "dev", "wf-sup-act", db_connection.get_document(doc_uuid), "c" * 32, "documents-index", store=store
+            "documents-index", "wf-sup-act", db_connection.get_document(doc_uuid), "c" * 32, "documents-index", store=store
         )
         assert store.calls == [("documents-index", "a" * 32)]
         assert db_connection.get_document(doc_uuid)["superseded_doc_ids"] == {}

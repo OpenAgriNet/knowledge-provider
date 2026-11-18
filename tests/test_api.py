@@ -376,14 +376,8 @@ class TestDocumentValidityEndpoints:
 
     @pytest.mark.api
     @pytest.mark.unit
-    def test_upload_starts_today_and_never_expires(self, test_client, sample_pdf_content):
-        # The upload endpoint owns this default — db.py stores what it is given
-        # and has no opinion on what a period should be — so the guarantee is
-        # only real if it is asserted through the endpoint that grants it.
-        # Spelled out rather than compared against default_period(), so a
-        # change to that default fails here instead of agreeing with itself.
-        from datetime import datetime, timezone
-
+    def test_upload_without_validity_preserves_unspecified_period(self, test_client, sample_pdf_content):
+        # Unstated validity remains an open period in the shared schema.
         response = test_client.post(
             "/upload",
             params={"kind": "scheme"},
@@ -392,7 +386,7 @@ class TestDocumentValidityEndpoints:
 
         assert response.status_code == 200
         doc = test_client.get(f"/documents/{response.json()['workflow_id']}").json()
-        assert doc["valid_from"] == datetime.now(timezone.utc).date().isoformat()
+        assert doc["valid_from"] is None
         assert doc["valid_to"] is None
 
     @pytest.mark.api
@@ -660,8 +654,8 @@ class TestSearchGroup:
     def test_rejects_a_non_string_group(self, test_client, capturing_store, bad):
         response = test_client.post("/search", json={"query": "kisan", "group": bad})
 
-        assert response.status_code == 400
-        assert response.json()["detail"] == "group must be a string"
+        assert response.status_code == 422
+        assert response.json()["detail"][0]["loc"][-1] == "group"
         assert capturing_store.captured == {}, "the store must not be called for a bad request"
 
     @pytest.mark.api
@@ -723,8 +717,8 @@ class TestSearchProviderId:
     def test_rejects_anything_but_a_string(self, test_client, capturing_store, bad):
         response = test_client.post("/search", json={"query": "kisan", "provider_id": bad})
 
-        assert response.status_code == 400
-        assert response.json()["detail"] == "provider_id must be a string"
+        assert response.status_code == 422
+        assert response.json()["detail"][0]["loc"][-1] == "provider_id"
         assert capturing_store.captured == {}
 
     @pytest.mark.api
@@ -1153,6 +1147,7 @@ class TestUploadCatalogIdentity:
         self, test_client, db_connection, sample_pdf_content, monkeypatch,
     ):
         monkeypatch.setenv("DOCUMENT_KINDS", "scheme,advisory,field-report")
+        monkeypatch.setenv("DOCUMENT_KIND_SCHEMAS", '{"field-report":"example:FieldReport"}')
         response = test_client.post(
             "/upload",
             params={"kind": "field-report"},
@@ -1161,7 +1156,7 @@ class TestUploadCatalogIdentity:
         assert response.status_code in (200, 201), response.text
         document = test_client.get(f"/documents/{response.json()['workflow_id']}").json()
         assert document["kind"] == "field-report"
-        assert db_connection.get_document(response.json()["workflow_id"])["catalog_id"] is None
+        assert db_connection.get_document(response.json()["workflow_id"])["catalog_id"] is not None
 
     @pytest.mark.api
     @pytest.mark.unit
@@ -1200,7 +1195,7 @@ class TestUploadCatalogIdentity:
                 (doc["code"],),
             ).fetchall()
         assert [(r["type"], r["name"], r["path"]) for r in catalog] == [
-            ("openagrinet:AgricultureResource", "mh", "/states/MH")
+            ("openagrinet:KnowledgeAdvisory", "mh", "/states/MH")
         ]
 
     @pytest.mark.api
@@ -1401,12 +1396,8 @@ class TestUploadCatalogIdentity:
         db.upsert_document_index_status(
             "wf-mh-doc", "documents-index", doc_id="d-mh", status="indexed"
         )
-        db.update_document_fields("wf-mh-doc")  # no-op, keeps the dev entry only
-        with db.get_connection() as conn:
-            conn.execute(
-                "UPDATE documents SET metadata = jsonb_set(metadata, '{index_status,prod}', "
-                "'{\"status\": \"indexed\", \"doc_id\": \"d-mh\"}')"
-            )
+        db.update_document_fields("wf-mh-doc")
+        db.update_document_job(db.get_latest_document_job("wf-mh-doc")["id"], config_json={"release_network_id": "network.example"})
 
         with pytest.raises(HTTPException) as exc:
             api._resolve_document_identity(
@@ -1447,11 +1438,11 @@ class TestVectorKeysToDelete:
         )
 
         # The twin was only uploaded, never indexed, so nothing of it is at risk.
-        assert _vector_doc_ids(db.get_document(uuid_a), "dev") == ["a" * 32]
+        assert _vector_doc_ids(db.get_document(uuid_a), "documents-index") == ["a" * 32]
 
         db.upsert_document_index_status("wf-k-b", "documents-index", doc_id="a" * 32, status="indexed")
-        assert _vector_doc_ids(db.get_document(uuid_a), "dev") == []
-        assert _vector_doc_ids(db.get_document("wf-k-c"), "dev") == ["b" * 32]
+        assert _vector_doc_ids(db.get_document(uuid_a), "documents-index") == []
+        assert _vector_doc_ids(db.get_document("wf-k-c"), "documents-index") == ["b" * 32]
 
         db.set_document_disabled("wf-k-b", True)
-        assert _vector_doc_ids(db.get_document(uuid_a), "dev") == ["a" * 32]
+        assert _vector_doc_ids(db.get_document(uuid_a), "documents-index") == ["a" * 32]

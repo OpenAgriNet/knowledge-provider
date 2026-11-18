@@ -29,7 +29,7 @@ beforeEach(() => {
 describe('Users', () => {
   it('filters the platform directory by instance, access and status', async () => {
     fetchJson.mockImplementation(async path => {
-      if (path === '/admin/access-options') return { states: [] }
+      if (path === '/admin/access-options') return { states: [{ code: 'RICE-LAB' }, { code: 'EMPTY-LAB' }] }
       if (path === '/admin/users?max_results=200') return { users: accounts }
       throw new Error(`Unexpected request: ${path}`)
     })
@@ -38,6 +38,7 @@ describe('Users', () => {
     const user = userEvent.setup()
     expect(await screen.findByText('Alice Rao')).toBeVisible()
     expect(screen.getByText('Bryan Hall')).toBeVisible()
+    expect(screen.getByRole('option', { name: 'EMPTY-LAB' })).toBeInTheDocument()
     await user.selectOptions(screen.getByLabelText('Status'), 'disabled')
     expect(screen.queryByText('Alice Rao')).not.toBeInTheDocument()
     await user.selectOptions(screen.getByLabelText('Access'), 'state')

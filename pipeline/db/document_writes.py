@@ -7,6 +7,7 @@ from typing import Any, Optional
 import psycopg
 from psycopg.types.json import Jsonb
 
+from pipeline.documents import document_validity
 from pipeline.documents.models import (
     DocumentMetadata,
     DocumentSource,
@@ -66,6 +67,7 @@ def upsert_document(
     uploaded_by_roles: Optional[str] = None,
     valid_from: Optional[str] = None,
     valid_to: Optional[str] = None,
+    validity: document_validity.TimePeriod | None = None,
     with_workflow: bool = True,
     kind: Optional[str] = None,
     code: Optional[str] = None,
@@ -83,11 +85,9 @@ def upsert_document(
     kind when re-registering a document.
     Uploader identity is set on INSERT, and filled on UPDATE only when currently null.
 
-    ``valid_from``/``valid_to`` are the document's validity period, stored as
-    given and likewise INSERT-only, so an approver's later edit survives a
-    restart that re-registers the same workflow. What the period should default
-    to is the caller's call (see ``pipeline/document_validity.py``); omitting
-    both stores NULL, which search reads as "no stated period".
+    The initial period is stored as an OAN TimePeriod. Day-only callers pass
+    ``valid_from``/``valid_to`` and use the deployment's timezone. Registration
+    retries preserve later edits to the document's validity.
 
     ``page_count`` and ``chunk_count`` are accepted for call-site compatibility
     and ignored: both are counted from ``pages`` and ``chunks``.
@@ -172,8 +172,7 @@ def upsert_document(
             else None
         )
         validated_metadata = DocumentMetadata(
-            valid_from=valid_from,
-            valid_to=valid_to,
+            validity=validity or document_validity.read_validity({"valid_from": valid_from, "valid_to": valid_to}),
             uploaded_by_user_id=user_uuid,
             crop_subjects=crop_subjects or [],
             knowledge_metadata=knowledge_metadata,
@@ -464,8 +463,6 @@ def update_document_fields(workflow_id: str, *, _conn=None, **updates: object) -
                     "ORDER BY (workflow_type = 'legacy_index_import'), (workflow_type IN ('pipeline', 'ocr_only')) DESC, started_at ASC, id ASC LIMIT 1)",
                     (bool(value), doc_uuid),
                 )
-            elif key in ("valid_from", "valid_to"):
-                meta_patch[key] = value.isoformat() if isinstance(value, date) else value
             elif key == "uploaded_by_user_id" and value:
                 has_uploader = conn.execute(
                     "SELECT metadata ? 'uploaded_by_user_id' AS has FROM documents WHERE id = %s::uuid",
@@ -480,6 +477,28 @@ def update_document_fields(workflow_id: str, *, _conn=None, **updates: object) -
                         conn=conn,
                     )
 
+        if "validity" in updates:
+            meta_patch["validity"] = document_validity.storage_value(document_validity.read_validity(updates))
+            meta_remove.extend(("valid_from", "valid_to"))
+        elif {"valid_from", "valid_to"} & updates.keys():
+            row = conn.execute(
+                "SELECT metadata FROM documents WHERE id = %s::uuid FOR UPDATE", (doc_uuid,),
+            ).fetchone()
+            period = document_validity.read_validity(row["metadata"])
+            bounds = document_validity.storage_value(period) or {}
+            days = period.calendar_days() if period else {}
+            for key, day_key in (("startsAt", "valid_from"), ("endsAt", "valid_to")):
+                if day_key not in updates:
+                    continue
+                day = updates[day_key]
+                if isinstance(day, date):
+                    day = day.isoformat()
+                if day != days.get(day_key):
+                    bounds[key] = day
+            meta_patch["validity"] = document_validity.storage_value(
+                document_validity.read_validity({"validity": {k: v for k, v in bounds.items() if v}})
+            )
+            meta_remove.extend(("valid_from", "valid_to"))
         if source_patch:
             doc_sets.append("source = source || %s::jsonb")
             doc_params.append(Jsonb({k: v for k, v in source_patch.items() if v is not None}))

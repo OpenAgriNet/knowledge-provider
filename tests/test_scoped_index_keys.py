@@ -8,6 +8,7 @@ from pipeline.search.index_identity import projection_doc_id
 @pytest.mark.unit
 def test_same_source_crops_remain_independent_and_deleting_one_preserves_the_other(monkeypatch):
     from qdrant_client import QdrantClient
+
     from pipeline.search import passage_projection
     from pipeline.vector_store import qdrant_store
 
@@ -51,15 +52,15 @@ def test_scoped_index_migration_retains_legacy_key_and_reupload_tracks_exact_key
     document = db.get_document(owner)
     key = projection_doc_id(document)
     db.upsert_document_index_status("scoped-document", "documents-index", doc_id=key)
-    assert db.get_document(owner)["superseded_doc_ids"] == {"dev": ["a" * 32]}
+    assert db.get_document(owner)["superseded_doc_ids"] == {"documents-index": ["a" * 32]}
     assert db.get_document(key)["id"] == owner
-    db.clear_superseded_doc_ids(owner, "dev", ["a" * 32])
+    db.clear_superseded_doc_ids(owner, "documents-index", ["a" * 32])
     db.reset_document_for_reupload(owner, filename="same.pdf", filepath="minio://documents/same.pdf",
                                   fingerprint="a" * 32)
     assert db.get_document(owner)["superseded_doc_ids"] == {}
     db.reset_document_for_reupload(owner, filename="changed.pdf", filepath="minio://documents/changed.pdf",
                                   fingerprint="b" * 32)
-    assert db.get_document(owner)["superseded_doc_ids"] == {"dev": [key]}
+    assert db.get_document(owner)["superseded_doc_ids"] == {"documents-index": [key]}
 
 
 @pytest.mark.db
@@ -75,7 +76,7 @@ def test_api_cleanup_uses_recorded_key_after_source_replacement(db_connection):
     db.upsert_document_index_status(owner, "documents-index", doc_id=key)
     db.reset_document_for_reupload(owner, filename="changed.pdf", filepath="minio://documents/changed.pdf",
                                   fingerprint="b" * 32)
-    assert _vector_doc_ids(db.get_document(owner), "dev") == [key]
+    assert _vector_doc_ids(db.get_document(owner), "documents-index") == [key]
 
 
 def test_index_only_cleanup_targets_the_serving_collection(monkeypatch):

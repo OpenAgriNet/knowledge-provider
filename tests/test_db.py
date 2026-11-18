@@ -649,7 +649,7 @@ class TestSchemaConstraints:
         document = db.find_document_by_code("mh", "scheme", "owned")
         assert (document["id"], document["instance"], document["kind"]) == (document_id, "mh", "scheme")
         assert document["catalog_id"] is None
-        assert db.get_catalog_entry("owned")["type"] == "openagrinet:AgricultureResource"
+        assert db.get_catalog_entry("owned")["type"] == "openagrinet:KnowledgeAdvisory"
 
     @pytest.mark.db
     @pytest.mark.unit
@@ -938,7 +938,7 @@ class TestIndexStatus:
         )
         db_connection.upsert_document_index_status("wf-idx", "prod-docs", status="missing")
         doc = db_connection.get_document("wf-idx")
-        assert set(doc["index_status"]) == {"dev", "prod"}
+        assert set(doc["index_status"]) == {"documents-index", "prod-docs"}
         dev = db_connection.get_document_index_status("wf-idx", "documents-index")
         assert dev["chunk_count_indexed"] == 4
         assert dev["last_indexed_at"] == "2026-01-01T00:00:00"
@@ -1279,14 +1279,14 @@ class TestMigrationRunner:
         assert migrate.apply_migrations(postgres_url) == []
         assert migrate.is_current(postgres_url)
         migrations = migrate.list_migrations()
-        assert migrate.current_version(postgres_url) == (migrations[-1][0] if migrations else "0022")
+        assert migrate.current_version(postgres_url) == (migrations[-1][0] if migrations else "0025")
 
     @pytest.mark.db
     @pytest.mark.unit
     def test_clean_schema_omits_import_only_tables(self, db_connection):
         from pipeline import migrate
 
-        assert all(version > "0022" for version, _ in migrate.list_migrations())
+        assert migrate.list_migrations() == []
         with db_connection.get_connection() as conn:
             row = conn.execute("""
                 SELECT to_regclass('public.legacy_import_evidence') AS evidence,

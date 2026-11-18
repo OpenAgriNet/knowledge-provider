@@ -30,6 +30,23 @@ def normalize_language_tag(value: object) -> str | None:
     return None
 
 
+def indexed_document_labels(record: dict) -> dict:
+    """Fold labels from older passages into the language-tagged representation."""
+    labels = {}
+    for field, value in record.items():
+        prefix, _, suffix = field.partition("_")
+        language = normalize_language_tag(suffix.replace("_", "-"))
+        if prefix in {"title", "name"} and language and isinstance(value, str) and value.strip():
+            entry = labels.setdefault(language, {})
+            if prefix == "title" or "title" not in entry:
+                entry["title"] = value
+    for language, values in (record.get("localized_labels") or {}).items():
+        tag = normalize_language_tag(language)
+        if tag:
+            labels[tag] = {**labels.get(tag, {}), **values}
+    return labels
+
+
 def _source_spans(chunk: dict) -> list[dict]:
     spans = chunk.get("source_spans_json") or []
     if isinstance(spans, str):

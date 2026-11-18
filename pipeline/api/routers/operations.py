@@ -12,7 +12,6 @@ from pipeline.api.api import (
 )
 from pipeline.auth.deps import RequireSearch
 from pipeline.auth.tenancy import unrestricted
-from pipeline.network.release_policy import prod_stage_disabled
 from pipeline.documents.models import (
     PIPELINE_STAGES,
     PROD_ONLY_STAGES,
@@ -20,6 +19,7 @@ from pipeline.documents.models import (
     OperationQueueResponse,
 )
 from pipeline.intake.source_intake import public_source_job
+from pipeline.network.release_policy import prod_stage_disabled
 
 router = APIRouter()
 

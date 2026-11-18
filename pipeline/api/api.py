@@ -28,7 +28,14 @@ from fastapi import FastAPI, HTTPException, Request
 from temporalio.client import Client
 
 from pipeline import db
+from pipeline.documents.document_formats import allowed_file_extensions, installed_formats
+from pipeline.documents.document_kinds import validate_document_kind
+from pipeline.documents.models import DocumentStage, DocumentSummary
 from pipeline.network.catalog import scheme_catalog
+from pipeline.network.network_publisher import validate_network_adapters
+from pipeline.network.release_policy import prod_stage_disabled
+from pipeline.telemetry.logs import configure_logs, reset_logs
+
 from ..auth.config import load_auth_config, validate_auth_config
 from ..auth.models import AuthUser
 from ..auth.permissions import Permission
@@ -38,11 +45,6 @@ from ..auth.tenancy import (
     normalize_instance,
     resolve_create_instance,
 )
-from pipeline.documents.document_formats import allowed_file_extensions, installed_formats
-from pipeline.documents.document_kinds import validate_document_kind
-from pipeline.network.release_policy import prod_stage_disabled
-from pipeline.documents.models import DocumentStage, DocumentSummary
-from pipeline.network.network_publisher import validate_network_adapters
 from ..object_storage import (
     ObjectStore,
     is_object_uri,
@@ -50,7 +52,6 @@ from ..object_storage import (
     open_object_store,
     parse_object_uri,
 )
-from pipeline.telemetry.logs import configure_logs, reset_logs
 from .rate_limiting import limiter
 
 LOG_LEVEL = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").strip().upper(), logging.INFO)
@@ -74,48 +75,49 @@ object_store: Optional[ObjectStore] = None
 OBJECT_STORE_BUCKET = "documents"
 
 
-from .file_helpers import (  # noqa: E402
-    validate_file_path,
-    get_filename_from_path,
-    get_workflow_id,
-    _rerun_workflow_id,
-)
-from .document_helpers import (  # noqa: E402
-    _instance_scope_for_user,
-    _document_cohorts_payload,
-    _resolve_create_instance,
-    _document_title,
-    _assert_can_replace,
-    _assert_upload_start_resolved,
-    _resolve_document_identity,
-    _require_document_for_user,
-    _document_for_user_or_none,
-    _document_summary_from_row,
-    _provenance_base_urls,
-    _build_provenance_links,
-    _list_available_actions,
-    _mark_reindex_required,
+from .application import (  # noqa: E402
+    _static_document_path_segments,
+    canonicalize_document_identifier,
+    create_app,
 )
 from .audit_helpers import (  # noqa: E402
-    _parse_roles_field,
     _actor_from_user,
     _log_audit,
+    _parse_roles_field,
+)
+from .document_helpers import (  # noqa: E402
+    _assert_can_replace,
+    _assert_upload_start_resolved,
+    _build_provenance_links,
+    _document_cohorts_payload,
+    _document_for_user_or_none,
+    _document_summary_from_row,
+    _document_title,
+    _instance_scope_for_user,
+    _list_available_actions,
+    _mark_reindex_required,
+    _provenance_base_urls,
+    _require_document_for_user,
+    _resolve_create_instance,
+    _resolve_document_identity,
+)
+from .file_helpers import (  # noqa: E402
+    _rerun_workflow_id,
+    get_filename_from_path,
+    get_workflow_id,
+    validate_file_path,
 )
 from .index_helpers import (  # noqa: E402
-    delete_single_chunk_from_index,
     delete_chunks_from_index,
+    delete_single_chunk_from_index,
 )
 from .runtime import _start_services, lifespan  # noqa: E402
-from .application import (  # noqa: E402
-    _static_document_path_segments, canonicalize_document_identifier, create_app,
-)
 
 ALLOWED_ORIGINS = os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(",")
 RATE_LIMIT_UPLOAD = os.environ.get("RATE_LIMIT_UPLOAD", "10/minute")
 
 app = create_app(lifespan)
 
-from .routers.health import health, router as health_router  # noqa: E402
 # Register routes after establishing the runtime dependency boundary.
 from .routers.audit import router as audit_router  # noqa: E402
 from .routers.auth_sessions import router as auth_sessions_router  # noqa: E402
@@ -127,6 +129,8 @@ from .routers.document_detail import router as document_detail_router  # noqa: E
 from .routers.document_lifecycle import router as document_lifecycle_router  # noqa: E402
 from .routers.document_review import router as document_review_router  # noqa: E402
 from .routers.documents import router as documents_router  # noqa: E402
+from .routers.health import health  # noqa: E402
+from .routers.health import router as health_router  # noqa: E402
 from .routers.indexes import router as indexes_router  # noqa: E402
 from .routers.operations import router as operations_router  # noqa: E402
 from .routers.pages import router as pages_router  # noqa: E402
@@ -137,7 +141,7 @@ from .routers.search_settings import router as search_settings_router  # noqa: E
 from .routers.upload import router as upload_router  # noqa: E402
 from .routers.user_admin import router as user_admin_router  # noqa: E402
 from .routers.webhook_sources import knowledge_router  # noqa: E402
-from .routers.webhook_sources import router as webhook_sources_router
+from .routers.webhook_sources import router as webhook_sources_router  # noqa: E402
 
 app.include_router(health_router)
 app.include_router(search_router)

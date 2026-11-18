@@ -1,6 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ChevronDown, ChevronRight, Search, X } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
+import ChunkMetadata from '../components/ChunkMetadata'
+import PageNavigation from '../components/PageNavigation'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Checkbox } from '../components/ui/checkbox'
@@ -29,6 +32,8 @@ export default function ChunkExplorerView() {
   const [stage, setStage] = useState('all')
   const [includeExcluded, setIncludeExcluded] = useState(false)
   const [offset, setOffset] = useState(0)
+  const [appliedFilters, setAppliedFilters] = useState({})
+  const [expandedChunk, setExpandedChunk] = useState(null)
   const [viewMode, setViewMode] = useState('detailed')
   const [groupMode, setGroupMode] = useState('none')
   const [presetName, setPresetName] = useState('')
@@ -36,8 +41,6 @@ export default function ChunkExplorerView() {
   const [advancedOpen, setAdvancedOpen] = useState(false)
 
   const stageOptions = useMemo(() => ['all', ...PIPELINE_STAGES.map(s => s.id), 'failed'], [])
-  const canPrev = offset > 0
-  const canNext = offset + chunks.length < total
 
   function openChunkDocument(chunk) {
     if (!chunk?.workflow_id) return
@@ -94,10 +97,10 @@ export default function ChunkExplorerView() {
       setChunks(Array.isArray(response.items) ? response.items : [])
       setTotal(Number(response.total || 0))
       setOffset(nextOffset)
+      setAppliedFilters(active)
+      setExpandedChunk(null)
     } catch (loadError) {
       setError(loadError.message)
-      setChunks([])
-      setTotal(0)
     } finally {
       setLoading(false)
       setSearching(false)
@@ -113,7 +116,6 @@ export default function ChunkExplorerView() {
     setQuery(resetFilters.query)
     setStage(resetFilters.stage)
     setIncludeExcluded(resetFilters.includeExcluded)
-    setOffset(0)
     runSearch({ nextOffset: 0, filters: resetFilters })
   }
 
@@ -179,19 +181,9 @@ export default function ChunkExplorerView() {
       .sort((a, b) => b.chunks.length - a.chunks.length || a.label.localeCompare(b.label))
   }, [chunks])
 
-  if (loading) {
-    return (
-      <div className="p-6 space-y-4">
-        <Skeleton className="h-8 w-64" />
-        <Skeleton className="h-16 w-full" />
-        <Skeleton className="h-24 w-full" />
-      </div>
-    )
-  }
-
   return (
-    <div className="page-shell space-y-4">
-      <div className="flex items-center justify-between">
+    <div className="page-shell">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h1 className="text-2xl font-serif font-semibold text-foreground">Chunk Explorer</h1>
           <p className="text-sm text-muted-foreground mt-1">
@@ -199,23 +191,27 @@ export default function ChunkExplorerView() {
           </p>
         </div>
         <Badge variant="secondary" className="text-xs">
-          {total} matching chunks
+          {loading ? 'Loading chunks…' : `${total.toLocaleString()} matching chunks`}
         </Badge>
       </div>
 
       <div className="panel p-4 space-y-3">
-        <div className="flex flex-col md:flex-row gap-2">
-          <div className="relative flex-1">
+        <div className="flex flex-col gap-2 xl:flex-row">
+          <div className="relative min-w-0 flex-1">
             <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
             <Input
+              aria-label="Chunk keyword"
               value={query}
+              onKeyDown={event => {
+                if (event.key === 'Enter' && !searching) runSearch({ nextOffset: 0 })
+              }}
               onChange={event => setQuery(event.target.value)}
               placeholder="Keyword search (e.g. milking machine)..."
               className="pl-9"
             />
           </div>
           <Select value={stage} onValueChange={setStage}>
-            <SelectTrigger className="w-full md:w-56">
+            <SelectTrigger aria-label="Stage" className="w-full xl:w-48">
               <SelectValue placeholder="Stage" />
             </SelectTrigger>
             <SelectContent>
@@ -234,13 +230,16 @@ export default function ChunkExplorerView() {
           </Button>
         </div>
 
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Checkbox checked={includeExcluded} onCheckedChange={value => setIncludeExcluded(Boolean(value))} />
-          <span>Include excluded chunks</span>
+        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <label className="flex items-center gap-2">
+            <Checkbox checked={includeExcluded} onCheckedChange={value => setIncludeExcluded(Boolean(value))} />
+            Include excluded chunks
+          </label>
           <Button
             size="sm"
             variant="ghost"
             className="h-6 text-[10px] ml-auto"
+            aria-expanded={advancedOpen}
             onClick={() => setAdvancedOpen(current => !current)}
           >
             {advancedOpen ? <ChevronDown className="h-3 w-3 mr-1" /> : <ChevronRight className="h-3 w-3 mr-1" />}
@@ -329,109 +328,103 @@ export default function ChunkExplorerView() {
         </div>
       )}
 
-      <div className="space-y-2">
-        {chunks.length === 0 ? (
-          <div className="panel p-10 text-center">
-            <p className="text-sm font-medium">No chunks found</p>
-            <p className="text-xs text-muted-foreground mt-1">Try fewer filters or a broader keyword.</p>
+      <div className="panel page-scroll min-w-0" aria-busy={searching}>
+        {loading ? (
+          <div className="space-y-3 p-4" role="status" aria-label="Loading chunks">
+            <Skeleton className="h-9 w-full" />
+            <Skeleton className="h-9 w-full" />
+            <Skeleton className="h-9 w-full" />
           </div>
-        ) : groupMode === 'document' ? (
-          groupedByDocument.map(group => (
-            <div key={group.key} className="panel p-4 space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <button
-                  type="button"
-                  className="text-sm font-medium text-primary hover:underline truncate"
-                  onClick={() => openDocumentChunks(group.key)}
-                >
-                  {group.label}
-                </button>
-                <Badge variant="secondary" className="text-[10px]">{group.chunks.length} chunks</Badge>
-              </div>
-              <div className="space-y-2">
-                {group.chunks.map(chunk => (
-                  <div
-                    key={`${chunk.workflow_id}-${chunk.chunk_number}`}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => openChunkDocument(chunk)}
-                    onKeyDown={event => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault()
-                        openChunkDocument(chunk)
-                      }
-                    }}
-                    className="rounded border border-border/80 p-2 space-y-1.5 cursor-pointer hover:border-primary/50 hover:bg-muted/30 transition-colors"
-                  >
-                    <p className="text-xs text-muted-foreground">
-                      Chunk {chunk.chunk_number} · Pages {chunk.page_start}–{chunk.page_end} · {getStageLabel(chunk.stage)}
-                    </p>
-                    <p className={viewMode === 'detailed' ? 'text-sm text-foreground/90' : 'text-xs text-muted-foreground'}>
-                      {viewMode === 'detailed'
-                        ? String(chunk.edited_text || chunk.original_text || '').slice(0, 280)
-                        : `${(chunk.workflow_id || '').slice(0, 20)}... · #${chunk.chunk_number} · ${chunk.token_count || 0} tokens`}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))
+        ) : chunks.length === 0 ? (
+          <div className="p-8 text-center">
+            <p className="text-sm font-medium">{error ? 'Chunks unavailable' : 'No chunks found'}</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {error ? 'Run the search again to retry.' : 'Try fewer filters or a broader keyword.'}
+            </p>
+          </div>
         ) : (
-          chunks.map(chunk => (
-            <div
-              key={`${chunk.workflow_id}-${chunk.chunk_number}`}
-              role="button"
-              tabIndex={0}
-              onClick={() => openChunkDocument(chunk)}
-              onKeyDown={event => {
-                if (event.key === 'Enter' || event.key === ' ') {
-                  event.preventDefault()
-                  openChunkDocument(chunk)
-                }
-              }}
-              className="panel p-4 space-y-2 cursor-pointer hover:border-primary/40 hover:bg-muted/20 transition-colors"
-            >
-              <div className="flex items-center justify-between gap-2">
-                <div className="min-w-0">
-                  <button
-                    type="button"
-                    className="text-sm font-medium text-primary hover:underline truncate"
-                    onClick={event => {
-                      event.stopPropagation()
-                      openDocumentChunks(chunk.workflow_id)
-                    }}
-                  >
-                    {chunk.name || chunk.filename || chunk.workflow_id}
-                  </button>
-                  <p className="text-xs text-muted-foreground">
-                    Chunk {chunk.chunk_number} · Pages {chunk.page_start}–{chunk.page_end} · {getStageLabel(chunk.stage)}
-                  </p>
-                </div>
-                {chunk.is_excluded ? <Badge variant="destructive">Excluded</Badge> : null}
-              </div>
-
-              {viewMode === 'detailed' ? (
-                <p className="text-sm leading-relaxed text-foreground/90">
-                  {String(chunk.edited_text || chunk.original_text || '').slice(0, 520)}
-                </p>
-              ) : (
-                <p className="text-xs leading-relaxed text-muted-foreground">
-                  {(chunk.workflow_id || '').slice(0, 20)}... · #{chunk.chunk_number} · {chunk.token_count || 0} tokens
-                </p>
-              )}
-            </div>
-          ))
+          <table className="w-full table-fixed text-left text-sm" aria-label="Chunks">
+            <thead className="sticky top-0 z-10 bg-card text-xs text-muted-foreground">
+              <tr className="border-b border-border">
+                <th scope="col" className="px-3 py-3 sm:px-4">Document and chunk</th>
+                <th scope="col" className="hidden w-24 px-2 py-3 md:table-cell">Pages</th>
+                <th scope="col" className="hidden w-24 px-2 py-3 text-right lg:table-cell">Tokens</th>
+                <th scope="col" className="hidden w-36 px-4 py-3 md:table-cell">Status</th>
+              </tr>
+            </thead>
+            {(groupMode === 'document' ? groupedByDocument : [{ key: 'results', chunks }]).map(group => (
+              <tbody key={group.key}>
+                {groupMode === 'document' && (
+                  <tr className="border-b border-border bg-muted/60">
+                    <th colSpan={4} className="px-4 py-2">
+                      <button type="button" className="max-w-full break-words text-left text-sm text-primary hover:underline"
+                        onClick={() => openDocumentChunks(group.key)}>{group.label}</button>
+                    </th>
+                  </tr>
+                )}
+                {group.chunks.map(chunk => {
+                  const key = chunk.id ?? `${chunk.workflow_id}-${chunk.chunk_number}`
+                  const open = expandedChunk === key
+                  const title = chunk.name || chunk.filename || chunk.workflow_id
+                  const fullText = chunk.edited_text ?? chunk.original_text ?? ''
+                  const preview = fullText.replace(/^#{1,6}\s+/, '').slice(0, 220)
+                  const pages = chunk.page_start === chunk.page_end
+                    ? chunk.page_start : `${chunk.page_start}–${chunk.page_end}`
+                  const status = chunk.is_excluded ? 'Excluded' : getStageLabel(chunk.stage)
+                  return (
+                    <Fragment key={key}>
+                      <tr className={`border-b border-border align-top ${open ? 'bg-muted/55' : 'hover:bg-muted/35'}`}>
+                        <td className="px-3 py-2 sm:px-4">
+                          <button type="button" className="flex w-full items-start gap-2 rounded-sm py-1 text-left focus-visible:outline-2 focus-visible:outline-ring"
+                            aria-expanded={open} aria-controls={`chunk-detail-${key}`}
+                            aria-label={`${title}, chunk ${chunk.chunk_number}`}
+                            onClick={() => setExpandedChunk(open ? null : key)}>
+                            {open ? <ChevronDown className="mt-0.5 size-4 shrink-0 text-primary" /> : <ChevronRight className="mt-0.5 size-4 shrink-0 text-muted-foreground" />}
+                            <span className="min-w-0">
+                              <span className="block break-words font-medium">{title}</span>
+                              <span className="block text-xs text-muted-foreground">
+                                Chunk {chunk.chunk_number}<span className="md:hidden"> · {status}</span>
+                              </span>
+                              {viewMode === 'detailed' && preview && <span className="mt-1 block truncate text-xs text-muted-foreground">{preview}</span>}
+                            </span>
+                          </button>
+                        </td>
+                        <td className="hidden px-2 py-3 text-xs tabular-nums text-muted-foreground md:table-cell">{pages}</td>
+                        <td className="hidden px-2 py-3 text-right text-xs tabular-nums text-muted-foreground lg:table-cell">{chunk.token_count ?? 0}</td>
+                        <td className="hidden px-4 py-3 md:table-cell">
+                          <Badge variant={chunk.is_excluded ? 'destructive' : 'secondary'} className="whitespace-normal">{status}</Badge>
+                        </td>
+                      </tr>
+                      {open && (
+                        <tr id={`chunk-detail-${key}`} className="border-b border-border bg-muted/25">
+                          <td colSpan={4} className="space-y-3 px-4 py-4 sm:pl-10">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <p className="text-xs text-muted-foreground">
+                                Pages {pages} · {chunk.token_count ?? 0} tokens
+                                {chunk.is_reviewed && ' · Reviewed'}{chunk.is_reference && ' · Reference'}
+                              </p>
+                              <Button size="sm" variant="outline" onClick={() => openChunkDocument(chunk)}>Open in document</Button>
+                            </div>
+                            {chunk.section_title && <p className="break-words font-medium">{chunk.section_title}</p>}
+                            <div className="chunk-text max-w-[75ch] break-words leading-relaxed">
+                              {fullText ? <ReactMarkdown skipHtml disallowedElements={['img']}>{fullText}</ReactMarkdown> : <p>No text for this chunk.</p>}
+                            </div>
+                            <ChunkMetadata workflowId={chunk.workflow_id} chunkTags={chunk.tags} />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  )
+                })}
+              </tbody>
+            ))}
+          </table>
         )}
       </div>
 
-      <div className="flex items-center justify-end gap-2">
-        <Button variant="outline" onClick={() => runSearch({ nextOffset: Math.max(0, offset - PAGE_SIZE) })} disabled={!canPrev || searching}>
-          Previous
-        </Button>
-        <Button onClick={() => runSearch({ nextOffset: offset + PAGE_SIZE })} disabled={!canNext || searching}>
-          Next
-        </Button>
-      </div>
+      <PageNavigation page={Math.floor(offset / PAGE_SIZE) + 1} pageSize={PAGE_SIZE} total={total}
+        onPageChange={nextPage => runSearch({ nextOffset: (nextPage - 1) * PAGE_SIZE, filters: appliedFilters })}
+        disabled={searching} />
     </div>
   )
 }

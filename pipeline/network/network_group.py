@@ -6,11 +6,10 @@ import string
 from pathlib import Path
 from typing import Optional
 
-from pipeline.network.network_connections import default_network_id
 from pipeline.auth.tenancy import portal_instance
 from pipeline.network.catalog.catalog_builder import normalize_document_kind
 from pipeline.network.catalog.catalog_profile import catalog_names
-from pipeline.network.release_policy import instance_display_name
+from pipeline.network.network_connections import default_network_id
 from pipeline.network.network_constants import GROUP_CATALOG_NAME_TEMPLATE, PROVIDER_ID_TEMPLATE
 from pipeline.network.network_provider import (
     PROVIDER_ID_RULE,
@@ -18,6 +17,7 @@ from pipeline.network.network_provider import (
     ProviderNaming,
     is_valid_provider_id,
 )
+from pipeline.network.release_policy import instance_display_name
 
 PROVIDER_CONFIG_OVERRIDE_PATH_ENV = "PROVIDER_CONFIG_OVERRIDE_PATH"
 PROVIDER_ID_TEMPLATE_ENV = "NETWORK_PROVIDER_ID_TEMPLATE"

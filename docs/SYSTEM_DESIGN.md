@@ -1,12 +1,12 @@
 # System Design — Bharat Vistaar Docs Pipeline
 
-**Status:** living design (matches current code)  
-**Audience:** engineering, platform, security, ops  
+**Status:** historical DEV/PROD design, retained for migration and workflow replay context. Current storage, revision releases and retrieval are described in [README](../README.md), [PostgreSQL schema](POSTGRES_SCHEMA.md), and [Search contract](SEARCH.md).
+**Audience:** engineering, platform, security, ops
 **Related:**
-- [architecture-pipeline-rbac.md](./architecture-pipeline-rbac.md) — roles, DEV/PROD gate, login flow  
-- [system-design-diagram.png](./system-design-diagram.png) · [HTML](./system-design-diagram.html) — request/data flow  
-- [architecture-diagram.png](./architecture-diagram.png) · [HTML](./architecture-diagram.html) — containers/deployment  
-- [ENV.md](../ENV.md) — environment variables  
+- [architecture-pipeline-rbac.md](./architecture-pipeline-rbac.md) — roles, DEV/PROD gate, login flow
+- [system-design-diagram.png](./system-design-diagram.png) · [HTML](./system-design-diagram.html) — request/data flow
+- [architecture-diagram.png](./architecture-diagram.png) · [HTML](./architecture-diagram.html) — containers/deployment
+- [ENV.md](../ENV.md) — environment variables
 
 ### Diagrams (box-and-arrow engineering views)
 
@@ -42,9 +42,9 @@ gate before **PROD**.
 | Durable long work | Temporal retries + Postgres state mirror |
 
 ### Non-goals
-- Real-time chat / low-latency LLM product surface  
-- Being the CMS for content authoring beyond pipeline review  
-- Bundling GPU model servers (OCR / vLLM / embeddings run as external deps)  
+- Real-time chat / low-latency LLM product surface
+- Being the CMS for content authoring beyond pipeline review
+- Bundling GPU model servers (OCR / vLLM / embeddings run as external deps)
 
 ---
 
@@ -184,26 +184,26 @@ read and write paths stay consistent.
 
 ### 5.1 State operator — upload to DEV
 
-1. Login → Keycloak groups → JWT  
-2. `GET /auth/me` → `instances`, `permissions`, `state_roles`  
-3. Upload PDF with `instance` = allowed state  
-4. Temporal `DocumentPipelineWorkflow` runs OCR → (reviews) → chunk →  
-5. Operator **approve ingestion** → `ingest_document_from_db` → **DEV index**  
+1. Login → Keycloak groups → JWT
+2. `GET /auth/me` → `instances`, `permissions`, `state_roles`
+3. Upload PDF with `instance` = allowed state
+4. Temporal `DocumentPipelineWorkflow` runs OCR → (reviews) → chunk →
+5. Operator **approve ingestion** → `ingest_document_from_db` → **DEV index**
 6. Stage becomes `approval_for_prod` — **state work complete**
 
 ### 5.2 Super Admin — promote to PROD
 
-1. Super Admin sees all states’ documents in `approval_for_prod`  
-2. Reviews pages/chunks (optional quality check)  
-3. `POST /documents/{id}/approve-prod` (`RequireAdmin`)  
-4. Signal `approve_prod` **or** `PromoteToProdWorkflow`  
-5. `promote_document_to_prod_qdrant` → **PROD Qdrant**  
+1. Super Admin sees all states’ documents in `approval_for_prod`
+2. Reviews pages/chunks (optional quality check)
+3. `POST /documents/{id}/approve-prod` (`RequireAdmin`)
+4. Signal `approve_prod` **or** `PromoteToProdWorkflow`
+5. `promote_document_to_prod_qdrant` → **PROD Qdrant**
 6. Stage `completed`; audit `promote_to_prod`
 
 ### 5.3 Search
 
-- Operator search workbench hits API → Qdrant with optional  
-  `instance` filter for non–super-admins.  
+- Operator search workbench hits API → Qdrant with optional
+  `instance` filter for non–super-admins.
 - PROD consumers read the **PROD** collection only after promotion.
 
 ---
@@ -281,8 +281,8 @@ audit_logs
 The [legacy SQLite schema](SQLITE_SCHEMA.md) describes the importer’s source database.
 
 ### 7.3 Tenant rule
-- `instance` set **once** at create (not reassigned on upsert).  
-- Restricted users: `list_*` / get / search filtered by allowed instances.  
+- `instance` set **once** at create (not reassigned on upsert).
+- Restricted users: `list_*` / get / search filtered by allowed instances.
 - Cross-tenant access → **404**.
 
 ---
@@ -391,17 +391,17 @@ Routes: Dashboard, Documents, New Document, Document Ops, Runs, Search, Users (S
 ## 13. Deployment topology
 
 ### Dev / single host (`docker-compose.yml`)
-- All control-plane + Keycloak + MinIO + Qdrant + Temporal  
-- Inference often on host GPUs (`host.docker.internal`)  
-- Auth can run with `AUTH_DISABLED` for local bypass  
+- All control-plane + Keycloak + MinIO + Qdrant + Temporal
+- Inference often on host GPUs (`host.docker.internal`)
+- Auth can run with `AUTH_DISABLED` for local bypass
 
 ### Prod-ish (`docker-compose.prod.yml`)
-- Bound to localhost ports behind reverse proxy  
-- Secrets via env  
-- UI/API/worker/temporal/minio; vector backends may be remote  
+- Bound to localhost ports behind reverse proxy
+- Secrets via env
+- UI/API/worker/temporal/minio; vector backends may be remote
 
 ### Runtime properties
-- API + worker: **same image**, different entrypoint  
+- API + worker: **same image**, different entrypoint
 - Shared Postgres database (pooled connections per process; schema applied from `migrations/` at startup)
 - Horizontal scale: Temporal workers and API replicas scale out against the same database
 
@@ -431,9 +431,9 @@ Routes: Dashboard, Documents, New Document, Document Ops, Runs, Search, Users (S
 [ Super Admin only ] ------> promote ----> [ Qdrant PROD ]
 ```
 
-- Browser never holds MinIO keys or Temporal access.  
-- Restricted tokens cannot list other states.  
-- PROD write path requires `Permission.ADMIN`.  
+- Browser never holds MinIO keys or Temporal access.
+- Restricted tokens cannot list other states.
+- PROD write path requires `Permission.ADMIN`.
 
 ---
 
@@ -452,10 +452,10 @@ Routes: Dashboard, Documents, New Document, Document Ops, Runs, Search, Users (S
 
 ## 17. Evolution / extension points
 
-1. Explicit **“Request PROD approval”** action (today: auto-enter queue after DEV).  
+1. Explicit **“Request PROD approval”** action (today: auto-enter queue after DEV).
 2. Moving `chunk_count` / `is_demo` out of `documents.metadata` into columns if list queries slow down.
-3. Stricter per-state role on every mutation (not only global permission).  
-4. Automated quality checks before Super Admin sees queue.  
+3. Stricter per-state role on every mutation (not only global permission).
+4. Automated quality checks before Super Admin sees queue.
 
 ---
 

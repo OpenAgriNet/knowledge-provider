@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 _MIGRATION_FILE_RE = re.compile(r"^(\d{4})_[a-z0-9_]+\.sql$")
 _ADVISORY_LOCK_KEY = 7_204_911_338_105_221
-_BOOTSTRAP_VERSION = "0022"
+_BOOTSTRAP_VERSION = "0025"
 _BOOTSTRAP_FILES = (
     "00_shared.sql",
     "10_instances_access.sql",

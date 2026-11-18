@@ -8,6 +8,11 @@ from fastapi import APIRouter, HTTPException, Path, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from pipeline import db
+from pipeline.api.routers.providers import (
+    ProviderCode,
+    _require_live_management,
+    _require_provider_manager,
+)
 from pipeline.auth.deps import CurrentUser
 from pipeline.auth.groups import ROLE_STATE_ADMIN, provider_group_root
 from pipeline.network.network_connections import PublishConfigError
@@ -26,7 +31,6 @@ from pipeline.network.registry_operator import (
     read_registry_proposal,
     submit_registry_proposal,
 )
-from pipeline.api.routers.providers import ProviderCode, _require_live_management, _require_provider_manager
 
 router = APIRouter(tags=["Registry proposals"])
 NetworkId = Annotated[str, Path(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,252}$")]

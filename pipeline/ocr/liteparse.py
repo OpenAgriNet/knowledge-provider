@@ -15,6 +15,7 @@ from pipeline.documents.models import (
     PAGE_LAYOUT_MAX_ITEMS,
     PageSourceLayout,
 )
+
 from .base import OcrConfig, OcrProvider, PageDict
 
 _MAX_OUTPUT_BYTES = 32 * 1024 * 1024

@@ -7,24 +7,24 @@ from fastapi import APIRouter, Header, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from pipeline import db
-from pipeline.documents import document_validity
+from pipeline.api import api as _api
 from pipeline.auth.deps import CurrentUser, RequireUpload
 from pipeline.auth.permissions import Permission
 from pipeline.auth.tenancy import assert_document_instance_access, normalize_instance
-from pipeline.network.release_policy import (
-    index_only_mode,
-    intake_index_options,
-    managed_release_targets,
-    prod_stage_disabled,
-)
+from pipeline.documents import document_validity
 from pipeline.documents.models import (
     DocumentCohortsResponse,
     DocumentStage,
     DocumentSummary,
     RegisterRequest,
 )
+from pipeline.network.release_policy import (
+    index_only_mode,
+    intake_index_options,
+    managed_release_targets,
+    prod_stage_disabled,
+)
 from pipeline.temporal.workflows import DocumentPipelineWorkflow, SelectNetworkRevisionWorkflow
-from pipeline.api import api as _api
 
 router = APIRouter(prefix="/documents")
 
@@ -185,7 +185,10 @@ async def start_document_workflow(
             pass  # Workflow doesn't exist or is not queryable; proceed to new run
     workflow_id = _api._rerun_workflow_id(workflow_id)
 
-    index_name, auto_approve = intake_index_options(index_name, auto_approve)
+    try:
+        index_name, auto_approve = intake_index_options(index_name, auto_approve)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
     # Start new workflow
     handle = await _api.temporal_client.start_workflow(

@@ -5,11 +5,12 @@ from typing import Optional
 from fastapi import APIRouter, Header, HTTPException, Query
 
 from pipeline import db
-from pipeline.auth.deps import RequireAdmin, RequireSearch
-from pipeline.auth.tenancy import unrestricted
-from pipeline.search.index_identity import projection_doc_id, projection_owner
 from pipeline.api import api as _api
 from pipeline.api.api import _instance_scope_for_user, _require_document_for_user
+from pipeline.auth.deps import RequireAdmin, RequireSearch
+from pipeline.auth.tenancy import unrestricted
+from pipeline.network.release_policy import index_only_mode
+from pipeline.search.index_identity import projection_doc_id, projection_owner
 
 router = APIRouter()
 
@@ -21,6 +22,10 @@ async def get_document_qdrant_status(
     index_name: str | None = Query(None),
 ):
     """Return vector-index status/chunks for a document."""
+    return await _document_qdrant_status(workflow_id, user, index_name)
+
+
+async def _document_qdrant_status(workflow_id, user, index_name, *, chunk_number=None):
     from pipeline.vector_store import get_default_index_name, get_vector_store
 
     doc = _require_document_for_user(workflow_id, user)
@@ -29,8 +34,10 @@ async def get_document_qdrant_status(
     default_index = get_default_index_name()
     if index_name:
         resolved_index = default_index if index_name == "documents-index" else index_name
+    elif index_only_mode():
+        resolved_index = default_index
     else:
-        preferred = entries.get("dev") or entries.get("prod") or {}
+        preferred = entries.get(default_index) or next(iter(entries.values()), {})
         resolved_index = preferred.get("index_name") or default_index
     matching = next((entry for entry in entries.values() if entry.get("index_name") == resolved_index), None)
     if not matching and resolved_index != default_index:
@@ -40,7 +47,12 @@ async def get_document_qdrant_status(
     backend = store.backend
 
     try:
-        raw_hits = store.list_by_doc_id(resolved_index, index_doc_id, limit=1000)
+        if chunk_number is None:
+            raw_hits = store.list_by_doc_id(resolved_index, index_doc_id, limit=1000)
+        else:
+            raw_hits = store.list_by_doc_id(
+                resolved_index, index_doc_id, chunk_num=chunk_number, raw_payload=True,
+            )
     except Exception as exc:
         _api.logger.warning("Document index diagnostics unavailable backend=%s error=%s", backend, type(exc).__name__)
         raise HTTPException(
@@ -55,7 +67,12 @@ async def get_document_qdrant_status(
             continue
         if projection_owner(hit_doc_id) != str(doc["id"]) and hit.get("workflow_id") != doc["workflow_id"]:
             continue
-        normalized_hit = dict(hit)
+        if chunk_number is not None:
+            hits.append(hit)
+            continue
+        normalized_hit = dict(hit) if user.is_superadmin else {
+            key: hit[key] for key in ("_id", "chunk_num", "text") if key in hit
+        }
         chunk_num = normalized_hit.get("chunk_num")
         normalized_hit.setdefault(
             "_id",
@@ -63,6 +80,8 @@ async def get_document_qdrant_status(
         )
         normalized_hit.setdefault("chunk_number", chunk_num)
         hits.append(normalized_hit)
+    if chunk_number is not None:
+        return {"hits": hits}
     db_chunks = db.get_chunks(workflow_id, include_excluded=True)
     status = {
         "workflow_id": workflow_id,
@@ -83,8 +102,13 @@ async def list_document_qdrant_chunks(
     workflow_id: str,
     user: RequireSearch,
     index_name: str | None = Query(None),
+    chunk_number: int | None = Query(None, ge=1),
 ):
-    result = await get_document_qdrant_status(workflow_id, user, index_name=index_name)
+    if not user.is_superadmin:
+        raise HTTPException(403, "Raw index diagnostics require super admin access")
+    result = await _document_qdrant_status(
+        workflow_id, user, index_name=index_name, chunk_number=chunk_number,
+    )
     return result["hits"]
 
 

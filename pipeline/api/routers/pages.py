@@ -2,10 +2,10 @@ from fastapi import APIRouter, HTTPException
 from fastapi import Path as PathParam
 
 from pipeline import db
+from pipeline.api import api as _api
 from pipeline.auth.deps import RequireReview, RequireSearch
 from pipeline.auth.permissions import Permission
 from pipeline.documents.models import PageUpdate
-from pipeline.api import api as _api
 
 router = APIRouter()
 

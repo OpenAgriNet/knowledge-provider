@@ -85,9 +85,9 @@ class TestProviderIdFromDoc:
         "kind,instance", [("advisory", "mh"), ("scheme", "bv"), ("advisory", "default"), ("scheme", "ka")]
     )
     def test_matches_the_provider_id_sent_in_publish(self, monkeypatch, tmp_path, kind, instance):
-        from pipeline.temporal.activities.indexing import _provider_id_from_doc
         from pipeline.auth.tenancy import group_for_instance
         from pipeline.network.catalog.discovery_publish_service import DiscoveryPublishService
+        from pipeline.temporal.activities.indexing import _provider_id_from_doc
 
         _use_overrides(monkeypatch, tmp_path, '{"ka": "ka.example.com"}')
         monkeypatch.setenv("DISCOVERY_SERVICE_ENDPOINT", "https://discovery.example.com")
@@ -136,8 +136,8 @@ class _RecordsBuilt(Exception):
 class TestIngestPathsStampTheProviderId:
     @pytest.fixture
     def captured(self, monkeypatch):
-        from pipeline.temporal.activities import indexing as activities
         import pipeline.db as db
+        from pipeline.temporal.activities import indexing as activities
 
         seen = {}
 
@@ -168,6 +168,7 @@ class TestIngestPathsStampTheProviderId:
         from pipeline.temporal.activities import indexing as activities
 
         monkeypatch.setenv("PROD_VECTOR_DB_URL", "http://localhost:6333")
+        monkeypatch.setenv("PROD_VECTOR_DB_COLLECTION_NAME", "published-documents")
         monkeypatch.setenv("PROD_SCHEME_VECTOR_DB_COLLECTION_NAME", "schemes-index")
         monkeypatch.setattr("pipeline.vector_store.qdrant_store.get_qdrant_client", lambda *a, **k: MagicMock())
 

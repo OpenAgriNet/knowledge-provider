@@ -11,8 +11,7 @@ from pipeline.documents.models import (
     PAGE_LAYOUT_MAX_ITEMS,
     PageMetadata,
 )
-from pipeline.ocr import service
-from pipeline.ocr import liteparse
+from pipeline.ocr import liteparse, service
 from pipeline.ocr.liteparse import LiteParseProvider
 
 

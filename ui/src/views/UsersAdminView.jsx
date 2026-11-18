@@ -15,7 +15,7 @@ function OwnAccess({ user, isSuperAdmin, isGlobalViewer, instances, stateRoles }
   const assignments = [...new Set([...(instances ?? []).map(code => code.toLowerCase()), ...Object.keys(stateRoles ?? {})])].sort()
   const allInstances = isSuperAdmin || isGlobalViewer
   return (
-    <div className="page-shell space-y-5">
+    <div className="page-shell">
       <div>
         <h1 className="font-serif text-2xl font-semibold tracking-tight">Your access</h1>
         <p className="mt-1 text-sm text-muted-foreground">Signed in as {user?.email || user?.name || user?.username || 'your own account'}.</p>
@@ -112,7 +112,7 @@ function ManagedAccess({ canManageUsers, canManageInstances, isSuperAdmin }) {
   }
 
   return (
-    <div className="page-shell space-y-5">
+    <div className="page-shell">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="font-serif text-2xl font-semibold tracking-tight">Users</h1>
@@ -150,7 +150,7 @@ function ManagedAccess({ canManageUsers, canManageInstances, isSuperAdmin }) {
             <TabsTrigger value="instances">Instances</TabsTrigger>
           </TabsList>
           <TabsContent value="directory" className="mt-4">
-            <UserDirectory revision={revision} onEdit={(user, target) => open('access', target, user)} />
+            <UserDirectory revision={revision} instances={options} onEdit={(user, target) => open('access', target, user)} />
           </TabsContent>
           <TabsContent value="instances" className="mt-4">
             <ProviderAccessPanel isSuperAdmin={isSuperAdmin} requestedInstance={selectedInstance} revision={revision} />
@@ -159,7 +159,7 @@ function ManagedAccess({ canManageUsers, canManageInstances, isSuperAdmin }) {
       ) : canManageInstances ? (
         <ProviderAccessPanel isSuperAdmin={isSuperAdmin} requestedInstance={selectedInstance} revision={revision} />
       ) : (
-        <UserDirectory revision={revision} onEdit={(user, target) => open('access', target, user)} />
+        <UserDirectory revision={revision} instances={options} onEdit={(user, target) => open('access', target, user)} />
       )}
 
       {canManageUsers && (

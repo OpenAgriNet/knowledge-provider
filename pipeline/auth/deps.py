@@ -130,11 +130,29 @@ async def get_current_user(request: Request) -> AuthUser:
     return user
 
 
+async def scoped_current_user(request: Request, user: Annotated[AuthUser, Depends(get_current_user)]) -> AuthUser:
+    from pipeline.search.access import is_network_principal
+
+    permitted = {
+        ("POST", "/search"), ("POST", "/search/"), ("GET", "/search/collections"),
+        ("GET", "/settings/search"),
+        ("GET", "/catalog/v1/version"), ("GET", "/catalog/v1/snapshot"),
+        ("GET", "/catalog/v1/schemes"), ("GET", "/catalog/v1/tool-prompt"), ("GET", "/auth/me"),
+    }
+    path = getattr(request.scope.get("route"), "path", request.url.path)
+    try:
+        if is_network_principal(user) and (request.method, path) not in permitted:
+            raise HTTPException(403, "This principal can access only network retrieval endpoints")
+    except ValueError as exc:
+        raise HTTPException(503, "Network retrieval policy is misconfigured") from exc
+    return user
+
+
 def require_permission(permission: Permission | str) -> Callable[..., AuthUser]:
     """Dependency factory: require a logged-in user with the given permission."""
     needed = permission if isinstance(permission, Permission) else Permission(str(permission))
 
-    async def _checker(user: Annotated[AuthUser, Depends(get_current_user)]) -> AuthUser:
+    async def _checker(user: Annotated[AuthUser, Depends(scoped_current_user)]) -> AuthUser:
         if not user.has_permission(needed):
             raise HTTPException(
                 403,
@@ -156,4 +174,4 @@ RequirePipeline = Annotated[AuthUser, Depends(require_permission(Permission.PIPE
 RequireSearch = Annotated[AuthUser, Depends(require_permission(Permission.SEARCH))]
 RequireAdmin = Annotated[AuthUser, Depends(require_permission(Permission.ADMIN))]
 RequireManageUsers = Annotated[AuthUser, Depends(require_permission(Permission.MANAGE_USERS))]
-CurrentUser = Annotated[AuthUser, Depends(get_current_user)]
+CurrentUser = Annotated[AuthUser, Depends(scoped_current_user)]

@@ -79,7 +79,7 @@ def test_snapshot_has_one_entry_per_live_scheme_document(catalog_db):
 def test_scheme_metadata_and_promote_rebuild(catalog_db):
     db, scheme_catalog = catalog_db
     v0 = db.get_catalog_meta()["version"]
-    _doc(db, "wf-pkvy-1", code="pkvy")
+    _doc(db, "wf-pkvy-1", code="pkvy", stage="registered")
     result = scheme_catalog.apply_scheme_metadata(
         "wf-pkvy-1",
         code="pkvy",
@@ -92,6 +92,7 @@ def test_scheme_metadata_and_promote_rebuild(catalog_db):
     assert result["catalog_version"] is not None
     assert result["catalog_version"] > v0
 
+    db.update_document_fields("wf-pkvy-1", stage="completed")
     entry = db.get_catalog_entry("pkvy")
     assert entry is not None
     assert entry["status"] == "live"
@@ -106,7 +107,6 @@ def test_code_rename_pending_reindex(catalog_db):
     result = scheme_catalog.apply_scheme_metadata(
         "wf-rename",
         code="new-code",
-        name="New",
     )
     assert result["pending_reindex"] is True
     doc = db.get_document("wf-rename")
@@ -201,14 +201,14 @@ def test_prepare_records_scheme_payload():
     assert len(records) == 1
     r = records[0]
     assert r["type"] == "scheme"
-    assert r["scheme_code"] == "pkvy"
-    assert r["scheme_name"].startswith("Paramparagat")
+    assert r["document_identity"]["code"] == "pkvy"
+    assert r["document_identity"]["name"].startswith("Paramparagat")
     # The curator alias leads; bootstrap and derived aliases are merged in so
     # the scheme is not searchable by its exact name alone.
-    assert r["scheme_aliases"][0] == "PKVY"
-    assert len(r["scheme_aliases"]) > 1
-    assert "paramparagat krishi vikas yojana" in {a.lower() for a in r["scheme_aliases"]}
-    assert r["instance_name"] == "Default"
+    assert r["document_identity"]["aliases"][0] == "PKVY"
+    assert len(r["document_identity"]["aliases"]) > 1
+    assert "paramparagat krishi vikas yojana" in {a.lower() for a in r["document_identity"]["aliases"]}
+    assert r["instance"] == "default"
     assert r["chunk_id"] == r["_id"]
     assert r["chunk_index"] == 1
 
@@ -293,7 +293,7 @@ def test_catalog_api_snapshot(asgi_client):
     assert {s["scheme_code"] for s in body["vector_schemes"]} == {"pkvy", "pm-ddky"}
     assert "tool_prompts" in body
     assert "legacy_schemes" in body
-    assert body["collections"]["scheme_qdrant"]["name"] == "schemes-index"
+    assert body["collections"]["scheme_qdrant"]["name"] == "documents-index"
 
     r = asgi_client.get("/catalog/v1/tool-prompt")
     assert r.status_code == 200

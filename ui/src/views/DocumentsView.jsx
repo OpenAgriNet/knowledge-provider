@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import PageNavigation from '../components/PageNavigation'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
@@ -10,7 +11,7 @@ import { InstanceBadge } from '../components/InstanceBadge'
 import { fetchAllDocuments, fetchJson, formatCompactDateTime, getDocumentListLabel, getDocumentMetaLabel, getStageLabel } from '../lib/pipelineUi'
 import { formatInstanceLabel } from '../lib/instanceLabels'
 import { useAuth } from '../auth/AuthProvider'
-import { Search, FileText, AlertTriangle, RefreshCw, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react'
+import { Search, FileText, AlertTriangle, RefreshCw, Loader2 } from 'lucide-react'
 
 const PAGE_SIZE = 10
 const ALL_PROVIDERS = '__all__'
@@ -76,10 +77,11 @@ export default function DocumentsView() {
 
   useEffect(() => {
     setPage(1)
-  }, [query, stageFilter, instanceFilter, showFailed, showReindex])
+  }, [query, stageFilter, instanceFilter, showFailed, showReindex, documents])
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
-  const paginated = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
+  const currentPage = Math.min(page, totalPages)
+  const paginated = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE)
   const activeFilters = [
     stageFilter !== 'all' && `Stage: ${getStageLabel(stageFilter, { compact: true })}`,
     selectedInstance !== ALL_PROVIDERS && `Instance: ${formatInstanceLabel(selectedInstance) ?? 'Default instance'}`,
@@ -93,7 +95,7 @@ export default function DocumentsView() {
       : null
 
   return (
-    <div className="page-shell space-y-4">
+    <div className="page-shell">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-serif font-semibold text-foreground">Documents</h1>
@@ -270,32 +272,7 @@ export default function DocumentsView() {
           </table>
         </div>
 
-        {!loading && filtered.length > PAGE_SIZE && (
-          <div className="flex items-center justify-between px-4 py-3 border-t border-border">
-            <span className="text-xs text-muted-foreground">
-              Showing {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, filtered.length)} of {filtered.length}
-            </span>
-            <div className="flex items-center gap-1">
-              <Button variant="ghost" size="icon" className="h-7 w-7" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>
-                <ChevronLeft className="h-3.5 w-3.5" />
-              </Button>
-              {Array.from({ length: totalPages }).map((_, i) => (
-                <button
-                  key={i}
-                  className={`h-7 w-7 rounded text-xs font-medium transition-colors ${
-                    page === i + 1 ? 'bg-primary text-primary-foreground' : 'hover:bg-accent text-muted-foreground'
-                  }`}
-                  onClick={() => setPage(i + 1)}
-                >
-                  {i + 1}
-                </button>
-              ))}
-              <Button variant="ghost" size="icon" className="h-7 w-7" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>
-                <ChevronRight className="h-3.5 w-3.5" />
-              </Button>
-            </div>
-          </div>
-        )}
+        {!loading && <PageNavigation page={currentPage} pageSize={PAGE_SIZE} total={filtered.length} onPageChange={setPage} />}
       </div>
     </div>
   )

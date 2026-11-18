@@ -8,8 +8,9 @@ Knowledge Provider receives files, pushed JSON, and content fetched from approve
 
 Full narrative docs (read these before deep architectural changes, don't re-derive):
 - `README.md` — what the system does, API surface, supported inputs, auth model
-- `docs/SYSTEM_DESIGN.md` — C4 diagrams, containers, DEV/PROD indexing, stage/activity table
-- `docs/architecture-pipeline-rbac.md` — login flow, roles, DEV vs Super-Admin-PROD gate
+- `docs/SEARCH.md` — current search contract, network authorization, and recorded BV query comparison
+- `docs/SYSTEM_DESIGN.md` — historical DEV/PROD architecture, retained for migration context
+- `docs/architecture-pipeline-rbac.md` — historical login and publication gates
 - `docs/MASTER_SCHEME_CATALOG_AND_AI_SYNC_DESIGN.md` — original scheme catalog design (historical: the Postgres master catalog and Redis push it describes were removed; the pull API `/catalog/v1/*` remains)
 - `ENV.md` — full annotated environment variable reference (`.env.example` for a working template)
 
@@ -113,4 +114,4 @@ React 18 + Vite + Tailwind v4 + Radix UI operator console (not a plain upload fo
 
 ### Scripts (`scripts/`)
 
-Operational tools, not one-off hacks — e.g. `list_failed_workflows.py`, `terminate_stuck_workflows.py`, `keycloak_bootstrap_docs_pipeline.py`, `drop_legacy_marqo_columns.py`, `backfill_provider_id.py` (sets `provider_id` on existing DEV/PROD chunks; dry run unless `--apply`). The legacy migration kit is in the workspace beside the backup. Check here before writing a new maintenance script — an equivalent likely exists.
+Operational tools include `list_failed_workflows.py`, `terminate_stuck_workflows.py`, `keycloak_bootstrap_docs_pipeline.py`, `backfill_provider_id.py`, and `export_search_contract.py`. Run `python -m scripts.export_search_contract` to regenerate the published request schema. The archived migration kit stays beside the backup. Check existing tools before adding another.

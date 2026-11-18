@@ -62,7 +62,7 @@ def test_vector_diagnostics_return_only_attributed_points_without_writing(provid
     write = Mock()
     monkeypatch.setattr(db, "upsert_document_index_status", write)
     hits = [
-        {"instance": "rice", "workflow_id": "rice-document", "text": "owned passage"},
+        {"instance": "rice", "workflow_id": "rice-document", "text": "owned passage", "text_for_embedding": "private diagnostic"},
         {"instance": "rice", "workflow_id": "other-rice-document", "text": "other document"},
         {"instance": "cotton", "workflow_id": "other-document", "text": "other provider"},
         {"text": "unattributed passage"},
@@ -73,9 +73,35 @@ def test_vector_diagnostics_return_only_attributed_points_without_writing(provid
     response = provider_client.get("/documents/rice-document/qdrant")
     assert response.status_code == 200, response.text
     assert [hit["text"] for hit in response.json()["hits"]] == ["owned passage"]
+    assert "text_for_embedding" not in response.json()["hits"][0]
     assert provider_client.get("/documents/rice-document/qdrant?index_name=another-index").status_code == 404
     list_points.assert_called_once_with("published-advisories", legacy_key, limit=1000)
     write.assert_not_called()
+
+
+def test_index_only_diagnostics_ignore_retired_collection_on_restore(provider_client, monkeypatch):
+    monkeypatch.setenv("KP_INDEX_ONLY", "true")
+    monkeypatch.setattr(vector_store, "get_default_index_name", lambda: "documents-rebuilt")
+    doc_id = "6138e9a2-d87d-4ffb-9fa6-135d710b5c85"
+    fingerprint = "b" * 32
+    monkeypatch.setattr(db, "get_document", lambda _: {
+        "id": doc_id, "workflow_id": "rice-document", "instance": "rice",
+        "document_id": fingerprint,
+        "index_status": {"dev": {"index_name": "documents-index", "doc_id": "legacy-id"}},
+    })
+    monkeypatch.setattr(db, "get_chunks", lambda *args, **kwargs: [{}])
+    list_points = Mock(return_value=[])
+    monkeypatch.setattr(vector_store, "get_vector_store", lambda: SimpleNamespace(backend="qdrant", list_by_doc_id=list_points))
+
+    response = provider_client.get("/documents/rice-document/qdrant")
+    chunk_response = provider_client.get("/documents/rice-document/qdrant/chunks?chunk_number=1")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "missing"
+    assert chunk_response.status_code == 403
+    assert [call.args[:2] for call in list_points.call_args_list] == [
+        ("documents-rebuilt", f"document:{doc_id}:{fingerprint}"),
+    ]
 
 
 def test_provider_index_summary_uses_scoped_counts(provider_client, monkeypatch):

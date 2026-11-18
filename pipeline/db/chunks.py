@@ -18,7 +18,7 @@ from . import common, connection, document_reads, jobs
 _CHUNK_SELECT = """
     SELECT c.id, c.document_id, c.chunk_number, c.original_text, c.edited_text, c.token_count,
            c.page_start, c.page_end, c.source_spans, c.section_title, c.content_type,
-           c.is_reference, c.is_reviewed, c.is_excluded, c.reviewer_notes, c.tags,
+           c.is_reference, c.is_reviewed, c.is_excluded, c.reviewer_notes, c.tags, c.metadata_review,
            c.created_at, c.updated_at, d.metadata->'chunking' AS chunking
     FROM chunks c
     JOIN documents d ON d.id = c.document_id
@@ -56,6 +56,7 @@ def _chunk_from_row(row: Optional[dict], workflow_id: str) -> Optional[dict]:
         "is_excluded": bool(row["is_excluded"]),
         "reviewer_notes": row["reviewer_notes"],
         "tags": row.get("tags") or [],
+        "metadata_review": row.get("metadata_review") or {},
     }
     return {k: common._clean(v) for k, v in chunk.items()}
 
@@ -84,6 +85,13 @@ def save_chunks(workflow_id: str, chunks: list[dict]):
             (doc_uuid,),
         ).fetchone()
         run_number = int(previous["run_number"] or 0) + 1
+        prior_annotations = {
+            row["chunk_number"]: row for row in conn.execute(
+                """SELECT chunk_number, original_text, edited_text, source_spans, metadata_review
+                   FROM chunks WHERE document_id = %s::uuid AND metadata_review ? 'accepted'""",
+                (doc_uuid,),
+            ).fetchall()
+        }
         conn.execute("DELETE FROM chunks WHERE document_id = %s::uuid", (doc_uuid,))
         for chunk in chunks:
             spans = _load_json_value(
@@ -94,13 +102,20 @@ def save_chunks(workflow_id: str, chunks: list[dict]):
             )
             page_start = int(chunk.get("page_start") or 1)
             page_end = max(int(chunk.get("page_end") or page_start), page_start)
+            prior = prior_annotations.get(chunk.get("chunk_number"))
+            saved_text = chunk.get("edited_text") if chunk.get("edited_text") is not None else chunk.get("original_text")
+            prior_text = (prior["edited_text"] if prior["edited_text"] is not None else prior["original_text"]) if prior else None
+            metadata_review = (
+                {"accepted": prior["metadata_review"]["accepted"]}
+                if prior and prior_text == saved_text and prior["source_spans"] == spans else {}
+            )
             conn.execute(
                 """
                 INSERT INTO chunks (document_id, chunk_number, original_text, edited_text,
                                     token_count, page_start, page_end, source_spans,
                                     section_title, content_type, is_reference, is_reviewed,
-                                    is_excluded, reviewer_notes)
-                VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                    is_excluded, reviewer_notes, metadata_review)
+                VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     doc_uuid,
@@ -117,6 +132,7 @@ def save_chunks(workflow_id: str, chunks: list[dict]):
                     bool(chunk.get("is_reviewed")),
                     bool(chunk.get("is_excluded")),
                     chunk.get("reviewer_notes"),
+                    Jsonb(metadata_review),
                 ),
             )
         meta_patch: dict[str, Any] = {}

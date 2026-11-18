@@ -1,15 +1,23 @@
-from typing import Optional
+from typing import Annotated, Optional
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi import Path as PathParam
+from pydantic import BaseModel, Field
 
 from pipeline import db
+from pipeline.api import api as _api
 from pipeline.auth.deps import RequireReview, RequireSearch
 from pipeline.auth.permissions import Permission
-from pipeline.search.index_identity import projection_doc_id, recorded_doc_id
-from pipeline.network.release_policy import index_only_mode
 from pipeline.documents.models import ChunkUpdate, DocumentStage
-from pipeline.api import api as _api
+from pipeline.metadata.metadata_edits import (
+    MetadataEdit,
+    document_review_facts,
+    supplied_facts,
+)
+from pipeline.metadata.schema_packs import intake_subject_categories
+from pipeline.network.release_policy import index_only_mode
+from pipeline.search.index_identity import recorded_doc_id
 
 router = APIRouter()
 
@@ -48,7 +56,8 @@ async def search_chunks_across_documents(
 async def list_chunks(workflow_id: str, user: RequireSearch, include_excluded: bool = False):
     """Get all chunks for a document. Postgres-first for speed."""
     _api._require_document_for_user(workflow_id, user)
-    return db.get_chunks(workflow_id, include_excluded=include_excluded)
+    chunks = db.get_chunks(workflow_id, include_excluded=include_excluded)
+    return [{key: value for key, value in chunk.items() if key != "metadata_review"} for chunk in chunks]
 
 
 @router.get("/documents/{workflow_id}/chunks/{chunk_num}")
@@ -57,7 +66,7 @@ async def get_chunk(workflow_id: str, user: RequireSearch, chunk_num: int = Path
     _api._require_document_for_user(workflow_id, user)
     chunk = db.get_chunk(workflow_id, chunk_num)
     if chunk:
-        return chunk
+        return {key: value for key, value in chunk.items() if key != "metadata_review"}
 
     raise HTTPException(404, f"Chunk {chunk_num} not found")
 
@@ -128,7 +137,9 @@ async def update_chunk(
         # If excluding a chunk and document is completed (already ingested), remove from the vector index
         if data.is_excluded and not old_chunk.get("is_excluded", False):
             if index_only_mode() or doc.get("stage") == "completed":
-                doc_id = projection_doc_id(doc) if index_only_mode() else recorded_doc_id(doc, "dev")
+                from pipeline.vector_store import get_default_index_name
+
+                doc_id = recorded_doc_id(doc, get_default_index_name())
                 if doc_id:
                     vector_result = _api.delete_single_chunk_from_index(doc_id, chunk_num)
                     if vector_result.get("deleted"):
@@ -202,3 +213,96 @@ async def reset_chunk(
     )
 
     return db.get_chunk(workflow_id, chunk_num)
+
+
+@router.get("/documents/{workflow_id}/metadata-review")
+async def get_metadata_review(
+    workflow_id: str, user: RequireSearch, chunk_number: int | None = Query(None, ge=1),
+):
+    """Read the accepted metadata and any proposal for the current text."""
+    from pipeline.db.metadata_review import get_review
+
+    doc = _api._require_document_for_user(workflow_id, user)
+    try:
+        can_edit = user.has_permission_for_instance(Permission.REVIEW, doc.get("instance"))
+        review = get_review(doc["id"], chunk_number, editable=can_edit)
+        if not can_edit:
+            review.pop("pending", None)
+        else:
+            review["category_options"] = intake_subject_categories()
+        if chunk_number is None:
+            review["excluded_areas"] = (doc.get("knowledge_metadata") or {}).get("excluded_coverage_areas", [])
+            review["supplied"] = supplied_facts(doc)
+        else:
+            review["inherited"] = document_review_facts(doc, get_review(doc["id"], None))
+        return review
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.post("/documents/{workflow_id}/metadata-review/generate")
+async def generate_metadata_review(
+    workflow_id: str, user: RequireReview, chunk_number: int | None = Query(None, ge=1),
+):
+    """Generate a proposal from the document or one explicitly requested chunk."""
+    from pipeline.db.metadata_review import StaleMetadata, generate_review
+
+    doc = _api._require_document_for_user(workflow_id, user, Permission.REVIEW)
+    try:
+        return await generate_review(doc["id"], chunk_number)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except StaleMetadata as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except Exception as exc:
+        _api.logger.warning("Metadata generation failed (%s)", type(exc).__name__)
+        raise HTTPException(503, "Metadata generation unavailable. Check the model configuration and saved text.") from exc
+
+
+class AcceptMetadataReview(BaseModel):
+    proposal_id: UUID
+    selected: list[Annotated[int, Field(ge=0)]] = Field(max_length=256)
+
+
+@router.post("/documents/{workflow_id}/metadata-review/accept")
+async def accept_metadata_review(
+    workflow_id: str, body: AcceptMetadataReview, user: RequireReview,
+    chunk_number: int | None = Query(None, ge=1),
+):
+    """Accept selected fields from the current proposal."""
+    from pipeline.db.metadata_review import StaleMetadata, accept_review
+
+    doc = _api._require_document_for_user(workflow_id, user, Permission.REVIEW)
+    try:
+        return accept_review(doc["id"], workflow_id, chunk_number, str(body.proposal_id), body.selected, actor_user_id=user.user_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except StaleMetadata as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+
+@router.put("/documents/{workflow_id}/metadata-review")
+async def edit_metadata_review(
+    workflow_id: str, body: MetadataEdit, user: RequireReview,
+    chunk_number: int | None = Query(None, ge=1),
+):
+    """Save reviewed overrides or restore inheritance at either scope."""
+    from pipeline.db.metadata_review import StaleMetadata, get_review, save_review
+
+    doc = _api._require_document_for_user(workflow_id, user, Permission.REVIEW)
+    try:
+        response = save_review(doc["id"], workflow_id, chunk_number, body, actor_user_id=user.user_id)
+        if chunk_number is None:
+            response["supplied"] = supplied_facts(doc)
+        else:
+            response["inherited"] = document_review_facts(doc, get_review(doc["id"], None))
+        return response
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except StaleMetadata as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc

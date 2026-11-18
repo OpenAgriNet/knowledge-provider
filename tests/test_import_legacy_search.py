@@ -19,7 +19,7 @@ class LegacyCollection:
 
 
 @pytest.mark.db
-def test_import_uses_published_text_without_reopening_review(db_connection):
+def test_legacy_import_is_preserved_as_evidence_and_not_reused_for_serving(db_connection):
     import_legacy_search = load_migration_tool("import_legacy_search").import_legacy_search
     project = load_migration_tool("rebuild_qdrant_from_postgres")._projection
     fingerprint = "a" * 32
@@ -41,7 +41,8 @@ def test_import_uses_published_text_without_reopening_review(db_connection):
     revisions = db.list_document_revisions(document_id)
     assert len(revisions["revisions"]) == 1
     assert revisions["releases"] == []
-    records = project(document, private_rehearsal=False)
-    assert records[0]["text"] == "Previously searchable passage."
-    assert records[0]["instance"] == "bv"
-    assert "primary_language" not in records[0]
+    assert project(document, private_rehearsal=False) is None
+    assert db.get_latest_completed_index_revision(document_id) is None
+    assert db.get_revision_snapshot(document_id, revisions["revisions"][0]["id"])["snapshot"]["passages"][0]["text"] == (
+        "Previously searchable passage."
+    )

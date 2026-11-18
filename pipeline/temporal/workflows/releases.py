@@ -82,6 +82,8 @@ class ReingestionWorkflow:
                 ingest_args.extend([10, None, True])
                 if workflow.patched("freeze-index-only-reingest-v1"):
                     ingest_args.extend([True, workflow.info().workflow_id])
+            elif workflow.patched("freeze-local-reingest-v1"):
+                ingest_args.extend([10, None, False, True, workflow.info().workflow_id])
             result = await workflow.execute_activity(
                 ingest_document_from_db,
                 args=ingest_args,

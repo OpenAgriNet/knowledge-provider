@@ -93,7 +93,7 @@ class TestNameOnRecords:
 
         assert record["name"] == "Primary title"
         assert record["description"] == "Primary description"
-        assert record["knowledge_metadata"]["localized"]["fr-ca"]["title"] == "Titre"
+        assert record["localized_labels"]["fr-ca"]["title"] == "Titre"
 
     @pytest.mark.unit
     def test_filename_stem_used_when_nothing_else(self):
@@ -111,8 +111,8 @@ class _RecordsBuilt(Exception):
 class TestIngestPathsCarryTheDisplayName:
     @pytest.fixture
     def captured(self, monkeypatch):
-        from pipeline.temporal.activities import indexing as activities
         import pipeline.db as db
+        from pipeline.temporal.activities import indexing as activities
 
         seen = {}
 
@@ -148,6 +148,7 @@ class TestIngestPathsCarryTheDisplayName:
         from pipeline.temporal.activities import indexing as activities
 
         monkeypatch.setenv("PROD_VECTOR_DB_URL", "http://localhost:6333")
+        monkeypatch.setenv("PROD_VECTOR_DB_COLLECTION_NAME", "published-documents")
         monkeypatch.setattr("pipeline.vector_store.qdrant_store.get_qdrant_client", lambda *a, **k: MagicMock())
 
         with pytest.raises(_RecordsBuilt):

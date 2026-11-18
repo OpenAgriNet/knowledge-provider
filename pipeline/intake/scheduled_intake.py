@@ -16,9 +16,6 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapte
 
 from pipeline import db
 from pipeline.intake.source_fetch import SourceFile, fetch_source
-from pipeline.network.release_policy import index_only_mode, source_release_target
-from pipeline.object_storage import ObjectReference, load_object_store_config, open_object_store
-from pipeline.ocr.service import allowed_ocr_providers
 from pipeline.intake.source_intake import (
     BinarySource,
     CrawlReleasePolicyConflict,
@@ -39,6 +36,9 @@ from pipeline.intake.webhook_mapping import (
     load_intake_template,
     map_source_submission,
 )
+from pipeline.network.release_policy import index_only_mode, source_release_target
+from pipeline.object_storage import ObjectReference, load_object_store_config, open_object_store
+from pipeline.ocr.service import allowed_ocr_providers
 
 logger = logging.getLogger(__name__)
 Code = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")]

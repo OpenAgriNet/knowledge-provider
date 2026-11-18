@@ -1,4 +1,8 @@
-"""Protocol status codes and the legacy PostgreSQL catalog type mapping."""
+"""Protocol status codes and configured document catalog schemas."""
+
+import json
+import os
+import re
 
 BECKN_VERSION = "2.0.0"
 
@@ -12,33 +16,33 @@ PROVIDER_ID_TEMPLATE = "{instance}.{network_id}"
 GROUP_CATALOG_NAME_TEMPLATE = "{group_name} {catalog_name}"
 
 # Knowledge kinds the pipeline serves, and the network schema each maps to.
-# ``catalogs.type`` stores the schema name; code asks this map what a type means
-# instead of comparing ``openagrinet:*`` strings. The scheme mapping is a
-# placeholder (ADR 0003 types schemes as KnowledgeAdvisory) - change it here only.
+# A document kind is a catalog partition. Several kinds may share a schema.
 KIND_SCHEME = "scheme"
 KIND_ADVISORY = "advisory"
 KIND_VIDEO = "video"
 KIND_TO_CATALOG_TYPE = {
-    KIND_SCHEME: "openagrinet:AgricultureResource",
+    KIND_SCHEME: "openagrinet:KnowledgeAdvisory",
     KIND_ADVISORY: "openagrinet:KnowledgeAdvisory",
     KIND_VIDEO: "openagrinet:VideoResource",
 }
-CATALOG_TYPE_TO_KIND = {schema: kind for kind, schema in KIND_TO_CATALOG_TYPE.items()}
+
+
+def document_kind_schemas() -> dict[str, str]:
+    mapping = json.loads(os.environ.get("DOCUMENT_KIND_SCHEMAS", "{}"))
+    if not isinstance(mapping, dict) or any(
+        not isinstance(kind, str) or not re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*", kind)
+        or not isinstance(schema, str) or not re.fullmatch(r"[a-z0-9]+:[A-Za-z0-9]+", schema)
+        for kind, schema in mapping.items()
+    ):
+        raise ValueError("DOCUMENT_KIND_SCHEMAS must map lowercase kinds to qualified schema names")
+    return {**KIND_TO_CATALOG_TYPE, **mapping}
 
 
 def catalog_type_for_kind(kind: str) -> str:
     """``catalogs.type`` for a knowledge kind; ValueError for an unknown kind."""
     try:
-        return KIND_TO_CATALOG_TYPE[(kind or "").strip().lower()]
+        return document_kind_schemas()[(kind or "").strip().lower()]
     except KeyError:
         raise ValueError(
             f"Unknown document kind {kind!r}. Use one of: {', '.join(KIND_TO_CATALOG_TYPE)}"
         ) from None
-
-
-def kind_for_catalog_type(catalog_type: str) -> str:
-    """Knowledge kind a ``catalogs.type`` stands for; ValueError for an unknown type."""
-    try:
-        return CATALOG_TYPE_TO_KIND[catalog_type]
-    except KeyError:
-        raise ValueError(f"Unknown catalog type {catalog_type!r}") from None

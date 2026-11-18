@@ -1,6 +1,5 @@
 """Document downloads, exports, and chunk provenance routes."""
 
-import hashlib
 import logging
 from pathlib import Path
 from typing import Optional
@@ -10,11 +9,18 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from pipeline import db
-from pipeline.auth.deps import RequireSearch
-from pipeline.search.index_identity import projection_doc_id
-from pipeline.object_storage import is_object_uri, parse_object_uri
 from pipeline.api import api as _api
 from pipeline.api.api import _build_provenance_links, _require_document_for_user
+from pipeline.auth.deps import RequireSearch
+from pipeline.network.release_policy import index_only_mode
+from pipeline.object_storage import is_object_uri, parse_object_uri
+from pipeline.search.index_identity import projection_doc_id
+from pipeline.search.passage_projection import (
+    _document_fields_from_doc,
+    _prepare_records,
+    _validity_fields_from_doc,
+)
+from pipeline.temporal.activities.indexing import _draft_provider_id
 
 router = APIRouter()
 
@@ -47,25 +53,15 @@ async def export_chunks(workflow_id: str, user: RequireSearch, include_excluded:
     doc = _require_document_for_user(workflow_id, user)
 
     chunks = db.get_chunks(workflow_id, include_excluded=include_excluded)
-    doc_id = projection_doc_id(doc)
-    filename = doc.get("filename", "")
-    name = filename.replace(".pdf", "")
-
-    records = []
-    for chunk in chunks:
-        text = chunk.get("edited_text") or chunk.get("original_text", "")
-        chunk_num = chunk.get("chunk_number", 0)
-
-        records.append({
-            "_id": hashlib.md5(f"{doc_id}_{chunk_num}_{text[:50]}".encode()).hexdigest(),
-            "doc_id": doc_id,
-            "name": name,
-            "text": text,
-            "chunk_num": chunk_num,
-            "token_count": chunk.get("token_count", 0),
-            "source": "docs-pipeline"
-        })
-
+    if include_excluded:
+        chunks = [{**chunk, "is_excluded": False} for chunk in chunks]
+    records = _prepare_records(
+        projection_doc_id(doc), doc.get("filename", ""), chunks,
+        workflow_id=workflow_id, instance=doc.get("instance"),
+        pages=db.get_pages(workflow_id), source_first=index_only_mode() or doc.get("canonical_input_type") == "structured_text",
+        provider_id=_draft_provider_id(doc), source_url=db.get_document_source_url(doc["id"]),
+        **_document_fields_from_doc(doc), **_validity_fields_from_doc(doc),
+    )
     return records
 
 

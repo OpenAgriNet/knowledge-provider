@@ -42,10 +42,11 @@ export default function SearchWorkbenchView() {
   const [collections, setCollections] = useState([])
   const [language, setLanguage] = useState('')
   const [strictLanguage, setStrictLanguage] = useState(false)
-  const [subjectId, setSubjectId] = useState('')
   const [areaScheme, setAreaScheme] = useState('')
   const [areaCode, setAreaCode] = useState('')
   const [season, setSeason] = useState('')
+  const selectedCollection = collections.find(item => item.name === settings.indexName)
+  const networkSearch = Boolean(selectedCollection?.network_id)
 
   useEffect(() => {
     fetchSettings()
@@ -74,7 +75,6 @@ export default function SearchWorkbenchView() {
       return
     }
     const applicability = {
-      ...(subjectId.trim() && { agriculture_subject_ids: [subjectId.trim()] }),
       ...(areaCode.trim() && { coverage_areas: [{ codeScheme: areaScheme.trim(), areaCode: areaCode.trim() }] }),
       ...(season.trim() && { seasons: [season.trim()] }),
     }
@@ -88,6 +88,10 @@ export default function SearchWorkbenchView() {
           query: effectiveQuery,
           ...(schemeWorkflowId && { document_workflow_id: schemeWorkflowId }),
           index_name: settings.indexName,
+          ...(networkSearch && {
+            network_id: selectedCollection.network_id,
+            document_kind: selectedCollection.document_kind,
+          }),
           search_mode: settings.searchMethod,
           top_k: settings.limit,
           candidate_cap: settings.candidateCap,
@@ -103,7 +107,7 @@ export default function SearchWorkbenchView() {
           hybrid_rrf_k: settings.hybridRrfK,
           ...(language.trim() && { language: language.trim(), strict_language: strictLanguage }),
           ...(Object.keys(applicability).length > 0 && { applicability }),
-          include_raw_hits: true,
+          include_raw_hits: !networkSearch,
         })
       })
       setResults(data.hits || [])
@@ -122,7 +126,6 @@ export default function SearchWorkbenchView() {
     setSettings({ ...DEFAULT_SEARCH_SETTINGS, indexName: collections[0]?.name || DEFAULT_SEARCH_SETTINGS.indexName })
     setLanguage('')
     setStrictLanguage(false)
-    setSubjectId('')
     setAreaScheme('')
     setAreaCode('')
     setSeason('')
@@ -135,7 +138,7 @@ export default function SearchWorkbenchView() {
   const changedSettings = Object.entries(settings).filter(([key, value]) => DEFAULT_SEARCH_SETTINGS[key] !== value)
 
   return (
-    <div className="page-shell space-y-4">
+    <div className="page-shell">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-serif font-semibold text-foreground">Search Workbench</h1>
@@ -152,8 +155,8 @@ export default function SearchWorkbenchView() {
       </div>
 
       <div className="panel p-4 space-y-3">
-        <div className="flex gap-2">
-          <div className="relative flex-1">
+        <div className="flex flex-col gap-3 sm:flex-row">
+          <div className="relative min-w-0 flex-1">
             <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
               placeholder="Enter your search query..."
@@ -185,10 +188,6 @@ export default function SearchWorkbenchView() {
             <Input value={language} placeholder="For example, hi or gu-IN" onChange={(event) => setLanguage(event.target.value)} />
           </label>
           <label className="space-y-1 text-xs text-muted-foreground">
-            <span>Subject taxonomy ID</span>
-            <Input value={subjectId} onChange={(event) => setSubjectId(event.target.value)} />
-          </label>
-          <label className="space-y-1 text-xs text-muted-foreground">
             <span>Location code system</span>
             <Input value={areaScheme} onChange={(event) => setAreaScheme(event.target.value)} />
           </label>
@@ -201,12 +200,12 @@ export default function SearchWorkbenchView() {
             <Input value={season} onChange={(event) => setSeason(event.target.value)} />
           </label>
         </div>
-        {language.trim() && <label className="flex items-center gap-2 text-xs text-muted-foreground">
+        {language.trim() && <label className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <input type="checkbox" checked={strictLanguage} onChange={(event) => setStrictLanguage(event.target.checked)} />
           Require an exact language match
         </label>}
 
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <button
             className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
             onClick={() => setShowAdvanced(!showAdvanced)}
@@ -280,8 +279,9 @@ export default function SearchWorkbenchView() {
                   onChange={e => update('rerankMode', e.target.value)}
                 >
                   <option value="none">None</option>
-                  <option value="cross-encoder">Cross-encoder</option>
-                  <option value="colbert">ColBERT</option>
+                  <option value="bm25lite">Keyword ranking</option>
+                  <option value="rrf-lite">Rank fusion</option>
+                  <option value="heuristic">Text and metadata ranking</option>
                 </select>
               </div>
               <div>
@@ -344,7 +344,7 @@ export default function SearchWorkbenchView() {
           <p className="text-sm font-medium">Which scheme do you mean?</p>
           <div className="flex flex-wrap gap-2">
             {schemeChoices.map(({ workflow_id, name, code, provider }) => (
-              <Button key={workflow_id} type="button" variant="outline" size="sm"
+              <Button key={workflow_id} type="button" variant="outline" size="sm" className="h-auto max-w-full whitespace-normal break-words text-left"
                 onClick={() => handleSearch(resultQuery, workflow_id)}>
                 {name} ({code}{provider ? ` · ${provider}` : ''})
               </Button>
@@ -355,41 +355,41 @@ export default function SearchWorkbenchView() {
 
       {searched && !searching && (
         <div className="space-y-3">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="text-sm text-muted-foreground">
               {results.length} results · {settings.searchMethod} · α={settings.alpha}
             </span>
-            <button
+            {!networkSearch && <button
               className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
               onClick={() => setShowCandidates(!showCandidates)}
             >
               <Code className="h-3.5 w-3.5" />
               {showCandidates ? 'Hide' : 'Show'} candidate hits
-            </button>
+            </button>}
           </div>
 
           {results.length > 0 ? (
             results.map((result, i) => (
               <div key={i} className="panel p-4 space-y-2">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
                     <span className="text-lg font-semibold font-serif text-foreground">{Number(result._score || 0).toFixed(2)}</span>
                     {result.workflow_id ? (
-                      <Link className="text-sm font-medium text-primary hover:underline"
+                      <Link className="min-w-0 break-words text-sm font-medium text-primary hover:underline"
                         to={`/documents/${encodeURIComponent(result.workflow_id)}${result.revision_id
                           ? `?tab=revisions&revision=${encodeURIComponent(result.revision_id)}` : `?tab=chunks&chunk=${result.chunk_num || ''}`}`}>
                         {getSearchResultTitle(result)}
                       </Link>
                     ) : <span className="text-sm font-medium">{getSearchResultTitle(result)}</span>}
                   </div>
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                     {result.text_language && <span>{result.text_language}{result.language_fallback ? ' · source fallback' : ''}</span>}
                     <span>Chunk {result.chunk_num}</span>
                     <span>·</span>
                     <span>Pages {result.page_start}–{result.page_end}</span>
                   </div>
                 </div>
-                <p className="text-sm text-foreground/80 leading-relaxed">
+                <p className="break-words text-sm leading-relaxed text-foreground/80">
                   {highlightSearchSnippet(getSearchResultSnippet(result), getSearchHighlights(result)).map((part, index) => (
                     part.highlighted
                       ? <mark key={`${part.text}-${index}`} className="bg-warning/20 text-foreground px-0.5 rounded">{part.text}</mark>
@@ -413,7 +413,7 @@ export default function SearchWorkbenchView() {
             </div>
           )}
 
-          {showCandidates && (
+          {!networkSearch && showCandidates && (
             <div className="panel">
               <div className="panel-header">
                 <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Candidate Hits</span>

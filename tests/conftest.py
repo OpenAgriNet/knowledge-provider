@@ -166,9 +166,10 @@ class CapturingVectorStore:
 
 @pytest.fixture
 def capturing_store(monkeypatch):
-    """The API's vector store swapped for a CapturingVectorStore."""
+    """Isolate retrieval/ranking tests from persistence; liveness has separate DB tests."""
     store = CapturingVectorStore()
     monkeypatch.setattr("pipeline.vector_store.get_vector_store", lambda: store)
+    monkeypatch.setattr("pipeline.db.visible_document_hits", lambda hits, **_: hits)
     return store
 
 

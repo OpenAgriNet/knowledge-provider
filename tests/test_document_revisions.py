@@ -192,4 +192,4 @@ async def test_ingest_freezes_a_revision_without_releasing_it(db_connection, sam
     assert history["releases"] == []
     snapshot = db.get_revision_snapshot(doc_id, history["revisions"][0]["id"])["snapshot"]
     assert snapshot["passages"][0]["text"] == "A draft can be released later."
-    assert snapshot["passages"][0]["doc_id"] != db.get_document_index_status(workflow, "documents-index")["doc_id"]
+    assert snapshot["passages"][0]["doc_id"] == db.get_document_index_status(workflow, "documents-index")["doc_id"]

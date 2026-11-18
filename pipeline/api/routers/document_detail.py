@@ -22,9 +22,9 @@ from pipeline.documents.models import (
     DocumentStage,
     NetworkPublishOutcome,
 )
+from pipeline.intake.source_intake import public_source_job
 from pipeline.network.network_constants import RESULT_REJECTED
 from pipeline.object_storage import is_object_uri, parse_object_uri
-from pipeline.intake.source_intake import public_source_job
 
 router = APIRouter()
 
@@ -113,6 +113,7 @@ def _build_document_detail(doc: dict) -> DocumentDetail:
         prod_ready_requested_by_username=doc.get("prod_ready_requested_by_username"),
         valid_from=doc.get("valid_from"),
         valid_to=doc.get("valid_to"),
+        validity=doc.get("validity"),
     )
 
 def _build_stage_io_payload(workflow_id: str, current_stage: Optional[str] = None) -> dict:

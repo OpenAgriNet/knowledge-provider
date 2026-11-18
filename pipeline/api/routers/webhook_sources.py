@@ -19,8 +19,6 @@ from pipeline.auth.config import load_auth_config
 from pipeline.auth.deps import CurrentUser, _bearer_token
 from pipeline.auth.jwt import decode_verified_claims
 from pipeline.auth.oidc import issue_service_token
-from pipeline.network.release_policy import index_only_mode, source_release_target
-from pipeline.object_storage import ObjectReference, parse_object_uri
 from pipeline.intake.source_intake import (
     IntakeConflict,
     canonical_json_sha256,
@@ -37,6 +35,12 @@ from pipeline.intake.webhook_mapping import (
     load_intake_template,
     map_source_submission,
 )
+from pipeline.metadata.intake_profiles import (
+    IntakeProfileConfigurationError,
+    IntakeProfileValidationError,
+)
+from pipeline.network.release_policy import index_only_mode, source_release_target
+from pipeline.object_storage import ObjectReference, parse_object_uri
 
 router = APIRouter(prefix="/webhook/sources", tags=["webhooks"])
 knowledge_router = APIRouter(prefix="/knowledge/intake", tags=["knowledge intake"])
@@ -113,13 +117,18 @@ async def preview_mapping(provider: ProviderCode, request: Request, user: Curren
         _, payload = await _read_payload(request)
         preview = MappingPreview.model_validate(payload)
         documents = await asyncio.to_thread(map_source_submission, preview.fixture, preview.mapping)
+        normalized = [document.with_intake_profile() for _, document in documents]
+    except IntakeProfileConfigurationError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except IntakeProfileValidationError as exc:
+        raise HTTPException(422, str(exc)) from exc
     except (ValueError, RecursionError) as exc:
         if isinstance(exc, ValidationError):
             issue = exc.errors(include_input=False, include_url=False, include_context=False)[0]
             field = ".".join(map(str, issue["loc"]))
             raise HTTPException(422, f"{field or 'Mapping output'}: {issue['msg']}") from exc
         raise HTTPException(422, "The mapping could not transform this sample.") from exc
-    return {"documents": [document.model_dump(mode="json", exclude_none=True) for _, document in documents]}
+    return {"documents": [document.model_dump(mode="json", exclude_none=True) for document in normalized]}
 
 
 @knowledge_router.get("/{provider}/{source}/deliveries")
@@ -183,13 +192,17 @@ def put_source_policy(provider: ProviderCode, source: SourceKey, body: SourcePol
         raise HTTPException(422, "A release network requires automatic release")
     try:
         selected_mapping = _resolve_mapping(body, provider)
-        examples = map_source_submission(body.fixture, selected_mapping)
+        examples = [document.with_intake_profile() for _, document in map_source_submission(body.fixture, selected_mapping)]
         if not examples:
             raise ValueError("Fixture must map at least one document")
         if body.enabled and body.auto_release and not index_only_mode():
-            for kind in {document.kind for _, document in examples}:
+            for kind in {document.kind for document in examples}:
                 if not source_release_target(kind, body.release_network_id, provider=provider):
                     raise ValueError("The source release network is unavailable for this document kind")
+    except IntakeProfileConfigurationError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except IntakeProfileValidationError as exc:
+        raise HTTPException(422, str(exc)) from exc
     except (OSError, TypeError, ValueError) as exc:
         raise HTTPException(422, "The mapping fixture or release policy is invalid") from exc
 
@@ -350,6 +363,10 @@ async def receive_event(
         mapping_id, receipts = await asyncio.to_thread(_register_delivery, provider, source, idempotency_key, payload, raw, sender)
     except IntakeConflict as exc:
         raise HTTPException(409, str(exc)) from exc
+    except IntakeProfileConfigurationError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except IntakeProfileValidationError as exc:
+        raise HTTPException(422, str(exc)) from exc
     except (ValueError, RecursionError) as exc:
         raise HTTPException(422, "The webhook payload does not match the source mapping") from exc
 

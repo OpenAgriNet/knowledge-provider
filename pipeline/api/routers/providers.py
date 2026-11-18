@@ -8,14 +8,15 @@ from fastapi import APIRouter, HTTPException, Path
 from pydantic import BaseModel, StringConstraints
 
 from pipeline import db
-from pipeline.intake import provider_sources, scheduled_intake
 from pipeline.auth import keycloak_admin
 from pipeline.auth.config import load_auth_config
 from pipeline.auth.deps import CurrentUser, RequireAdmin
 from pipeline.auth.groups import ROLE_STATE_ADMIN
 from pipeline.auth.models import AuthUser
 from pipeline.auth.permissions import Permission
+from pipeline.auth.provider_directory import list_document_instance_codes, list_visible_providers
 from pipeline.auth.tenancy import allowed_instances, default_instance, portal_instance
+from pipeline.intake import provider_sources, scheduled_intake
 
 router = APIRouter(prefix="/providers", tags=["providers"])
 logger = logging.getLogger(__name__)
@@ -70,7 +71,7 @@ def list_providers(user: CurrentUser):
     )
     if scope == []:
         raise HTTPException(403, "Provider administrator access is required")
-    return {"providers": db.list_provider_instances(scope)}
+    return {"providers": list_visible_providers(scope)}
 
 
 @router.get("/readable")
@@ -81,7 +82,7 @@ def list_readable_providers(user: CurrentUser):
     scope = allowed_instances(user)
     if scope is not None:
         return {"providers": sorted(scope)}
-    return {"providers": [row["provider"] for row in db.list_provider_instances(None)]}
+    return {"providers": sorted(list_document_instance_codes())}
 
 
 @router.put("/{provider}")

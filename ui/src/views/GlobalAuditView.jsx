@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import PageNavigation from '../components/PageNavigation'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Skeleton } from '../components/ui/skeleton'
@@ -11,7 +12,7 @@ import {
   SelectValue,
 } from '../components/ui/select'
 import { describeAuditChange, fetchJson, formatCompactDateTime, summarizeAuditAction } from '../lib/pipelineUi'
-import { ChevronDown, ChevronUp, ChevronLeft, ChevronRight, ClipboardList, ExternalLink } from 'lucide-react'
+import { ChevronDown, ChevronUp, ClipboardList, ExternalLink } from 'lucide-react'
 
 const actionColors = {
   stage_change: 'info',
@@ -36,32 +37,23 @@ export default function GlobalAuditView() {
   const [total, setTotal] = useState(0)
 
   useEffect(() => {
-    setPage(1)
-  }, [filter])
-
-  useEffect(() => {
-    fetchLogs()
-  }, [filter, page])
-
-  async function fetchLogs() {
+    const controller = new AbortController()
+    const params = new URLSearchParams({ limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE })
+    if (filter !== 'all') params.set('action_type', filter)
     setLoading(true)
-    try {
-      const offset = (page - 1) * PAGE_SIZE
-      const url = filter === 'all'
-        ? `/audit?limit=${PAGE_SIZE}&offset=${offset}`
-        : `/audit?action_type=${filter}&limit=${PAGE_SIZE}&offset=${offset}`
-      const data = await fetchJson(url)
+    fetchJson(`/audit?${params}`, { signal: controller.signal }).then(data => {
+      if (controller.signal.aborted) return
       setLogs(data.logs || [])
       setTotal(data.total || 0)
-    } catch {
+    }).catch(() => {
+      if (controller.signal.aborted) return
       setLogs([])
       setTotal(0)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+    }).finally(() => {
+      if (!controller.signal.aborted) setLoading(false)
+    })
+    return () => controller.abort()
+  }, [filter, page])
 
   const toggleExpand = (id) => {
     const next = new Set(expanded)
@@ -72,7 +64,7 @@ export default function GlobalAuditView() {
 
   if (loading && logs.length === 0) {
     return (
-      <div className="page-shell space-y-4">
+      <div className="page-shell">
         <Skeleton className="h-8 w-32" />
         <Skeleton className="h-4 w-48 mt-1" />
         <Skeleton className="h-[400px] rounded-lg mt-4" />
@@ -81,18 +73,21 @@ export default function GlobalAuditView() {
   }
 
   return (
-    <div className="page-shell space-y-4">
-      <div className="flex items-center justify-between">
+    <div className="page-shell">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-serif font-semibold text-foreground">Audit Log</h1>
           <p className="text-sm text-muted-foreground mt-1">Change provenance across the system</p>
         </div>
-        <Select value={filter} onValueChange={setFilter}>
-          <SelectTrigger className="w-[200px]">
+        <Select value={filter} onValueChange={value => {
+          setPage(1)
+          setFilter(value)
+        }}>
+          <SelectTrigger aria-label="Filter by action" className="w-full sm:w-[200px]">
             <SelectValue placeholder="Filter by action" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All Actions ({total})</SelectItem>
+            <SelectItem value="all">All actions</SelectItem>
             <SelectItem value="stage_change">{summarizeAuditAction('stage_change')}</SelectItem>
             <SelectItem value="page_edit">{summarizeAuditAction('page_edit')}</SelectItem>
             <SelectItem value="chunk_edit">{summarizeAuditAction('chunk_edit')}</SelectItem>
@@ -221,32 +216,7 @@ export default function GlobalAuditView() {
         )}
       </div>
 
-      {total > PAGE_SIZE && (
-        <div className="flex items-center justify-between">
-          <span className="text-xs text-muted-foreground">
-            Showing {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, total)} of {total}
-          </span>
-          <div className="flex items-center gap-1">
-            <Button variant="ghost" size="icon" className="h-7 w-7" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>
-              <ChevronLeft className="h-3.5 w-3.5" />
-            </Button>
-            {Array.from({ length: totalPages }).map((_, i) => (
-              <button
-                key={i}
-                className={`h-7 w-7 rounded text-xs font-medium transition-colors ${
-                  page === i + 1 ? 'bg-primary text-primary-foreground' : 'hover:bg-accent text-muted-foreground'
-                }`}
-                onClick={() => setPage(i + 1)}
-              >
-                {i + 1}
-              </button>
-            ))}
-            <Button variant="ghost" size="icon" className="h-7 w-7" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>
-              <ChevronRight className="h-3.5 w-3.5" />
-            </Button>
-          </div>
-        </div>
-      )}
+      <PageNavigation page={page} pageSize={PAGE_SIZE} total={total} onPageChange={setPage} disabled={loading} />
     </div>
   )
 }

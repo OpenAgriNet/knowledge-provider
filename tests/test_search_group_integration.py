@@ -11,11 +11,20 @@ import zlib
 import pytest
 from qdrant_client import QdrantClient
 
+from pipeline import db
 from pipeline.vector_store import qdrant_store
 from tests.test_qdrant_validity import TODAY, clock_at
 
 INDEX = "group-integration"
 VECTOR_SIZE = 8
+
+
+def serving_record(record, collection=INDEX):
+    workflow = record.get("workflow_id", record["doc_id"])
+    db.upsert_document(workflow, record["doc_id"], "test.txt", "blob://test.txt", instance=record["instance"], kind=record.get("type", "advisory"), code=record["doc_id"])
+    db.save_chunks(workflow, [{"chunk_number": 1, "original_text": record["text"]}])
+    db.upsert_document_index_status(workflow, collection, doc_id=record["doc_id"], chunk_count_indexed=1, status="indexed")
+    return {"chunk_num": 1, "is_reference": False, **record}
 
 CHUNKS = [
     {"doc_id": "mh-current", "instance": "mh", "text": "cotton pest advisory for kharif"},
@@ -42,11 +51,12 @@ def local_store(monkeypatch, test_client):
     """A real QdrantVectorStore over an in-memory engine, loaded with CHUNKS and
     wired in as the API's vector store."""
     monkeypatch.setenv("EMBEDDING_VECTOR_SIZE", str(VECTOR_SIZE))
+    monkeypatch.setenv("VECTOR_DB_COLLECTION_NAME", INDEX)
     monkeypatch.setattr(qdrant_store, "embed_passages", lambda texts, **_: [bag_of_words_vector(t) for t in texts])
     monkeypatch.setattr(qdrant_store, "embed_query", lambda query, **_: bag_of_words_vector(query))
 
     store = qdrant_store.QdrantVectorStore(client=QdrantClient(":memory:"), clock=clock_at(TODAY))
-    store.upsert(INDEX, [{"chunk_num": 1, "is_reference": False, **chunk} for chunk in CHUNKS])
+    store.upsert(INDEX, [serving_record(chunk) for chunk in CHUNKS])
     monkeypatch.setattr("pipeline.vector_store.get_vector_store", lambda: store)
     return store
 
@@ -107,12 +117,12 @@ def test_group_and_validity_compose_in_the_engine(local_store, test_client):
 @pytest.mark.api
 def test_search_offers_ambiguous_schemes_and_filters_the_selected_workflow(local_store, test_client):
     local_store.upsert(INDEX, [
-        {
+        serving_record({
             "doc_id": f"scheme-document-{code}", "workflow_id": f"scheme-workflow-{code}",
-            "instance": "bv", "text": "Water support eligibility information.",
+            "instance": "bv", "type": "scheme", "text": "Water support eligibility information.",
             "scheme_code": code, "scheme_name": name, "scheme_aliases": ["water support"],
             "chunk_num": 1, "is_reference": False,
-        }
+        })
         for code, name in [("first", "Water Support North"), ("second", "Water Support South")]
     ])
     response = search(test_client, query="Who can apply for water support?", group="bv")

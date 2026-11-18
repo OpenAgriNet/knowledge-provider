@@ -3,14 +3,23 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from pipeline import db
-from pipeline.network.catalog import scheme_catalog
+from pipeline.api import api as _api
 from pipeline.auth.deps import CurrentUser, RequireAdmin
 from pipeline.auth.models import AuthUser
 from pipeline.auth.tenancy import allowed_instances, normalize_instance
-from pipeline.api import api as _api
+from pipeline.network.catalog import scheme_catalog
+from pipeline.network.release_policy import publish_to_network_enabled
+from pipeline.search.access import is_network_principal, network_search_collection
 
 router = APIRouter()
+
+
+def _authorize_catalog_network(user: AuthUser, network_id: str | None) -> str | None:
+    if network_id:
+        network_search_collection(user, network_id, "scheme", None)
+    elif publish_to_network_enabled() or is_network_principal(user):
+        raise HTTPException(422, "network_id is required for a released catalog")
+    return network_id
 
 
 def _catalog_service_keys() -> list[str]:
@@ -60,14 +69,15 @@ def _catalog_read_scope(request: Request, user: AuthUser, instance: str | None =
 
 
 @router.get("/catalog/v1/version")
-async def catalog_version(request: Request, user: CurrentUser):
+async def catalog_version(request: Request, user: CurrentUser, network_id: str | None = Query(None)):
     """Cheap poll for cache warmers: { version, updated_at }."""
-    _catalog_read_scope(request, user)
-    meta = db.get_catalog_meta()
+    scope = _catalog_read_scope(request, user)
+    _authorize_catalog_network(user, network_id)
+    snapshot = scheme_catalog.build_snapshot(allowed_providers=scope, network_id=network_id)
     return {
-        "version": int(meta.get("version") or 0),
-        "updated_at": meta.get("updated_at"),
-        "notes": meta.get("notes"),
+        "version": snapshot["catalog_version"],
+        "updated_at": snapshot["updated_at"],
+        "etag": snapshot["etag"], "network_id": network_id,
     }
 
 
@@ -79,15 +89,18 @@ async def catalog_schemes(
     status: str = Query("live"),
     include_pending: bool = Query(False),
     network_visible: Optional[bool] = Query(None),
+    network_id: str | None = Query(None),
 ):
     """List schemes from the master catalog (vector-indexed + filters)."""
     scope = _catalog_read_scope(request, user, instance)
+    _authorize_catalog_network(user, network_id)
     snap = scheme_catalog.build_snapshot(
         instance=instance,
         allowed_providers=scope,
         status=status,
         include_pending=include_pending,
         network_visible=network_visible,
+        network_id=network_id,
     )
     return {
         "catalog_version": snap["catalog_version"],
@@ -106,6 +119,7 @@ async def catalog_snapshot(
     status: str = Query("live"),
     include_pending: bool = Query(False),
     network_visible: Optional[bool] = Query(None),
+    network_id: str | None = Query(None),
 ):
     """
     Full catalog snapshot for OAN / provider warmers.
@@ -114,20 +128,23 @@ async def catalog_snapshot(
     collections metadata, and monotonic catalog_version.
     """
     scope = _catalog_read_scope(request, user, instance)
+    _authorize_catalog_network(user, network_id)
     return scheme_catalog.build_snapshot(
         instance=instance,
         allowed_providers=scope,
         status=status,
         include_pending=include_pending,
         network_visible=network_visible,
+        network_id=network_id,
     )
 
 
 @router.get("/catalog/v1/tool-prompt")
-async def catalog_tool_prompt(request: Request, user: CurrentUser):
+async def catalog_tool_prompt(request: Request, user: CurrentUser, network_id: str | None = Query(None)):
     """Prompt fragments only (for AI system prompt assembly)."""
     scope = _catalog_read_scope(request, user)
-    snap = scheme_catalog.build_snapshot(allowed_providers=scope)
+    _authorize_catalog_network(user, network_id)
+    snap = scheme_catalog.build_snapshot(allowed_providers=scope, network_id=network_id)
     return {
         "catalog_version": snap["catalog_version"],
         "updated_at": snap["updated_at"],
@@ -139,15 +156,16 @@ async def catalog_tool_prompt(request: Request, user: CurrentUser):
 
 
 @router.post("/catalog/v1/rebuild")
-async def catalog_rebuild(request: Request, user: RequireAdmin):
+async def catalog_rebuild(request: Request, user: RequireAdmin, network_id: str | None = Query(None)):
     """Admin: bump the catalog version (entries are computed from documents)."""
     from pipeline.auth.permissions import Permission
 
     # Admin JWT always OK; service key also accepted for automation
     if not _service_key_ok(request) and not user.has_permission(Permission.ADMIN):
         raise HTTPException(403, "Rebuild requires admin")
+    _authorize_catalog_network(user, network_id)
     version = scheme_catalog.rebuild_catalog_from_documents(reason="admin_rebuild")
-    snap = scheme_catalog.build_snapshot()
+    snap = scheme_catalog.build_snapshot(allowed_providers=allowed_instances(user), network_id=network_id)
     _api._log_audit(
         workflow_id="__catalog__",
         action_type="catalog_rebuild",

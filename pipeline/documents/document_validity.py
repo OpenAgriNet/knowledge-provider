@@ -1,24 +1,19 @@
-"""
-The validity period a document's chunks are searchable in.
-
-A document is only worth answering from for as long as its content still
-holds. This module owns that rule: what a legal period is, the period an
-uploader's document starts life with, and whether a period is live on a given
-day. A period always has a start; its end is optional, and an absent end means
-the document never expires. Pure - no env, no I/O, no db - so the API can validate an approver's edit,
-the ingest activity can stamp the same period onto every chunk, and the vector
-store can build a search filter from it without any of them re-deriving it.
-
-`pipeline/activities.py` stamps the period onto chunk payloads as
-`start_date` / `end_date`; `pipeline/vector_store/qdrant_store.py` filters on
-those fields at search time; `pipeline/api/api.py` validates approver input here.
-"""
+"""OAN document validity and the calendar days used by search."""
 
 import os
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Callable, Optional
 from zoneinfo import ZoneInfo
+
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 # Operators think in calendar dates, not instants - a period is stored,
 # exchanged and filtered as a plain `YYYY-MM-DD` day.
@@ -41,6 +36,59 @@ class DocumentValidityError(ValueError):
 def system_clock() -> datetime:
     """Evaluate applicability dates in the deployment's configured timezone."""
     return datetime.now(ZoneInfo(os.environ.get("KNOWLEDGE_TIMEZONE", "UTC")))
+
+
+class TimePeriod(BaseModel):
+    """OAN TimePeriod shared by Knowledge Advisory and Knowledge Resource."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    startsAt: AwareDatetime | None = None
+    endsAt: AwareDatetime | None = None
+
+    @field_validator("startsAt", "endsAt", mode="before")
+    @classmethod
+    def parse_boundary(cls, value, info):
+        if isinstance(value, str) and len(value) == 10:
+            day = date.fromisoformat(value)
+            boundary = time.min if info.field_name == "startsAt" else time.max
+            return datetime.combine(day, boundary, tzinfo=system_clock().tzinfo)
+        if value is not None and not isinstance(value, (str, datetime)):
+            raise ValueError("Use an ISO date or timestamp")
+        return value
+
+    @model_validator(mode="after")
+    def check_bounds(self):
+        if self.startsAt is None and self.endsAt is None:
+            raise ValueError("Set at least one validity boundary or omit validity")
+        if self.startsAt and self.endsAt and self.startsAt > self.endsAt:
+            raise ValueError("Validity start cannot follow its end")
+        return self
+
+    @model_serializer(mode="wrap")
+    def omit_empty_bounds(self, handler):
+        return {key: value for key, value in handler(self).items() if value is not None}
+
+    def calendar_days(self) -> dict:
+        tz = system_clock().tzinfo
+        return {
+            "valid_from": self.startsAt.astimezone(tz).date().isoformat() if self.startsAt else None,
+            "valid_to": self.endsAt.astimezone(tz).date().isoformat() if self.endsAt else None,
+        }
+
+
+def storage_value(period: TimePeriod | None) -> dict | None:
+    return period.model_dump(mode="json", exclude_none=True) if period else None
+
+
+def read_validity(metadata: dict) -> TimePeriod | None:
+    """Read the schema field or convert old date bounds at the restore boundary."""
+    if "validity" in metadata:
+        value = metadata["validity"]
+    else:
+        value = {key: metadata[legacy] for key, legacy in (("startsAt", "valid_from"), ("endsAt", "valid_to"))
+                 if metadata.get(legacy)}
+    return TimePeriod.model_validate(value) if value is not None and value != {} else None
 
 
 @dataclass(frozen=True)

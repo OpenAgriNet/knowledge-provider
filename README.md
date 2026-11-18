@@ -514,7 +514,7 @@ Translation data is surfaced through the page model and review endpoints.
 - `GET /documents/{workflow_id}/qdrant`
 - `GET /documents/{workflow_id}/qdrant/chunks`
 - `POST /documents/{workflow_id}/reingest`
-- `POST /search` — only answers from documents whose validity period covers today; `valid_on` asks about another day and `include_expired` drops the filter. Optional `group` (e.g. `mh`) limits results to one group's documents; omitted means every group, and the response's `effective_config.group` echoes what was applied (see `docs/openapi-search.yaml`)
+- `POST /search` validates retrieval controls and filters before candidate selection. `document_kind` and `document_code` select an exact document identity across eligible documents. `group` narrows the caller's existing instance access. Network requests require an authenticated principal grant and `network_id`; the server resolves the collection and returns only the selected, current, enabled release. Local operator requests may use `valid_on` or `include_expired` for inspection. See [search contract and BV examples](docs/SEARCH.md).
 - `GET /indexes/summary`
 - `GET /indexes/{index_name}/settings`
 - `GET /indexes/{index_name}/stats`

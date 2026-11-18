@@ -21,6 +21,8 @@ import {
   Trash2,
 } from 'lucide-react'
 import { useAuth } from '../auth/AuthProvider'
+import DocumentChunk from '../components/DocumentChunk'
+import MetadataReview from '../components/MetadataReview'
 import DocumentHeaderSummary from '../components/DocumentHeaderSummary'
 import DocumentRevisionPanel from '../components/DocumentRevisionPanel'
 import PipelineStepper from '../components/PipelineStepper'
@@ -39,12 +41,10 @@ import {
 } from '../components/ui/alert-dialog'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
-import { Checkbox } from '../components/ui/checkbox'
 import { Input } from '../components/ui/input'
 import { Skeleton } from '../components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { Textarea } from '../components/ui/textarea'
-import { DOCUMENT_VALIDITY_ENABLED } from '../config'
 import { displayNameError, filenameStem } from '../lib/displayName'
 import {
   fetchJson,
@@ -101,18 +101,6 @@ function PanelNotice({ tone = 'error', title, message }) {
   )
 }
 
-/**
- * Validity the document is searchable in. The start is prefilled from what the
- * server stamped at upload; the end is deliberately blank-able - an empty end
- * means the document never expires, which is the default every upload gets.
- * Mirrors pipeline/document_validity.py; the server revalidates whatever is sent.
- */
-function validateValidity(validFrom, validTo) {
-  if (!validFrom) return 'Set a start date.'
-  if (validTo && validTo < validFrom) return 'End date cannot be before the start date.'
-  return ''
-}
-
 // The type is chosen at upload and fixed afterwards: it decides the catalog the
 // document lives in, so this panel only displays it.
 const DOCUMENT_KIND_LABELS = {
@@ -126,21 +114,12 @@ export function DocumentClassificationPanel({ doc, workflowId, canClassify, onSa
   const savedName = doc.name || filenameStem(doc.filename)
   const [name, setName] = useState(savedName)
   const nameLocked = !canClassify || Boolean(doc.ingested_at)
-  const [validFrom, setValidFrom] = useState(doc.valid_from || todayISODate())
-  // Blank when the document has no end date, which is the normal case - an
-  // empty field here reads as "never expires", not as "not filled in yet".
-  const [validTo, setValidTo] = useState(doc.valid_to || '')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
-  const validityError = DOCUMENT_VALIDITY_ENABLED
-    ? validateValidity(validFrom, validTo)
-    : ''
   const nameError = displayNameError(name)
   const nameChanged = name.trim() !== savedName
-  const canSave =
-    !nameError &&
-    !validityError
+  const canSave = !nameError && !nameLocked
 
   async function save() {
     if (!canSave || saving) return
@@ -150,14 +129,7 @@ export function DocumentClassificationPanel({ doc, workflowId, canClassify, onSa
       await fetchJson(`/documents/${workflowId}/scheme-metadata`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...(nameChanged ? { name: name.trim() } : {}),
-          // Omitted entirely when the feature is off, so classifying a
-          // document leaves whatever period the upload stamped untouched.
-          ...(DOCUMENT_VALIDITY_ENABLED
-            ? { valid_from: validFrom, valid_to: validTo }
-            : {}),
-        }),
+        body: JSON.stringify({ name: name.trim() }),
       })
       await onSaved()
     } catch (err) {
@@ -167,18 +139,11 @@ export function DocumentClassificationPanel({ doc, workflowId, canClassify, onSa
     }
   }
 
-  const alreadySaved =
-    !nameChanged
-    && (!DOCUMENT_VALIDITY_ENABLED
-      || (doc.valid_from === validFrom && (doc.valid_to || '') === validTo))
+  const alreadySaved = !nameChanged
 
   return (
     <div className="space-y-2 rounded-md border border-border bg-muted/30 p-3">
-      <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-        {DOCUMENT_VALIDITY_ENABLED
-          ? 'Document type and validity — used by the Master Catalog / AI layer'
-          : 'Document type — used by the Master Catalog / AI layer'}
-      </p>
+      <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Document identity</p>
       <div className="flex flex-wrap items-end gap-2">
         <div className="flex flex-col gap-1">
           <label htmlFor="classification-display-name" className="text-[10px] text-muted-foreground">
@@ -199,31 +164,6 @@ export function DocumentClassificationPanel({ doc, workflowId, canClassify, onSa
             {DOCUMENT_KIND_LABELS[doc.kind] || doc.kind || '—'}
           </span>
         </div>
-        {DOCUMENT_VALIDITY_ENABLED && (
-          <>
-            <div className="flex flex-col gap-1">
-              <span className="text-[10px] text-muted-foreground">Valid from</span>
-              <Input
-                type="date"
-                className="h-8 w-[150px] text-xs"
-                value={validFrom}
-                disabled={!canClassify}
-                onChange={e => setValidFrom(e.target.value)}
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <span className="text-[10px] text-muted-foreground">Valid until (optional)</span>
-              <Input
-                type="date"
-                className="h-8 w-[150px] text-xs"
-                value={validTo}
-                min={validFrom}
-                disabled={!canClassify}
-                onChange={e => setValidTo(e.target.value)}
-              />
-            </div>
-          </>
-        )}
         <div className="flex flex-col gap-1">
           <span className="text-[10px] text-muted-foreground">Code</span>
           <span className="flex h-8 items-center rounded-md border border-dashed border-input px-2 text-xs text-muted-foreground">
@@ -248,15 +188,6 @@ export function DocumentClassificationPanel({ doc, workflowId, canClassify, onSa
           </ul>
         </div>
       ) : null}
-      {DOCUMENT_VALIDITY_ENABLED && canClassify && validityError ? (
-        <p className="text-xs text-destructive">{validityError}</p>
-      ) : null}
-      {DOCUMENT_VALIDITY_ENABLED && canClassify && !validityError ? (
-        <p className="text-[11px] text-muted-foreground">
-          Search only answers from this document from the start date onwards. Leave
-          the end date blank and it never expires.
-        </p>
-      ) : null}
       {canClassify && nameError ? <p className="text-xs text-destructive">{nameError}</p> : null}
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
       {!canClassify ? (
@@ -264,14 +195,6 @@ export function DocumentClassificationPanel({ doc, workflowId, canClassify, onSa
       ) : null}
     </div>
   )
-}
-
-/** Today in the `YYYY-MM-DD` form the API stores and <input type="date"> uses. */
-function todayISODate() {
-  const now = new Date()
-  const month = String(now.getMonth() + 1).padStart(2, '0')
-  const day = String(now.getDate()).padStart(2, '0')
-  return `${now.getFullYear()}-${month}-${day}`
 }
 
 // Which permission each mutating action requires. Approvals / edits are
@@ -381,9 +304,6 @@ export default function DocumentOpsView() {
   const [currentPage, setCurrentPage] = useState(1)
   const [message, setMessage] = useState('')
   const [pageEdits, setPageEdits] = useState({})
-  const [chunkEdits, setChunkEdits] = useState({})
-  const [chunkTagEdits, setChunkTagEdits] = useState({})
-  const [chunkTagNotice, setChunkTagNotice] = useState('')
   const [translationEdits, setTranslationEdits] = useState({})
   const [requestedTranslation, setRequestedTranslation] = useState('')
   const [translationSaving, setTranslationSaving] = useState(false)
@@ -547,7 +467,9 @@ export default function DocumentOpsView() {
       const force = forcePanels || {}
       const pageCount = Number(docData?.page_count || 0)
       const chunkCount = Number(docData?.chunk_count || 0)
-      const wantPages = force.pages || stageWantsPages(stage, pageCount) || tab === 'ocr' || tab === 'translation'
+      const structuredText = docData?.canonical_input_type === 'structured_text'
+      const wantPages = force.pages || (structuredText && pageCount > 0) || stageWantsPages(stage, pageCount) ||
+        tab === 'ocr' || tab === 'translation'
       const wantChunks = force.chunks || stageWantsChunks(stage, chunkCount) || tab === 'chunks'
       const wantRuntime = force.runtime || stageWantsRuntime(stage) || tab === 'debug'
       const wantIndex = force.index || tab === 'index'
@@ -1443,6 +1365,23 @@ export default function DocumentOpsView() {
               {/* Chunks Review */}
               <TabsContent value="chunks" className="m-0 mt-0 data-[state=inactive]:hidden">
                 <div className="space-y-3 px-3 py-3 sm:px-4">
+                  {doc.canonical_input_type === 'structured_text' && pages.length > 0 && (
+                    <details className="panel space-y-3 p-3">
+                      <summary className="cursor-pointer text-sm font-medium">Full document text</summary>
+                      <div className="space-y-3 whitespace-pre-wrap break-words text-sm">
+                        {pages.map(page => (
+                          <p key={page.page_number}>{page.edited_markdown ?? page.original_markdown}</p>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+                  <MetadataReview key={workflowId} workflowId={workflowId} canEdit={canEdit} onSaved={() => load({ soft: true })} />
+                  {doc.knowledge_metadata?.attributes && (
+                    <details className="panel space-y-3 p-3">
+                      <summary className="cursor-pointer text-sm font-medium">Document attributes</summary>
+                      <pre className="whitespace-pre-wrap break-words text-xs">{JSON.stringify(doc.knowledge_metadata.attributes, null, 2)}</pre>
+                    </details>
+                  )}
                   {doc.stage === 'chunking' && chunkingProgress && (
                     <div className="panel p-3 space-y-2">
                       <div className="flex items-center justify-between text-xs">
@@ -1461,11 +1400,11 @@ export default function DocumentOpsView() {
                     </div>
                   )}
 
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <span className="text-sm font-medium text-foreground">{chunks.length} chunks</span>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                      <span className="text-sm font-medium text-foreground">{chunks.length} {chunks.length === 1 ? 'chunk' : 'chunks'}</span>
                       <span className="text-xs text-muted-foreground">
-                        {reviewedChunks} reviewed · {chunks.filter(c => c.reindex_dirty).length} dirty
+                        {reviewedChunks} reviewed
                       </span>
                     </div>
                     {canEdit && (
@@ -1482,104 +1421,33 @@ export default function DocumentOpsView() {
                     )}
                   </div>
 
-                  {chunks.filter(c => c.reindex_dirty).length > 0 && (
+                  {doc.reindex_required && (
                     <div className="reindex-banner text-xs">
                       <RefreshCw className="h-3.5 w-3.5 text-warning shrink-0" />
-                      <span>{chunks.filter(c => c.reindex_dirty).length} section(s) have been edited — re-ingest required to sync search</span>
+                      <span>Re-ingest this document to sync saved changes with search.</span>
                     </div>
                   )}
 
                   {chunks.length > 0 ? (
                     <div className="space-y-2">
                       {chunks.map(chunk => (
-                        <div
-                          key={chunk.chunk_number}
-                          id={`chunk-card-${chunk.chunk_number}`}
-                          className={`panel scroll-mt-4 transition-shadow ${
-                            chunk.reindex_dirty ? 'border-warning/40' : ''
-                          } ${
-                            highlightedChunk === chunk.chunk_number
-                              ? 'ring-2 ring-primary/70 shadow-md bg-primary/5'
-                              : ''
-                          }`}
-                        >
-                          <div className="px-4 py-2.5 border-b border-border bg-surface-warm space-y-2">
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-3 flex-wrap">
-                                <span className="text-xs font-medium">Chunk {chunk.chunk_number}</span>
-                                <span className="text-xs text-muted-foreground">
-                                  Pages {chunk.page_start}–{chunk.page_end}
-                                </span>
-                                {chunk.is_reviewed && <Badge variant="success" className="text-[10px]">Reviewed</Badge>}
-                                {chunk.reindex_dirty && <Badge variant="warning" className="text-[10px]">Dirty</Badge>}
-                                {chunk.excluded && <Badge variant="destructive" className="text-[10px]">Excluded</Badge>}
-                              </div>
-                              <div className="flex items-center gap-1.5">
-                              {canEdit ? (
-                                <label className="flex items-center gap-1.5 text-[10px] text-muted-foreground cursor-pointer">
-                                  <Checkbox checked={!chunk.excluded} />
-                                  Include
-                                </label>
-                              ) : chunk.excluded ? (
-                                <span className="text-[10px] text-muted-foreground">Excluded</span>
-                              ) : null}
-                              <Button variant="ghost" size="sm" className="h-6 text-[10px]"
-                                onClick={() => setCurrentPage(chunk.page_start)}
-                              >
-                                Jump to source
-                              </Button>
-                              {canEdit && (
-                                <Button variant="ghost" size="sm" className="h-6 text-[10px]"
-                                  onClick={() => {
-                                    const next = { ...chunkEdits }
-                                    delete next[chunk.chunk_number]
-                                    setChunkEdits(next)
-                                  }}
-                                >
-                                  <RotateCcw className="h-3 w-3" />
-                                </Button>
-                              )}
-                            </div>
-                            </div>
-                          </div>
-                          <div className="p-3">
-                            <Textarea
-                              value={chunkEdits[chunk.chunk_number] ?? chunk.edited_text ?? chunk.text ?? chunk.original_text ?? ''}
-                              readOnly={!canEdit}
-                              onChange={e => {
-                                if (!canEdit) return
-                                setChunkEdits({ ...chunkEdits, [chunk.chunk_number]: e.target.value })
-                              }}
-                              className={`text-xs font-mono min-h-[60px] resize-y ${!canEdit ? 'bg-muted/20' : ''}`}
-                            />
-                            {chunkTagNotice && <p role="status" className="mt-2 text-xs">{chunkTagNotice}</p>}
-                            <div className="mt-2 flex flex-wrap items-end gap-2">
-                              <label className="flex-1 text-xs">
-                                Chunk tags (comma separated)
-                                <Input value={chunkTagEdits[chunk.chunk_number] ?? (chunk.tags || []).join(', ')}
-                                  readOnly={!canEdit} onChange={event => {
-                                    const value = event.target.value
-                                    setChunkTagEdits(current => ({ ...current, [chunk.chunk_number]: value }))
-                                  }} />
-                              </label>
-                              {canEdit && <Button type="button" size="sm" variant="outline" onClick={async () => {
-                                try {
-                                  const raw = chunkTagEdits[chunk.chunk_number] ?? (chunk.tags || []).join(', ')
-                                  const tags = raw.split(',').map(tag => tag.trim()).filter(Boolean)
-                                  const saved = await fetchJson(`/documents/${workflowId}/chunks/${chunk.chunk_number}`, {
-                                    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ tags }),
-                                  })
-                                  setChunkTagEdits(current => ({ ...current, [chunk.chunk_number]: saved.tags.join(', ') }))
-                                  setChunkTagNotice(`Chunk ${chunk.chunk_number}: tags saved. Reindex to update search.`)
-                                } catch (error) {
-                                  setChunkTagNotice(error.message)
-                                }
-                              }}>Save tags</Button>}
-                            </div>
-
-                          </div>
-                        </div>
+                        <DocumentChunk
+                          key={`${workflowId}:${highlightedChunk}:${chunk.chunk_number}`}
+                          chunk={chunk}
+                          workflowId={workflowId}
+                          documentTags={doc.knowledge_metadata?.tags ?? []}
+                          highlighted={highlightedChunk === chunk.chunk_number}
+                          defaultOpen={highlightedChunk === chunk.chunk_number || chunks.length === 1}
+                          canEdit={canEdit}
+                          onMetadataSaved={() => load({ soft: true })}
+                          onJump={chunk.page_start ? () => setCurrentPage(chunk.page_start) : undefined}
+                          onSaved={saved => {
+                            setChunks(current => current.map(item => (
+                              item.chunk_number === saved.chunk_number ? saved : item
+                            )))
+                            load({ soft: true })
+                          }}
+                        />
                       ))}
                     </div>
                   ) : (

@@ -149,7 +149,7 @@ export default function ProviderAccessPanel({ isSuperAdmin, requestedInstance, r
           <div className="w-full space-y-1.5 sm:max-w-64">
             <Label htmlFor="managed-instance">Instance</Label>
             <select id="managed-instance" className={selectStyle} value={provider} disabled={busy} onChange={selectInstance}>
-              {providers.map(option => <option key={option.id} value={option.provider}>{formatInstanceLabel(option.provider) ?? 'Default instance'}</option>)}
+              {providers.map(option => <option key={option.provider} value={option.provider}>{formatInstanceLabel(option.provider) ?? 'Default instance'}</option>)}
             </select>
           </div>
         )}
