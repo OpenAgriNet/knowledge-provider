@@ -196,6 +196,19 @@ components:
           minLength: 1
           title: Query
           type: string
+        search_profile:
+          default: default
+          enum:
+          - default
+          - scheme
+          - advisory
+          title: Search Profile
+          type: string
+        advisory:
+          anyOf:
+          - $ref: '#/components/schemas/AdvisoryContext'
+          - type: 'null'
+          default: null
         network_id:
           anyOf:
           - maxLength: 256
@@ -747,4 +760,50 @@ components:
           - type: 'null'
           default: null
       title: MetadataFilters
+      type: object
+    AdvisoryContext:
+      additionalProperties: false
+      description: 'The farmer''s situation for the advisory profile. The crop filters;
+
+        season, crop stage and place only reorder.'
+      properties:
+        crop:
+          anyOf:
+          - maxLength: 100
+            minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Crop
+        season:
+          anyOf:
+          - maxLength: 100
+            minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Season
+        days_after_sowing:
+          anyOf:
+          - maximum: 3650
+            minimum: -3650
+            type: integer
+          - type: 'null'
+          default: null
+          title: Days After Sowing
+        state_lgd_code:
+          anyOf:
+          - minimum: 0
+            type: integer
+          - type: 'null'
+          default: null
+          title: State Lgd Code
+        district_lgd_code:
+          anyOf:
+          - minimum: 0
+            type: integer
+          - type: 'null'
+          default: null
+          title: District Lgd Code
+      title: AdvisoryContext
       type: object

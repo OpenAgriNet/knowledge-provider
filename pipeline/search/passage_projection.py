@@ -17,6 +17,7 @@ from pipeline.metadata.extraction import (
 from pipeline.metadata.knowledge_metadata import KnowledgeMetadata
 from pipeline.metadata.localization import project_chunk_localization
 from pipeline.network.catalog import scheme_catalog
+from pipeline.search.advisory_query import INTAKE_ORIGINS, advisory_payload
 
 # These fields represent the effective passage metadata. A document-scoped
 # value is stored only when it differs, including an explicit empty list.
@@ -182,6 +183,7 @@ def _prepare_records(
     source_url: str | None = None,
     pages: list[dict] | None = None,
     source_first: bool = False,
+    source_type: str | None = None,
 ) -> list[dict]:
     resolved_instance = _normalize_instance(instance)
     doc_hash = hashlib.md5(document_id.encode()).hexdigest()
@@ -231,6 +233,7 @@ def _prepare_records(
         metadata_review or {}, text_blocks(pages or [], pages=True) or text_blocks([chunk for chunk in chunks if not chunk.get("is_excluded")], pages=False),
     )
     document_payload = document_projection(document_review, metadata, subjects, categories)
+    advisory_fields = advisory_payload(metadata, chunks) if kind == "advisory" else {}
     records = []
     for chunk in chunks:
         if chunk.get("is_excluded", False):
@@ -250,7 +253,9 @@ def _prepare_records(
             "instance": resolved_instance,  # vector payload key, kept for consumers
             "provider_id": provider_id,
             "type": kind,
-            "source": "docs-pipeline",
+            # Origin consumers show next to an answer: the intake channel
+            # (webhook, crawl) or docs-pipeline for an uploaded file.
+            "source": source_type if source_type in INTAKE_ORIGINS else "docs-pipeline",
             "filename": external_slug,
             "name": display_title,
             "description": description or metadata.description or "",
@@ -307,6 +312,7 @@ def _prepare_records(
             record["metadata"] = extra_metadata
         if source_url:
             record["source_url"] = source_url
+        record.update(advisory_fields)
         if code:
             record["document_identity"] = {
                 "code": code.strip().lower(),
@@ -333,6 +339,7 @@ def _document_fields_from_doc(doc: dict | None) -> dict:
         "crop_subjects": doc.get("crop_subjects") or [],
         "knowledge_metadata": doc.get("knowledge_metadata") or {},
         "metadata_review": doc.get("metadata_review") or {},
+        "source_type": doc.get("source_type"),
     }
 
 

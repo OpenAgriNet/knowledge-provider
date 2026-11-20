@@ -68,6 +68,9 @@ PAYLOAD_FIELDS = (
     "document_identity",
     "chunk_id",
     "chunk_index",
+    # Advisory entry, sowing window and LGD place, read by the advisory
+    # search profile. Namespaced: legacy top-level pop_id/season stay dropped.
+    "advisory",
     # Document validity - the period this chunk is searchable in. Absent on
     # points written before validity existed, which search treats as current.
     "validity",

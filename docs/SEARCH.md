@@ -2,7 +2,40 @@
 
 ## What changed
 
-Search now accepts exact document kind and code filters. These filters run in Qdrant before candidate selection. They prevent a query about one scheme from returning another scheme just because the passages are similar. A code miss returns no matches. It never retries without the code.
+Search now accepts exact document kind and code filters. These filters run in Qdrant before candidate selection. They prevent a query about one scheme from returning another scheme just because the passages are similar. In the default profile a code miss returns no matches and never retries without the code. The `scheme` profile below widens instead.
+
+## Scheme profile
+
+`"search_profile": "scheme"` answers scheme questions the way the BV provider did (ported from `bharat-provider-backend` `scheme-query.util.ts`). It searches only scheme documents.
+
+1. **Scheme resolution.** A `document_code` the live catalog knows is used as sent. Otherwise the question decides: the longest code, name or alias found in it wins. Aliases of six characters or fewer, and hyphenated ones, must stand alone as words. Generic words such as "scheme" or "yojana" never match. The catalog is the caller's visible live schemes, with the same derived aliases indexing uses.
+2. **Unindexed scheme.** When nothing resolves but the question still names a topic after intent and generic words are removed, the response is empty with status `scheme_unavailable`, and no vector search runs. An unreadable catalog never triggers this.
+3. **Question type.** English keyword rules classify the intent (`eligibility`, `application`, `support`) and the section focus (`eligibility_with_exclusion`, `exclusion_only`). The matching guideline vocabulary is appended to the embedding query.
+4. **Widening.** When the resolved scheme has no visible passages, search runs again across all schemes and `widened_to_all_schemes` is true. Results without a single scheme are limited to catalogued schemes.
+5. **Section types.** Every passage gets a `section_type` (`eligibility`, `exclusion`, `application`, `support`, `other`) classified from its text at query time, so existing points need no re-indexing. The heading-title `section` used for citations is unchanged.
+6. **Supplemental search.** An eligibility question with no exclusion passage, or a support or application question with none of its section, searches once more with that section's vocabulary and merges new passages.
+7. **Guideline re-ranking.** `_scheme_score` starts from the retrieval score, adds 0.1 per asked-intent keyword in the passage and a farmer-text score (capped at 0.4), then applies the intent's bonus and penalty: eligibility penalises institutional text and cost tables; application rewards how-to-apply phrases and numbered steps and penalises app-screen instructions; support rewards benefit words and welcomes tables only when the question asks about subsidy or amounts. Without an intent, institutional and table text are mildly penalised. The weights are those of the BV provider.
+8. **Final order.** "Who cannot apply" puts exclusion passages first. Eligibility questions fill half of `top_k` with eligibility and half with exclusion passages, then the rest by score. Support and application questions put their section first. Duplicate chunks are dropped.
+9. **Defaults.** `TENSOR` mode, `top_k` 10, `candidate_cap` max(8 × top_k, 40), and no per-document cap (`max_chunks_per_doc` is null, so section balancing sees every candidate). Explicit request values override them.
+
+The response adds `scheme_search`: `resolved_scheme_code`, `scheme_code_source` (`request`, `query` or null), `effective_scheme_code`, `widened_to_all_schemes`, `query_intent`, `section_focus`, `supplemental_section`, `supplemental_hits`, `status` (`success`, `not_found`, `scheme_unavailable`) and `message`. It is null for the default profile. `effective_config.ranking_score_field` is `_scheme_score`; the final order also reflects the section slots above.
+
+## Advisory profile
+
+`"search_profile": "advisory"` searches only advisory documents the way the BV provider did (ported from `advisory-qdrant.util.ts`). An optional `advisory` object describes the farmer: `crop`, `season`, `days_after_sowing`, `state_lgd_code` and `district_lgd_code`.
+
+1. **Crop filter.** The crop is the only hard filter. Known names and aliases, including Hindi (`gehun`, `गेहूं`, `dhan`, `jowar`), map to the stored crop; other names are title-cased.
+2. **One passage per entry.** The best-scoring passage of each advisory entry (document and `pop_id`) is kept. Passages without an entry id are kept one per chunk.
+3. **Soft boosts.** The preferred season adds 0.1 (`ADVISORY_DEFAULT_SEASON` overrides the request; multi-season entries such as "Rabi,Kharif" match either). A day count inside the entry's sowing window adds 0.15. A place match adds 0.2: the farmer's district is listed, or the farmer's state is covered statewide. When only a state is sent and the advisory lists districts of it, a partial match adds 0.1. Nothing is dropped. The result is `_advisory_score`.
+4. **Defaults.** `TENSOR` mode, `top_k` 5 (`ADVISORY_QDRANT_TOP_K` overrides), `candidate_cap` 40, and no per-document cap.
+
+Each hit adds `location_match` (`national`, `matched`, `state_partial`, `other`, `not_requested`) and `origin`. The response adds `advisory_search`: `status` (`success`, `not_found`), `message`, `crop`, `preferred_season`, `location_status` (`not_requested`, `location_matched`, `location_partial`, `location_not_applied`, `other_only`, `no_match`), `has_day_range`, `days_matched` and `has_location_specific`.
+
+Indexing writes the fields these rules read under each advisory passage's `advisory` payload object: `pop_id` from `attributes.source_record`, `start_period` and `end_period` from the intake template's "Start/End day relative to sowing" lines, and `location_*` LGD state and district codes and names from the coverage areas. They are namespaced so legacy top-level labels such as `pop_id` and `season` stay dropped from stored passages. A state is statewide only when the advisory lists no district, because the template does not record which state a district belongs to. Passages indexed before these fields existed read as national and without a sowing window, so rebuild the collection to apply them. The payload `source` is now the intake channel (`webhook`, `crawl`) or `docs-pipeline` for an upload, and is returned as `origin`.
+
+The ICAR template does not keep the institute or creator, so the BV "Source: institute, creator" line is not available from this index.
+
+The scheme keyword rules are English only, as in the source. "Who cannot apply" also counts toward the application intent because it contains "apply"; the exclusion focus still decides the final order.
 
 The request is typed and bounded. Invalid controls return 422 before retrieval. Existing top-k, candidate count, per-document limits, language selection, applicability filters, hybrid ranking, and provenance remain available. The application returns its effective configuration with the results.
 
