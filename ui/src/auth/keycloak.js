@@ -5,7 +5,7 @@ import { API_BASE } from '../config'
 import { normalizeProductRole, UserRole } from '../lib/roleCapabilities'
 
 const rawAuthEnabled = import.meta.env.VITE_AUTH_ENABLED
-export const AUTH_ENABLED = String(rawAuthEnabled ?? 'false').toLowerCase() === 'true'
+export const AUTH_ENABLED = String(rawAuthEnabled ?? 'false').toLowerCase() === 'false'
 
 export const ROUTES = { LOGIN: '/login', HOME: '/' }
 
