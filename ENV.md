@@ -197,7 +197,9 @@ Body is a JSON array of objects (max `WEBHOOK_MAX_RECORDS`); stored in the `webh
 | `KEYCLOAK_ADMIN_CLIENT_SECRET` | `''` | Secret for the realm service account. Inject through the deployment's secret configuration. |
 | `KEYCLOAK_ADMIN_BASE_URL` | from `KEYCLOAK_ISSUER` | e.g. `https://dev-auth-vistaar.da.gov.in/auth` |
 | `KEYCLOAK_ADMIN_REALM` | from issuer | Realm to manage (e.g. `bharat-vistaar`) |
-| `KEYCLOAK_ADMIN_TOKEN_REALM` | Managed realm | Realm that issues the admin service account token. |
+| `KEYCLOAK_ADMIN_TOKEN_REALM` | Managed realm (`master` with an admin login) | Realm that issues the admin service account token. |
+| `KEYCLOAK_ADMIN_USERNAME` | `''` | Optional admin login for user and group management. With the password, it takes precedence over the service account and signs in through the `admin-cli` client. |
+| `KEYCLOAK_ADMIN_PASSWORD` | `''` | Password for `KEYCLOAK_ADMIN_USERNAME`. Inject through the deployment's secret configuration. |
 
 For provider management, configure the service account in `KEYCLOAK_ADMIN_REALM`. It needs permission to read users and groups, create provider groups, and manage group membership. For Keycloak built-in delegation, grant the realm service account `realm-management/manage-users` for user and group operations and `realm-management/view-realm` to read existing realm roles. Pre-create the application roles during realm setup when the service account has no permission to create roles. Open **Users → Provider access**. A platform administrator can create a provider and appoint an administrator by verified email. A provider administrator can manage member roles within that provider. Revocation takes effect on the member's next API request, including requests with an older token.
 

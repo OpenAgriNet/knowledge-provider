@@ -53,9 +53,12 @@ def test_expired_refresh_is_an_unauthenticated_session(oidc_settings):
     assert post.call_args.kwargs["form"]["grant_type"] == "refresh_token"
 
 
-def test_admin_requires_a_service_account(monkeypatch, oidc_settings):
-    monkeypatch.delenv("KEYCLOAK_ADMIN_CLIENT_ID", raising=False)
-    monkeypatch.delenv("KEYCLOAK_ADMIN_CLIENT_SECRET", raising=False)
-    monkeypatch.setenv("KEYCLOAK_ADMIN_USERNAME", "old-admin")
-    monkeypatch.setenv("KEYCLOAK_ADMIN_PASSWORD", "unused-legacy-config")
+def test_admin_requires_a_service_account_or_admin_login(monkeypatch, oidc_settings):
+    for name in (
+        "KEYCLOAK_ADMIN_CLIENT_ID",
+        "KEYCLOAK_ADMIN_CLIENT_SECRET",
+        "KEYCLOAK_ADMIN_USERNAME",
+        "KEYCLOAK_ADMIN_PASSWORD",
+    ):
+        monkeypatch.delenv(name, raising=False)
     assert not load_keycloak_admin_config().configured

@@ -52,10 +52,18 @@ class KeycloakAdminConfig:
     client_id: str
     client_secret: str = field(repr=False)
     token_realm: str = ""
+    admin_username: str = ""
+    admin_password: str = field(default="", repr=False)
+
+    @property
+    def uses_password_grant(self) -> bool:
+        return bool(self.admin_username and self.admin_password)
 
     @property
     def configured(self) -> bool:
-        return bool(self.base_url and self.realm and self.client_id and self.client_secret)
+        if not (self.base_url and self.realm):
+            return False
+        return self.uses_password_grant or bool(self.client_id and self.client_secret)
 
 
 def load_keycloak_admin_config() -> KeycloakAdminConfig:
@@ -72,12 +80,20 @@ def load_keycloak_admin_config() -> KeycloakAdminConfig:
         if not realm:
             realm = realm_part.split("/")[0]
 
+    admin_username = (os.environ.get("KEYCLOAK_ADMIN_USERNAME") or "").strip()
+    admin_password = (os.environ.get("KEYCLOAK_ADMIN_PASSWORD") or "").strip()
+    # A password login is issued by the master realm's admin-cli client; a service
+    # account token comes from the managed realm itself.
+    default_token_realm = "master" if admin_username and admin_password else realm
+
     return KeycloakAdminConfig(
         base_url=base,
         realm=realm,
-        token_realm=(os.environ.get("KEYCLOAK_ADMIN_TOKEN_REALM") or realm).strip(),
+        token_realm=(os.environ.get("KEYCLOAK_ADMIN_TOKEN_REALM") or default_token_realm).strip(),
         client_id=(os.environ.get("KEYCLOAK_ADMIN_CLIENT_ID") or "").strip(),
         client_secret=os.environ.get("KEYCLOAK_ADMIN_CLIENT_SECRET") or "",
+        admin_username=admin_username,
+        admin_password=admin_password,
     )
 
 
@@ -119,7 +135,15 @@ def _req(
 
 def _admin_token(cfg: KeycloakAdminConfig) -> str:
     token_realm = cfg.token_realm or cfg.realm
-    form = {"grant_type": "client_credentials", "client_id": cfg.client_id, "client_secret": cfg.client_secret}
+    if cfg.uses_password_grant:
+        form = {
+            "grant_type": "password",
+            "client_id": "admin-cli",
+            "username": cfg.admin_username,
+            "password": cfg.admin_password,
+        }
+    else:
+        form = {"grant_type": "client_credentials", "client_id": cfg.client_id, "client_secret": cfg.client_secret}
     status, body = _req(
         "POST",
         f"{cfg.base_url}/realms/{token_realm}/protocol/openid-connect/token",
@@ -139,7 +163,9 @@ def require_admin_config() -> KeycloakAdminConfig:
     if not cfg.configured:
         raise HTTPException(
             503,
-            "Keycloak admin is not configured. Configure a realm service account.",
+            "Keycloak admin is not configured. Configure a realm service account "
+            "(KEYCLOAK_ADMIN_CLIENT_ID / KEYCLOAK_ADMIN_CLIENT_SECRET) or an admin login "
+            "(KEYCLOAK_ADMIN_USERNAME / KEYCLOAK_ADMIN_PASSWORD).",
         )
     return cfg
 
