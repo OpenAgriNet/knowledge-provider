@@ -45,7 +45,7 @@ function resolveEffectiveIndex(stages, currentStage, hasPages, hasChunks, automa
     if (hasChunks) {
       effectiveIndex = stages.findIndex(stage => stage.id === 'ingesting')
     } else if (hasPages) {
-      effectiveIndex = stages.findIndex(stage => stage.id === (automaticRelease ? 'chunking' : 'chunk_review'))
+      effectiveIndex = stages.findIndex(stage => stage.id === 'chunking')
     } else {
       effectiveIndex = stages.findIndex(stage => stage.id === 'ocr_processing')
     }
