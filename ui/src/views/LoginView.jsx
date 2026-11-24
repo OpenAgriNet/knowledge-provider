@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Navigate } from 'react-router-dom'
 
-import { AuthLoadingScreen } from '../components/AuthLoadingScreen'
+import { AuthLoadingScreen, InlineSpinner } from '../components/AuthLoadingScreen'
 import { HeroPanel } from '../components/HeroPanel'
 import { PlatformLogoIcon } from '../components/PlatformLogoIcon'
 import { Button } from '../components/ui/button'
@@ -16,6 +16,30 @@ import {
   verifyEmailCode,
 } from '../auth/keycloak'
 import { APP_DESCRIPTION, APP_NAME } from '../lib/app-brand'
+
+/** Google's brand mark — kept as the official four-colour glyph. */
+function GoogleIcon({ className }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className ?? 'size-5'} aria-hidden="true">
+      <path
+        fill="#4285F4"
+        d="M23.52 12.27c0-.82-.07-1.6-.21-2.36H12v4.47h6.46a5.52 5.52 0 0 1-2.4 3.62v3h3.87c2.27-2.09 3.58-5.17 3.58-8.73Z"
+      />
+      <path
+        fill="#34A853"
+        d="M12 24c3.24 0 5.96-1.08 7.94-2.91l-3.88-3c-1.07.72-2.45 1.15-4.06 1.15-3.13 0-5.78-2.11-6.73-4.95H1.26v3.09A12 12 0 0 0 12 24Z"
+      />
+      <path
+        fill="#FBBC05"
+        d="M5.27 14.29a7.2 7.2 0 0 1 0-4.58V6.62H1.26a12 12 0 0 0 0 10.76l4.01-3.09Z"
+      />
+      <path
+        fill="#EA4335"
+        d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.44-3.44C17.95 1.18 15.23 0 12 0A12 12 0 0 0 1.26 6.62l4.01 3.09C6.22 6.86 8.87 4.75 12 4.75Z"
+      />
+    </svg>
+  )
+}
 
 export default function LoginView() {
   const { isAuthenticated, isInitializing, bootstrapped, signInWithSession } = useAuth()
@@ -199,12 +223,12 @@ export default function LoginView() {
             {showGoogle && !challenge ? (
               <Button
                 type="button"
-                variant="outline"
                 size="lg"
                 disabled={busy}
                 onClick={() => void signInWithGoogle()}
-                className="mt-3 h-[3.25rem] w-full rounded-lg border-canopy-form-muted/40 bg-transparent text-[0.9375rem]"
+                className="mt-3 h-[3.25rem] w-full gap-3 rounded-lg border border-canopy-form-border bg-white text-[0.9375rem] font-medium text-[#3c4043] shadow-sm transition-colors hover:bg-neutral-50 disabled:opacity-70"
               >
+                {busy ? <InlineSpinner /> : <GoogleIcon className="size-5" />}
                 Continue with Google
               </Button>
             ) : null}
