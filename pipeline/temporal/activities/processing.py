@@ -205,7 +205,7 @@ async def create_chunks_from_db(
         from pipeline.db.metadata_review import document_id_for_workflow, generate_review
 
         try:
-            await generate_review(document_id_for_workflow(workflow_id), automatic=True)
+            await generate_review(document_id_for_workflow(workflow_id), automatic=True, workflow_id=workflow_id)
         except Exception as exc:
             activity.logger.warning("Document metadata generation failed (%s)", type(exc).__name__)
     return {"chunk_count": len(chunks)}

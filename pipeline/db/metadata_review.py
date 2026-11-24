@@ -99,7 +99,9 @@ def _write(conn, doc_id, row_id, chunk_number, state):
         conn.execute("UPDATE chunks SET metadata_review = %s WHERE id = %s::uuid", (Jsonb(state), row_id))
 
 
-async def generate_review(doc_id: str, chunk_number: int | None = None, *, automatic: bool = False) -> dict:
+async def generate_review(
+    doc_id: str, chunk_number: int | None = None, *, automatic: bool = False, workflow_id: str | None = None,
+) -> dict:
     with connection.get_connection() as conn:
         row_id, state, blocks, validity = _read(conn, doc_id, chunk_number)
     digest = source_digest(blocks)
@@ -115,19 +117,34 @@ async def generate_review(doc_id: str, chunk_number: int | None = None, *, autom
         if current_id != row_id or source_digest(current_blocks) != digest or current != state:
             raise StaleMetadata("Source or metadata changed. Generate metadata again.")
         current = {**{key: value for key, value in current.items() if value.get("source_digest") == digest}, "pending": proposal}
-        if automatic and (auto := auto_accept_fields()):
-            # Reviewer-free acceptance for the configured fields only. Existing accepted
-            # facts for other fields are kept; extracted facts replace the same fields.
-            chosen = [fact for fact in proposal["facts"] if fact["field"] in auto]
-            if chosen:
-                prior = current.get("accepted") or {}
-                kept = [fact for fact in prior.get("facts", []) if fact["field"] not in auto]
-                if not any(fact["field"] in auto for fact in prior.get("facts", [])) or prior.get("origin") != "edited":
-                    accepted = {**proposal, "origin": "extracted-auto", "facts": kept + chosen}
-                    if "overrides" in prior:
-                        accepted["overrides"] = prior["overrides"]
-                    current["accepted"] = accepted
+        auto_accepted = []
+        if automatic and "accepted" not in current and (auto := auto_accept_fields()):
+            # Reviewer-free acceptance only when nothing is accepted for this source yet, so a
+            # reviewer's saved or accepted metadata is never replaced. Same category rule and
+            # fact cap as accept_review; invalid suggestions are skipped, not fatal.
+            for fact in proposal["facts"]:
+                if fact["field"] not in auto:
+                    continue
+                if fact["field"] == "category":
+                    try:
+                        validate_subject_category(fact["value"])
+                    except ValueError:
+                        continue
+                auto_accepted.append(fact)
+            if auto_accepted and len(auto_accepted) <= 256:
+                current["accepted"] = {**proposal, "origin": "extracted-auto", "facts": auto_accepted}
+            else:
+                auto_accepted = []
         _write(conn, doc_id, row_id, chunk_number, current)
+        if auto_accepted:
+            audit.log_audit(
+                workflow_id or doc_id, doc_id,
+                "chunk_edit" if chunk_number is not None else "document_metadata_edit",
+                entity_type="chunk" if chunk_number is not None else "document", entity_id=chunk_number,
+                field_name="metadata_review", actor_username="system:auto-accept",
+                metadata={"proposal_id": proposal["id"], "accepted_count": len(auto_accepted), "origin": "extracted-auto"},
+                _conn=conn,
+            )
     return current if automatic else _response(row_id, current, blocks, current_validity, document=chunk_number is None)
 
 
