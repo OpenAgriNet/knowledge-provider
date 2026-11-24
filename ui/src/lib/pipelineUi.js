@@ -137,7 +137,7 @@ export const PIPELINE_STAGES = [
 
 /**
  * Simplified steps shown to institute operators.
- * Backend may still be on `chunking` while the UI highlights "Approve content".
+ * Content is reviewed at "Ready to ingest"; there is no separate content approval step.
  */
 export const USER_PIPELINE_STAGES = [
   { id: 'registered', label: 'Uploaded' },
@@ -145,8 +145,9 @@ export const USER_PIPELINE_STAGES = [
   { id: 'ocr_review', label: 'Review text' },
   { id: 'translation_processing', label: 'Translating' },
   { id: 'translation_review', label: 'Review translation' },
-  // `chunking` is folded into this step so users never see "Chunking"
-  { id: 'chunk_review', label: 'Approve content' },
+  // Content is checked at "Ready to ingest"; documents waiting in the retired
+  // chunk_review stage show here too and keep their Approve content action.
+  { id: 'chunking', label: 'Preparing content' },
   { id: 'ready_for_ingestion', label: 'Ready to ingest' },
   { id: 'ingesting', label: 'Publishing to dev' },
   { id: 'approval_for_prod', label: 'Approve for production' },
@@ -163,8 +164,8 @@ export function mapStageToUserStep(stage) {
     ocr_review: 'ocr_review',
     translation_processing: 'translation_processing',
     translation_review: 'translation_review',
-    chunking: 'chunk_review',
-    chunk_review: 'chunk_review',
+    chunking: 'chunking',
+    chunk_review: 'chunking',
     ready_for_ingestion: 'ready_for_ingestion',
     ingesting: 'ingesting',
     publishing_to_network: 'publishing_to_network',

@@ -61,7 +61,28 @@ async def persist_document_content(workflow_id: str, pages: list[dict], chunks: 
 
 @activity.defn
 async def auto_tag_chunks_from_db(workflow_id: str, filename: str = "") -> dict:
-    """No-op retained so existing workflow histories that scheduled this
-    activity before the auto-tag-v1 patch continue to replay deterministically.
+    """Suggest metadata for each chunk, then combine it into the document's suggestion.
+
+    Runs after chunking when METADATA_AUTO_EXTRACT is on. Metadata never fails the
+    document: errors are logged and processing continues to chunk review.
     """
-    return {"tagged_chunks": 0, "skipped": True}
+    del filename
+    from pipeline.metadata.extraction import automatic_extraction_enabled
+
+    if not automatic_extraction_enabled():
+        return {"tagged_chunks": 0, "skipped": True}
+    from pipeline.db.metadata_review import document_id_for_workflow, tag_chunks
+
+    def progress(done: int, total: int) -> None:
+        if activity.in_activity():
+            activity.heartbeat(done, total)
+
+    try:
+        result = await tag_chunks(document_id_for_workflow(workflow_id), workflow_id, progress)
+    except Exception as exc:
+        activity.logger.warning("Chunk metadata generation failed (%s)", type(exc).__name__)
+        return {"tagged_chunks": 0, "skipped": False, "error": type(exc).__name__}
+    if result["failed"]:
+        activity.logger.warning("Chunk metadata failed for %d of %d chunks: %s",
+                                len(result["failed"]), result["chunks"], result["failed"][:20])
+    return {"tagged_chunks": result["chunks"] - len(result["failed"]), "failed_chunks": len(result["failed"]), "skipped": False}

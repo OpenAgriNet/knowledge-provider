@@ -500,7 +500,7 @@ Translation data is surfaced through the page model and review endpoints.
 
 - `POST /documents/{workflow_id}/approve-ocr`
 - `POST /documents/{workflow_id}/approve-translation`
-- `POST /documents/{workflow_id}/approve-chunks`
+- `POST /documents/{workflow_id}/approve-chunks` (only for documents that reached chunk review before the pipeline stopped pausing there, or after retry chunking)
 - `POST /documents/{workflow_id}/approve-ingestion`
 
 ### Artifacts
