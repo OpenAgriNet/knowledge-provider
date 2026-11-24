@@ -8,6 +8,7 @@ from psycopg.types.json import Jsonb
 
 from pipeline.documents import document_validity
 from pipeline.metadata.extraction import (
+    auto_accept_fields,
     extract_metadata,
     extraction_config,
     source_digest,
@@ -114,6 +115,18 @@ async def generate_review(doc_id: str, chunk_number: int | None = None, *, autom
         if current_id != row_id or source_digest(current_blocks) != digest or current != state:
             raise StaleMetadata("Source or metadata changed. Generate metadata again.")
         current = {**{key: value for key, value in current.items() if value.get("source_digest") == digest}, "pending": proposal}
+        if automatic and (auto := auto_accept_fields()):
+            # Reviewer-free acceptance for the configured fields only. Existing accepted
+            # facts for other fields are kept; extracted facts replace the same fields.
+            chosen = [fact for fact in proposal["facts"] if fact["field"] in auto]
+            if chosen:
+                prior = current.get("accepted") or {}
+                kept = [fact for fact in prior.get("facts", []) if fact["field"] not in auto]
+                if not any(fact["field"] in auto for fact in prior.get("facts", [])) or prior.get("origin") != "edited":
+                    accepted = {**proposal, "origin": "extracted-auto", "facts": kept + chosen}
+                    if "overrides" in prior:
+                        accepted["overrides"] = prior["overrides"]
+                    current["accepted"] = accepted
         _write(conn, doc_id, row_id, chunk_number, current)
     return current if automatic else _response(row_id, current, blocks, current_validity, document=chunk_number is None)
 

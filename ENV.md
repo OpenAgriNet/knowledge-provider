@@ -341,6 +341,14 @@ The document pipeline can propose metadata after it saves the source text and ch
 | `METADATA_AUTO_EXTRACT` | `false` | Generate document metadata suggestions after chunking. Explicit document and chunk actions still work when the endpoint and model are configured. |
 | `METADATA_USE_MAX_COMPLETION_TOKENS` | `false` | Send `max_completion_tokens` instead of `max_tokens` for models that require it. |
 | `METADATA_AREA_CODES` | `{}` | JSON that maps source area names or aliases to governed codes. Example `{"Example District":{"codeScheme":"example","areaCode":"D1"}}`. Unmapped names stay visible as evidence and are unavailable for exact area filtering. |
+| `METADATA_EXTRACT_FIELDS` | all four | Comma list from `category,crop,season,location` the model is asked for and that are kept. |
+| `METADATA_AUTO_ACCEPT_FIELDS` | empty | Fields an automatic run accepts without review (origin `extracted-auto`). Empty keeps every suggestion pending. Human-edited values for the same field are not overwritten. |
+| `METADATA_MAX_TOKENS` | `4096` | Output token cap per window. |
+| `METADATA_TEMPERATURE` | unset | Sent only when set. |
+| `METADATA_REQUEST_TIMEOUT_SECONDS` | `30` | Per-request timeout. |
+| `METADATA_TOTAL_TIMEOUT_SECONDS` | `120` | Whole-extraction timeout. |
+| `METADATA_PROMPT_PATH` | unset | File that replaces the built-in extraction prompt. |
+| `METADATA_MAX_WINDOWS` | unset | Read only the first N windows (about 12,000 characters each) of a long document instead of failing with "Source exceeds the metadata extraction limit". The proposal records `windows_used` and `windows_total`. Reviewers add anything missed with **Edit metadata**. |
 
 The extractor sends the saved text to the configured endpoint. Use an endpoint authorized for that content. An automatic extraction failure leaves the document processing pipeline able to finish and can be retried in Content. The source is processed in bounded windows. Oversized inputs return an error so a partial proposal cannot look complete.
 

@@ -65,8 +65,51 @@ def automatic_extraction_enabled() -> bool:
     return os.getenv("METADATA_AUTO_EXTRACT", "").lower() in {"1", "true", "yes"}
 
 
+_FIELDS = ("category", "crop", "season", "location")
+
+
+def _field_list(name: str, default: tuple[str, ...] = ()) -> tuple[str, ...]:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    wanted = {part.strip().lower() for part in raw.split(",") if part.strip()}
+    return tuple(field for field in _FIELDS if field in wanted)
+
+
+def extract_fields() -> tuple[str, ...]:
+    """Fields the model is asked for; METADATA_EXTRACT_FIELDS narrows the default of all four."""
+    return _field_list("METADATA_EXTRACT_FIELDS", _FIELDS) or _FIELDS
+
+
+def auto_accept_fields() -> tuple[str, ...]:
+    """Fields an automatic run accepts without review; empty keeps every suggestion pending."""
+    return _field_list("METADATA_AUTO_ACCEPT_FIELDS")
+
+
+def _number(name: str, default: float, *, minimum: float = 1) -> float:
+    try:
+        return max(float(os.getenv(name) or default), minimum)
+    except ValueError:
+        return default
+
+
+def _prompt() -> str:
+    path = os.getenv("METADATA_PROMPT_PATH", "").strip()
+    text = open(path, encoding="utf-8").read() if path else _PROMPT
+    fields = extract_fields()
+    if fields != _FIELDS:
+        text += f"\nReturn only these fields: {', '.join(fields)}."
+    return text
+
+
 def extraction_config() -> tuple[str, str]:
     return os.getenv("METADATA_BASE_URL", "").strip().rstrip("/"), os.getenv("METADATA_MODEL", "").strip()
+
+
+def _max_windows() -> int | None:
+    """METADATA_MAX_WINDOWS: read only the first N windows of a long source instead of failing."""
+    raw = os.getenv("METADATA_MAX_WINDOWS", "").strip()
+    return max(int(raw), 1) if raw.isdigit() else None
 
 
 def _windows(blocks: list[tuple[int, str]]):
@@ -87,7 +130,8 @@ def _windows(blocks: list[tuple[int, str]]):
                 break
     if batch:
         windows.append(batch)
-    if len(windows) > _MAX_WINDOWS:
+    limit = _max_windows()
+    if limit is None and len(windows) > _MAX_WINDOWS:
         raise ValueError("Source exceeds the metadata extraction limit")
     return windows
 
@@ -139,25 +183,40 @@ async def extract_metadata(blocks: list[tuple[int, str]]) -> dict:
     windows = _windows(blocks)
     if not windows:
         raise ValueError("No saved text to extract metadata from")
+    total_windows = len(windows)
+    if (limit := _max_windows()) is not None:
+        windows = windows[:limit]
     api_key = os.getenv("METADATA_API_KEY") or ""
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     areas = _area_codes()
 
+    prompt_text = _prompt()
+    wanted = set(extract_fields())
+    request_timeout = _number("METADATA_REQUEST_TIMEOUT_SECONDS", 30)
+    total_timeout = _number("METADATA_TOTAL_TIMEOUT_SECONDS", 120)
+    max_tokens = int(_number("METADATA_MAX_TOKENS", 4096))
+    extra = {}
+    if os.getenv("METADATA_TEMPERATURE", "").strip():
+        extra["temperature"] = _number("METADATA_TEMPERATURE", 0, minimum=0)
+
     async def run():
         facts = {}
-        async with httpx.AsyncClient(timeout=30, headers=headers) as client:
+        async with httpx.AsyncClient(timeout=request_timeout, headers=headers) as client:
             for window in windows:
                 prompt = json.dumps([{"block": block, "text": text} for block, _, text in window], ensure_ascii=False)
                 response = await client.post(f"{endpoint}/chat/completions", json={
                     "model": model,
-                    "messages": [{"role": "user", "content": f"{_PROMPT}\n\nSOURCE BLOCKS\n{prompt}"}],
+                    "messages": [{"role": "user", "content": f"{prompt_text}\n\nSOURCE BLOCKS\n{prompt}"}],
+                    **extra,
                     ("max_completion_tokens" if os.getenv("METADATA_USE_MAX_COMPLETION_TOKENS") == "true"
-                     else "max_tokens"): 4096,
+                     else "max_tokens"): max_tokens,
                 })
                 response.raise_for_status()
                 content = response.json()["choices"][0]["message"]["content"].strip()
                 content = re.sub(r"^\x60\x60\x60(?:json)?\s*|\s*\x60\x60\x60$", "", content)
                 for fact in _facts(Proposal.model_validate_json(content), window, areas):
+                    if fact["field"] not in wanted:
+                        continue
                     proof = fact["evidence"]
                     key = (fact["field"], normalized_key(fact["value"]), proof["block"], proof["start"], proof["end"])
                     facts.setdefault(key, fact)
@@ -170,7 +229,8 @@ async def extract_metadata(blocks: list[tuple[int, str]]) -> dict:
         "origin": "extracted",
         "model": model,
         "prompt_version": _PROMPT_VERSION,
-        "facts": await asyncio.wait_for(run(), timeout=120),
+        "facts": await asyncio.wait_for(run(), timeout=total_timeout),
+        **({"windows_used": len(windows), "windows_total": total_windows} if len(windows) < total_windows else {}),
     }
 
 
