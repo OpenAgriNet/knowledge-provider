@@ -199,7 +199,15 @@ async def create_chunks_from_db(
             "percent": 100.0,
         }
     )
-    # Metadata suggestions run next, per chunk, in auto_tag_chunks_from_db.
+    from pipeline.metadata.extraction import automatic_extraction_enabled
+
+    if automatic_extraction_enabled():
+        from pipeline.db.metadata_review import document_id_for_workflow, generate_review
+
+        try:
+            await generate_review(document_id_for_workflow(workflow_id), automatic=True, workflow_id=workflow_id)
+        except Exception as exc:
+            activity.logger.warning("Document metadata generation failed (%s)", type(exc).__name__)
     return {"chunk_count": len(chunks)}
 
 

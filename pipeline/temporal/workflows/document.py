@@ -184,16 +184,12 @@ class DocumentPipelineWorkflow:
                     retry_policy=CHUNK_RETRY,
                 )
 
-            # Chunks and their metadata stay editable until ingestion approval, which is
-            # now the one review gate after chunking. Histories recorded before this patch
-            # (including documents already waiting here) keep the chunk review pause.
-            if not workflow.patched("skip-chunk-review-v1"):
-                self.state.stage = DocumentStage.CHUNK_REVIEW
+            self.state.stage = DocumentStage.CHUNK_REVIEW
 
-                await _mirror_state(workflow.info().workflow_id, "chunk_review", self.state.page_count, self.state.chunk_count, None)
+            await _mirror_state(workflow.info().workflow_id, "chunk_review", self.state.page_count, self.state.chunk_count, None)
 
-                if not auto_approve:
-                    await workflow.wait_condition(lambda: self.state.chunks_approved)
+            if not auto_approve:
+                await workflow.wait_condition(lambda: self.state.chunks_approved)
 
             self.state.stage = DocumentStage.READY_FOR_INGESTION
             await _mirror_state(workflow.info().workflow_id, "ready_for_ingestion", self.state.page_count, self.state.chunk_count, None)

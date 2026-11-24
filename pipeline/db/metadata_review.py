@@ -1,6 +1,5 @@
 """Store suggestions and accepted evidence with the source they describe."""
 
-import asyncio
 import hashlib
 import json
 from uuid import uuid4
@@ -10,10 +9,8 @@ from psycopg.types.json import Jsonb
 from pipeline.documents import document_validity
 from pipeline.metadata.extraction import (
     auto_accept_fields,
-    concurrency,
     extract_metadata,
     extraction_config,
-    fact_key,
     source_digest,
     text_blocks,
 )
@@ -102,39 +99,6 @@ def _write(conn, doc_id, row_id, chunk_number, state):
         conn.execute("UPDATE chunks SET metadata_review = %s WHERE id = %s::uuid", (Jsonb(state), row_id))
 
 
-def _store_proposal(conn, doc_id, row_id, chunk_number, current, *, automatic, workflow_id) -> None:
-    """Write current (holding the new pending proposal), auto-accepting configured fields."""
-    proposal = current["pending"]
-    auto_accepted = []
-    if automatic and "accepted" not in current and (auto := auto_accept_fields()):
-        # Reviewer-free acceptance only when nothing is accepted for this source yet, so a
-        # reviewer's saved or accepted metadata is never replaced. Same category rule and
-        # fact cap as accept_review; invalid suggestions are skipped, not fatal.
-        for fact in proposal["facts"]:
-            if fact["field"] not in auto:
-                continue
-            if fact["field"] == "category":
-                try:
-                    validate_subject_category(fact["value"])
-                except ValueError:
-                    continue
-            auto_accepted.append(fact)
-        if auto_accepted and len(auto_accepted) <= 256:
-            current["accepted"] = {**proposal, "origin": "extracted-auto", "facts": auto_accepted}
-        else:
-            auto_accepted = []
-    _write(conn, doc_id, row_id, chunk_number, current)
-    if auto_accepted:
-        audit.log_audit(
-            workflow_id or doc_id, doc_id,
-            "chunk_edit" if chunk_number is not None else "document_metadata_edit",
-            entity_type="chunk" if chunk_number is not None else "document", entity_id=chunk_number,
-            field_name="metadata_review", actor_username="system:auto-accept",
-            metadata={"proposal_id": proposal["id"], "accepted_count": len(auto_accepted), "origin": "extracted-auto"},
-            _conn=conn,
-        )
-
-
 async def generate_review(
     doc_id: str, chunk_number: int | None = None, *, automatic: bool = False, workflow_id: str | None = None,
 ) -> dict:
@@ -153,7 +117,34 @@ async def generate_review(
         if current_id != row_id or source_digest(current_blocks) != digest or current != state:
             raise StaleMetadata("Source or metadata changed. Generate metadata again.")
         current = {**{key: value for key, value in current.items() if value.get("source_digest") == digest}, "pending": proposal}
-        _store_proposal(conn, doc_id, row_id, chunk_number, current, automatic=automatic, workflow_id=workflow_id)
+        auto_accepted = []
+        if automatic and "accepted" not in current and (auto := auto_accept_fields()):
+            # Reviewer-free acceptance only when nothing is accepted for this source yet, so a
+            # reviewer's saved or accepted metadata is never replaced. Same category rule and
+            # fact cap as accept_review; invalid suggestions are skipped, not fatal.
+            for fact in proposal["facts"]:
+                if fact["field"] not in auto:
+                    continue
+                if fact["field"] == "category":
+                    try:
+                        validate_subject_category(fact["value"])
+                    except ValueError:
+                        continue
+                auto_accepted.append(fact)
+            if auto_accepted and len(auto_accepted) <= 256:
+                current["accepted"] = {**proposal, "origin": "extracted-auto", "facts": auto_accepted}
+            else:
+                auto_accepted = []
+        _write(conn, doc_id, row_id, chunk_number, current)
+        if auto_accepted:
+            audit.log_audit(
+                workflow_id or doc_id, doc_id,
+                "chunk_edit" if chunk_number is not None else "document_metadata_edit",
+                entity_type="chunk" if chunk_number is not None else "document", entity_id=chunk_number,
+                field_name="metadata_review", actor_username="system:auto-accept",
+                metadata={"proposal_id": proposal["id"], "accepted_count": len(auto_accepted), "origin": "extracted-auto"},
+                _conn=conn,
+            )
     return current if automatic else _response(row_id, current, blocks, current_validity, document=chunk_number is None)
 
 
@@ -184,8 +175,6 @@ def accept_review(doc_id: str, workflow_id: str, chunk_number: int | None,
         next_state = {"accepted": accepted}
         _write(conn, doc_id, row_id, chunk_number, next_state)
         _record_edit(conn, doc_id, workflow_id, chunk_number, accepted, actor_user_id)
-        if chunk_number is not None:
-            _combine(conn, doc_id, workflow_id, chunk_edit=True)
     return _response(row_id, next_state, blocks, validity, document=chunk_number is None)
 
 
@@ -255,108 +244,9 @@ def save_review(doc_id: str, workflow_id: str, chunk_number: int | None,
         _record_edit(
             conn, doc_id, workflow_id, chunk_number, accepted, actor_user_id, validity_change=validity_change,
         )
-        if chunk_number is not None:
-            _combine(conn, doc_id, workflow_id, chunk_edit=True)
     return _response(row_id, state, blocks, validity, document=chunk_number is None)
 
 
 def document_id_for_workflow(workflow_id: str) -> str:
     with connection.get_connection() as conn:
         return document_reads._require_document_uuid(conn, workflow_id)
-
-
-async def tag_chunks(doc_id: str, workflow_id: str | None = None, progress=None) -> dict:
-    """Suggest metadata for every included chunk, then combine them into the document's suggestion.
-
-    Chunks already tagged for their current text by this model are skipped, so a retry
-    resumes where the last attempt stopped. A failed chunk is reported, not fatal.
-    """
-    with connection.get_connection() as conn:
-        numbers = [row["chunk_number"] for row in conn.execute(
-            "SELECT chunk_number FROM chunks WHERE document_id = %s::uuid AND NOT is_excluded ORDER BY chunk_number",
-            (doc_id,),
-        ).fetchall()]
-    if not numbers:
-        return {"chunks": 0, "failed": []}
-    gate = asyncio.Semaphore(concurrency())
-    failed = []
-    done = 0
-
-    async def tag(number):
-        nonlocal done
-        async with gate:
-            try:
-                await generate_review(doc_id, number, automatic=True, workflow_id=workflow_id)
-            except Exception as exc:
-                failed.append((number, type(exc).__name__))
-        done += 1
-        if progress:
-            progress(done, len(numbers))
-
-    await asyncio.gather(*(tag(number) for number in numbers))
-    combine_chunk_reviews(doc_id, workflow_id)
-    return {"chunks": len(numbers), "failed": sorted(failed)}
-
-
-def _chunk_facts(chunk: dict) -> list[dict]:
-    """A reviewer's accepted chunk metadata wins; otherwise the full machine suggestion."""
-    digest = source_digest(text_blocks([chunk], pages=False))
-    fresh = {key: value for key, value in (chunk["metadata_review"] or {}).items() if value.get("source_digest") == digest}
-    accepted = fresh.get("accepted")
-    review = accepted if accepted and accepted.get("origin") != "extracted-auto" else fresh.get("pending") or accepted
-    return (review or {}).get("facts", [])
-
-
-def combine_chunk_reviews(doc_id: str, workflow_id: str | None = None) -> dict:
-    """Make the document suggestion the union of its chunks' facts, one per crop or category."""
-    with connection.get_connection() as conn:
-        return _combine(conn, doc_id, workflow_id)
-
-
-def _combine(conn, doc_id: str, workflow_id: str | None, *, chunk_edit: bool = False) -> dict:
-    row_id, current, blocks, _ = _read(conn, doc_id, None, lock=True)
-    if not blocks:
-        return current
-    digest = source_digest(blocks)
-    fresh = {key: value for key, value in current.items() if value.get("source_digest") == digest}
-    if chunk_edit and not any(value.get("origin") == "chunks" for value in fresh.values()):
-        # The document list was not built from chunks, or a reviewer saved their own.
-        return current
-    chunks = conn.execute(
-        """SELECT chunk_number, original_text, edited_text, metadata_review FROM chunks
-           WHERE document_id = %s::uuid AND NOT is_excluded ORDER BY chunk_number""",
-        (doc_id,),
-    ).fetchall()
-    facts = {}
-    for chunk in chunks:
-        for fact in _chunk_facts(chunk):
-            facts.setdefault(fact_key(fact), fact)
-    # Evidence blocks here are chunk numbers: each fact keeps the passage it came from.
-    proposal = {
-        "id": str(uuid4()), "source_digest": digest, "origin": "chunks",
-        "model": extraction_config()[1], "facts": list(facts.values()),
-    }
-    current = {**fresh, "pending": proposal}
-    if (current.get("accepted") or {}).get("origin") == "extracted-auto":
-        # A machine-accepted list follows the chunks; a reviewer's accepted list is kept.
-        del current["accepted"]
-    _store_proposal(conn, doc_id, row_id, None, current, automatic=True, workflow_id=workflow_id)
-    return current
-
-
-async def generate_document_review(doc_id: str, workflow_id: str | None = None) -> dict:
-    """Document Generate: tag chunks still missing suggestions, then combine them.
-
-    A document without chunks yet is read directly.
-    """
-    result = await tag_chunks(doc_id, workflow_id)
-    if not result["chunks"]:
-        return await generate_review(doc_id)
-    if len(result["failed"]) == result["chunks"]:
-        raise RuntimeError("Metadata generation failed for every chunk")
-    with connection.get_connection() as conn:
-        row_id, state, blocks, validity = _read(conn, doc_id, None)
-    response = _response(row_id, state, blocks, validity, document=True)
-    if result["failed"]:
-        response["failed_chunks"] = [number for number, _ in result["failed"]]
-    return response

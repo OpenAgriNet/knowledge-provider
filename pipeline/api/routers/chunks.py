@@ -244,13 +244,11 @@ async def get_metadata_review(
 async def generate_metadata_review(
     workflow_id: str, user: RequireReview, chunk_number: int | None = Query(None, ge=1),
 ):
-    """Generate a proposal for one chunk, or for the document by combining its chunks."""
-    from pipeline.db.metadata_review import StaleMetadata, generate_document_review, generate_review
+    """Generate a proposal from the document or one explicitly requested chunk."""
+    from pipeline.db.metadata_review import StaleMetadata, generate_review
 
     doc = _api._require_document_for_user(workflow_id, user, Permission.REVIEW)
     try:
-        if chunk_number is None:
-            return await generate_document_review(doc["id"], workflow_id)
         return await generate_review(doc["id"], chunk_number)
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc

@@ -331,14 +331,14 @@ An extension package registers a factory in the Python entry point group `knowle
 
 ### Knowledge metadata extraction
 
-The document pipeline can propose metadata after it saves the source text and chunks. Set `METADATA_AUTO_EXTRACT=true` to run it automatically: after chunking, each included chunk gets its own suggestion (`METADATA_CONCURRENCY` at a time), and the document suggestion is the union of those chunk suggestions with each crop and category listed once. Fields in `METADATA_AUTO_ACCEPT_FIELDS` are accepted on the chunks and the document. A chunk without its own value for a field inherits the document's. A retry skips chunks already tagged, and a failed chunk is logged without stopping the document. **Content → Document metadata → Generate** does the same for an existing document: it tags chunks that have no suggestion yet and combines all chunk suggestions (a document that is not chunked yet is read directly). When a reviewer saves or accepts chunk metadata, a document list built from chunks is rebuilt; a machine-accepted document list follows the chunks, while a document list a reviewer accepted or edited is kept and only its suggestion refreshes. Open a specific chunk and choose **Chunk metadata → Generate metadata** to review that chunk alone. Use **Edit metadata** to set or correct saved values, or **Edit suggestions** to revise a proposal. **Document metadata** also lets reviewers save the inclusive start and end dates. A blank end date means no expiry. Chunks inherit the document validity period. PostgreSQL saves changes immediately. Chunk overrides replace the corresponding document field. Turn off an override to inherit the document value. Re-ingest the document to refresh Qdrant. Each crop and category is suggested once, with the first passage that names it; seasons and locations keep one suggestion per passage because they are paired by the sentence that connects them.
+The document pipeline can propose metadata after it saves the source text and chunks. Set `METADATA_AUTO_EXTRACT=true` to run it automatically. **Content → Document metadata** can also run it for an existing document. Open a specific chunk and choose **Chunk metadata → Generate metadata** to review that chunk alone. Use **Edit metadata** to set or correct saved values, or **Edit suggestions** to revise a proposal. **Document metadata** also lets reviewers save the inclusive start and end dates. A blank end date means no expiry. Chunks inherit the document validity period. PostgreSQL saves changes immediately. Chunk overrides replace the corresponding document field. Turn off an override to inherit the document value. Re-ingest the document to refresh Qdrant.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `METADATA_BASE_URL` | Unset | An OpenAI-compatible base URL ending in `/v1`. For Ollama on a Docker host, use `http://host.docker.internal:11434/v1`. For OpenAI, use `https://api.openai.com/v1`. |
 | `METADATA_MODEL` | Unset | The exact model ID advertised by the endpoint, for example `gemma4:latest` on the local Ollama server. |
 | `METADATA_API_KEY` | Unset | Optional bearer credential for this endpoint. |
-| `METADATA_AUTO_EXTRACT` | `false` | Generate chunk metadata suggestions after chunking and combine them into the document suggestion. Explicit document and chunk actions still work when the endpoint and model are configured. |
+| `METADATA_AUTO_EXTRACT` | `false` | Generate document metadata suggestions after chunking. Explicit document and chunk actions still work when the endpoint and model are configured. |
 | `METADATA_USE_MAX_COMPLETION_TOKENS` | `false` | Send `max_completion_tokens` instead of `max_tokens` for models that require it. |
 | `METADATA_AREA_CODES` | `{}` | JSON that maps source area names or aliases to governed codes. Example `{"Example District":{"codeScheme":"example","areaCode":"D1"}}`. Unmapped names stay visible as evidence and are unavailable for exact area filtering. |
 | `METADATA_EXTRACT_FIELDS` | all four | Comma list from `category,crop,season,location` the model is asked for and that are kept. |
@@ -346,10 +346,9 @@ The document pipeline can propose metadata after it saves the source text and ch
 | `METADATA_MAX_TOKENS` | `4096` | Output token cap per window. |
 | `METADATA_TEMPERATURE` | unset | Sent only when set. |
 | `METADATA_REQUEST_TIMEOUT_SECONDS` | `30` | Per-request timeout. |
-| `METADATA_TOTAL_TIMEOUT_SECONDS` | `600` | Whole-extraction timeout. It runs inside the 30-minute chunking activity, so keep it well below that. |
-| `METADATA_CONCURRENCY` | `4` | Windows, or chunks during automatic tagging, sent to the model at once. Lower it if the endpoint rate-limits. |
+| `METADATA_TOTAL_TIMEOUT_SECONDS` | `120` | Whole-extraction timeout. |
 | `METADATA_PROMPT_PATH` | unset | File that replaces the built-in extraction prompt. |
-| `METADATA_MAX_WINDOWS` | unset | Read only the first N windows (about 12,000 characters each) of a long document instead of failing with "Source exceeds the metadata extraction limit". Without it, up to 120 windows (about 300 pages) are read. The proposal records `windows_used` and `windows_total`. Reviewers add anything missed with **Edit metadata**. |
+| `METADATA_MAX_WINDOWS` | unset | Read only the first N windows (about 12,000 characters each) of a long document instead of failing with "Source exceeds the metadata extraction limit". The proposal records `windows_used` and `windows_total`. Reviewers add anything missed with **Edit metadata**. |
 
 The extractor sends the saved text to the configured endpoint. Use an endpoint authorized for that content. An automatic extraction failure leaves the document processing pipeline able to finish and can be retried in Content. The source is processed in bounded windows. Oversized inputs return an error so a partial proposal cannot look complete.
 

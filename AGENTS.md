@@ -91,8 +91,6 @@ registered → ocr_processing → ocr_review → translation_processing → tran
   → approval_for_prod → ingesting_prod → completed   (or → failed at any point)
 ```
 
-Since the `skip-chunk-review-v1` patch, new runs go from chunking (and `auto_tag_chunks_from_db`) straight to `ready_for_ingestion`; chunks and metadata stay editable until ingestion approval. `chunk_review` remains for histories recorded before the patch and as the end state of `ChunkingOnlyWorkflow` (retry chunking).
-
 `approval_for_prod`/`ingesting_prod` are **PROD-only stages** (`PROD_ONLY_STAGES` in `documents/models.py`); with `DISABLE_PROD_SETTING=true` a document goes straight from `ingesting` to `completed`. That flag is read only at workflow *start* and passed in as an argument — never read inside a running workflow, since that would break Temporal replay determinism if flipped mid-flight (see the docstring in `network/release_policy.py`).
 
 ### Revisions and networks
