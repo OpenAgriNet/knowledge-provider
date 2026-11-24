@@ -173,7 +173,30 @@ export default function LoginView() {
               </div>
             ) : null}
 
-            <form onSubmit={submit} className="mt-8 space-y-3">
+            {showGoogle && !challenge ? (
+              <div className="mt-8">
+                <Button
+                  type="button"
+                  size="lg"
+                  disabled={busy}
+                  onClick={() => void signInWithGoogle()}
+                  className="h-[3.25rem] w-full gap-3 rounded-lg border border-canopy-form-border bg-white text-[0.9375rem] font-medium text-[#3c4043] shadow-sm transition-colors hover:bg-neutral-50 disabled:opacity-70"
+                >
+                  {busy ? <InlineSpinner /> : <GoogleIcon className="size-5" />}
+                  Continue with Google
+                </Button>
+
+                <div className="mt-7 flex items-center gap-4" aria-hidden="true">
+                  <span className="h-px flex-1 bg-canopy-form-border" />
+                  <span className="text-[0.6875rem] font-medium uppercase tracking-[0.14em] text-canopy-form-muted">
+                    or
+                  </span>
+                  <span className="h-px flex-1 bg-canopy-form-border" />
+                </div>
+              </div>
+            ) : null}
+
+            <form onSubmit={submit} className={`${showGoogle && !challenge ? 'mt-7' : 'mt-8'} space-y-3`}>
               {challenge ? (
                 <div key="code">
                   <label htmlFor="sign-in-code" className="mb-2 block text-sm font-medium">One-time code</label>
@@ -220,18 +243,6 @@ export default function LoginView() {
                 </div>
               ) : null}
             </form>
-            {showGoogle && !challenge ? (
-              <Button
-                type="button"
-                size="lg"
-                disabled={busy}
-                onClick={() => void signInWithGoogle()}
-                className="mt-3 h-[3.25rem] w-full gap-3 rounded-lg border border-canopy-form-border bg-white text-[0.9375rem] font-medium text-[#3c4043] shadow-sm transition-colors hover:bg-neutral-50 disabled:opacity-70"
-              >
-                {busy ? <InlineSpinner /> : <GoogleIcon className="size-5" />}
-                Continue with Google
-              </Button>
-            ) : null}
           </div>
 
           <footer className="py-8 text-xs leading-relaxed text-canopy-form-muted">
