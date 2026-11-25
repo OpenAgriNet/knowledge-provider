@@ -4,7 +4,12 @@
 
 A fresh database installs the grouped bootstrap at version 0025. A SQLite backup uses the separate restore kit, which imports evidence and rebuilds a fresh Qdrant collection from Postgres. Do not mark an existing database as current without applying its schema and data changes.
 
-On a database already at baseline 0025, normal startup applies migration `0026_instance_display_name.sql`. It adds an optional instance display name. Existing instance codes and group paths are preserved. Search reads the display name from Postgres, so this upgrade needs no Qdrant rebuild.
+The grouped bootstrap includes optional instance display names. For a database that already ran baseline 0025 before this column was added, apply this one-time SQL before deploying the API. Existing instance codes, group paths, and search indexes stay valid.
+
+```sql
+ALTER TABLE public.instances ADD COLUMN IF NOT EXISTS display_name text
+    CHECK (char_length(display_name) BETWEEN 1 AND 120);
+```
 
 An existing reviewed baseline 0024 database uses [the operator upgrade](upgrades/0024_to_0025.sql). Pause API and worker writers and take a recoverable backup first. Apply the file in one transaction with the normal deployment database connection:
 

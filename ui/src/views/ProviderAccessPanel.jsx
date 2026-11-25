@@ -208,9 +208,10 @@ export default function ProviderAccessPanel({ isSuperAdmin, requestedInstance, r
               <div className="space-y-1.5">
                 <Label htmlFor="instance-display-name">Display name</Label>
                 <Input id="instance-display-name" name="display_name" maxLength={120} aria-describedby="instance-display-name-hint"
-                  defaultValue={selectedInstance?.display_name || ''} disabled={busy || !selectedInstance?.id} />
+                  defaultValue={selectedInstance?.display_name || ''} placeholder={formatInstanceLabel(provider) || undefined}
+                  disabled={busy || !selectedInstance?.id} />
                 <p id="instance-display-name-hint" className="text-sm text-muted-foreground">
-                  {selectedInstance?.id ? 'Shown in the instance picker and available for search citations. Leave blank to use the code in the picker.' : 'A display name can be set after the instance is registered.'}
+                  {selectedInstance?.id ? 'Shown in the instance picker and available for search citations. Leave blank to use the instance code in uppercase.' : 'A display name can be set after the instance is registered.'}
                 </p>
               </div>
               <Button type="submit" disabled={busy || !selectedInstance?.id}>{busy ? 'Saving…' : 'Save display name'}</Button>

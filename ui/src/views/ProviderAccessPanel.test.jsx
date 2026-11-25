@@ -23,6 +23,7 @@ it('saves the selected instance display name without changing its code', async (
   render(<ProviderAccessPanel isSuperAdmin={false} />)
   await user.click(await screen.findByRole('tab', { name: 'Details' }))
   expect(screen.getByText('rice-lab', { exact: true })).toBeVisible()
+  expect(screen.getByLabelText('Display name')).toHaveAttribute('placeholder', 'RICE-LAB')
   await user.type(screen.getByLabelText('Display name'), 'Rice Laboratory')
   await user.click(screen.getByRole('button', { name: 'Save display name' }))
   expect(await screen.findByText('Instance display name saved.')).toBeVisible()

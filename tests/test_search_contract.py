@@ -164,14 +164,17 @@ def test_network_route_denies_scope_bypass_before_retrieval(test_client, capturi
     assert capturing_store.captured == {}
 
 
-def test_network_route_passes_exact_identity_and_instance_boundary(test_client, capturing_store, network_reader, db_connection):
+@pytest.mark.parametrize(("display_name", "expected"), [("Bharat Vistaar", "Bharat Vistaar"), (None, "BV")])
+def test_network_route_passes_exact_identity_and_instance_boundary(
+    test_client, capturing_store, network_reader, db_connection, display_name, expected,
+):
     document, revision = released_document(db_connection)
     with db_connection.get_connection() as conn:
         conn.execute(
-            "UPDATE instances SET display_name = 'Bharat Vistaar' WHERE id = (SELECT provider_id FROM documents WHERE id = %s)",
-            (document,),
+            "UPDATE instances SET display_name = %s WHERE id = (SELECT provider_id FROM documents WHERE id = %s)",
+            (display_name, document),
         )
-    hit = {"doc_id": "released", "name": "PM Kisan", "text": "Exclusion criteria", "_score": .8337,
+    hit = {"doc_id": "released", "instance": "bv", "name": "PM Kisan", "text": "Exclusion criteria", "_score": .8337,
            "revision_id": revision, "release_network_id": "a"}
     capturing_store.hits = [{"text": "unmarked draft"}, {**hit, "release_network_id": "b"}, hit]
     response = test_client.post("/search", json={"query": "PM Kisan overview", "network_id": "a", "document_kind": "scheme",
@@ -179,7 +182,7 @@ def test_network_route_passes_exact_identity_and_instance_boundary(test_client, 
     assert response.status_code == 200, response.text
     assert len(response.json()["hits"]) == 1
     assert {key: response.json()["hits"][0][key] for key in hit} == hit
-    assert response.json()["hits"][0]["instance_name"] == "Bharat Vistaar"
+    assert response.json()["hits"][0]["instance_name"] == expected
     assert capturing_store.captured["document_code"] == "pk"
     assert capturing_store.captured["document_kind"] == "scheme"
     assert capturing_store.captured["release_network_id"] == "a"
