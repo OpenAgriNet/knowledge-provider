@@ -3,17 +3,19 @@
 import asyncio
 import hashlib
 import json
+from collections import Counter, defaultdict
 from uuid import uuid4
 
 from psycopg.types.json import Jsonb
 
 from pipeline.documents import document_validity
 from pipeline.metadata.extraction import (
+    MetadataModel,
     auto_accept_fields,
-    concurrency,
     extract_metadata,
     extraction_config,
     fact_key,
+    pack_windows,
     source_digest,
     text_blocks,
 )
@@ -147,6 +149,14 @@ async def generate_review(
     ):
         return state
     proposal = await extract_metadata(blocks)
+    current, current_validity = _save_proposal(
+        doc_id, chunk_number, row_id, state, digest, proposal, automatic=automatic, workflow_id=workflow_id,
+    )
+    return current if automatic else _response(row_id, current, blocks, current_validity, document=chunk_number is None)
+
+
+def _save_proposal(doc_id, chunk_number, row_id, state, digest, proposal, *, automatic, workflow_id):
+    """Store a proposal made from state and source digest, unless either changed meanwhile."""
     proposal["id"] = str(uuid4())
     with connection.get_connection() as conn:
         current_id, current, current_blocks, current_validity = _read(conn, doc_id, chunk_number, lock=True)
@@ -154,7 +164,7 @@ async def generate_review(
             raise StaleMetadata("Source or metadata changed. Generate metadata again.")
         current = {**{key: value for key, value in current.items() if value.get("source_digest") == digest}, "pending": proposal}
         _store_proposal(conn, doc_id, row_id, chunk_number, current, automatic=automatic, workflow_id=workflow_id)
-    return current if automatic else _response(row_id, current, blocks, current_validity, document=chunk_number is None)
+    return current, current_validity
 
 
 def accept_review(doc_id: str, workflow_id: str, chunk_number: int | None,
@@ -268,34 +278,68 @@ def document_id_for_workflow(workflow_id: str) -> str:
 async def tag_chunks(doc_id: str, workflow_id: str | None = None, progress=None) -> dict:
     """Suggest metadata for every included chunk, then combine them into the document's suggestion.
 
-    Chunks already tagged for their current text by this model are skipped, so a retry
-    resumes where the last attempt stopped. A failed chunk is reported, not fatal.
+    Chunks travel several to a request (numbered blocks, as pages do), so a long document
+    needs few requests; each fact keeps the chunk it came from. Chunks already tagged for
+    their current text by this model are skipped, so a retry resumes where the last attempt
+    stopped. A failed request is reported for its chunks, not fatal.
     """
     with connection.get_connection() as conn:
-        numbers = [row["chunk_number"] for row in conn.execute(
-            "SELECT chunk_number FROM chunks WHERE document_id = %s::uuid AND NOT is_excluded ORDER BY chunk_number",
+        rows = conn.execute(
+            """SELECT id, chunk_number, original_text, edited_text, metadata_review FROM chunks
+               WHERE document_id = %s::uuid AND NOT is_excluded ORDER BY chunk_number""",
             (doc_id,),
-        ).fetchall()]
-    if not numbers:
+        ).fetchall()
+    if not rows:
         return {"chunks": 0, "failed": []}
-    gate = asyncio.Semaphore(concurrency())
-    failed = []
-    done = 0
+    model = MetadataModel()
+    todo, blocks = {}, []
+    for row in rows:
+        chunk_blocks = text_blocks([row], pages=False)
+        state = row["metadata_review"] or {}
+        digest = source_digest(chunk_blocks)
+        if not chunk_blocks or any(
+            item.get("source_digest") == digest and item.get("model") == model.model for item in state.values()
+        ):
+            continue
+        todo[row["chunk_number"]] = (str(row["id"]), state, digest)
+        blocks.extend(chunk_blocks)
+    windows = pack_windows(blocks)
+    # A chunk longer than one window spans several; it is saved once all of them answer.
+    remaining = Counter(number for window in windows for number in {block for block, _, _ in window})
+    found, errors, failed = defaultdict(list), {}, []
 
-    async def tag(number):
-        nonlocal done
-        async with gate:
-            try:
-                await generate_review(doc_id, number, automatic=True, workflow_id=workflow_id)
-            except Exception as exc:
-                failed.append((number, type(exc).__name__))
-        done += 1
+    def save(number):
+        if number in errors:
+            failed.append((number, errors[number]))
+            return
+        unique = {}
+        for fact in found.pop(number, []):
+            unique.setdefault(fact_key(fact), fact)
+        row_id, state, digest = todo[number]
+        try:
+            _save_proposal(doc_id, number, row_id, state, digest, model.proposal(digest, list(unique.values())),
+                           automatic=True, workflow_id=workflow_id)
+        except Exception as exc:
+            failed.append((number, type(exc).__name__))
+
+    async def run(window):
+        numbers = sorted({block for block, _, _ in window})
+        try:
+            for fact in await model.facts(window):
+                found[fact["evidence"]["block"]].append(fact)
+        except Exception as exc:
+            errors.update({number: type(exc).__name__ for number in numbers})
+        for number in numbers:
+            remaining[number] -= 1
+            if not remaining[number]:
+                save(number)
         if progress:
-            progress(done, len(numbers))
+            progress(len(todo) - sum(1 for left in remaining.values() if left), len(todo))
 
-    await asyncio.gather(*(tag(number) for number in numbers))
+    async with model:
+        await asyncio.gather(*(run(window) for window in windows))
     combine_chunk_reviews(doc_id, workflow_id)
-    return {"chunks": len(numbers), "failed": sorted(failed)}
+    return {"chunks": len(rows), "failed": sorted(failed)}
 
 
 def _chunk_facts(chunk: dict) -> list[dict]:

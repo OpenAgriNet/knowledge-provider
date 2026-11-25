@@ -352,8 +352,10 @@ async def test_auto_tag_step_tags_each_chunk_and_combines_unique_crops(db_connec
     monkeypatch.setenv("METADATA_MODEL", "local-test")
     monkeypatch.setattr(extraction.httpx, "AsyncClient", lambda **kw: real_client(transport=httpx.MockTransport(reply), **kw))
 
+    db_connection.update_document_stage(wid, "chunk_review")  # what saving chunks records
     assert await auto_tag_chunks_from_db(wid) == {"tagged_chunks": 4, "failed_chunks": 0, "skipped": False}
-    assert sorted(calls) == [1, 2, 3, 4]
+    assert calls == [1, 2, 3, 4]  # one request carried all four chunks
+    assert db_connection.get_document(wid)["stage"] == "chunking"
 
     def crops(review):
         return [fact["value"] for fact in review.get("accepted", {}).get("facts", []) if fact["field"] == "crop"]
@@ -405,5 +407,35 @@ def test_document_generate_combines_chunk_suggestions(test_client, db_connection
     pending = generated.json()["pending"]
     assert pending["origin"] == "chunks"
     assert [f["value"] for f in pending["facts"] if f["field"] == "crop"] == ["Wheat", "Rice"]
-    assert len(model) == 2  # one request per chunk
+    assert len(model) == 1  # small chunks travel together in one request
     assert test_client.get(f"/documents/{wid}/metadata-review?chunk_number=2").json()["pending"]["facts"]
+
+
+@pytest.mark.asyncio
+async def test_rate_limited_requests_wait_and_retry(monkeypatch):
+    replies = [httpx.Response(429, headers={"retry-after": "0"}), httpx.Response(503)]
+    sent = []
+    real_client = httpx.AsyncClient
+
+    def reply(request):
+        sent.append(1)
+        if replies:
+            return replies.pop(0)
+        facts = [{"field": "crop", "value": "Coffee", "block": 1, "quote": "Coffee"}]
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"facts": facts})}}]})
+
+    monkeypatch.setenv("METADATA_BASE_URL", "http://model.invalid/v1")
+    monkeypatch.setenv("METADATA_MODEL", "local-test")
+    monkeypatch.setattr(extraction.random, "uniform", lambda *_: 0)
+    monkeypatch.setattr(extraction, "_retry_delay", lambda response, attempt: 0)
+    monkeypatch.setattr(extraction.httpx, "AsyncClient", lambda **kw: real_client(transport=httpx.MockTransport(reply), **kw))
+    proposal = await extraction.extract_metadata([(1, "Coffee grows in shade.")])
+    assert [f["value"] for f in proposal["facts"]] == ["Coffee", "Crop"]
+    assert len(sent) == 3
+
+
+def test_retry_delay_follows_the_gateway(monkeypatch):
+    monkeypatch.setattr(extraction.random, "uniform", lambda *_: 0)
+    assert extraction._retry_delay(httpx.Response(429, headers={"retry-after": "60"}), 0) == 60
+    assert extraction._retry_delay(None, 2) == 20
+    assert extraction._retry_delay(httpx.Response(429, headers={"retry-after": "900"}), 0) == 120

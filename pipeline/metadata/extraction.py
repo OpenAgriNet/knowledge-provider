@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import random
 import re
 from typing import Annotated, Literal
 
@@ -112,7 +113,7 @@ def _max_windows() -> int | None:
     return max(int(raw), 1) if raw.isdigit() else None
 
 
-def _windows(blocks: list[tuple[int, str]]):
+def pack_windows(blocks: list[tuple[int, str]]) -> list[list[tuple[int, int, str]]]:
     # Combine consecutive blocks without discarding late pages. Large blocks
     # use overlapping windows; all evidence offsets remain block-relative.
     windows = []
@@ -130,6 +131,11 @@ def _windows(blocks: list[tuple[int, str]]):
                 break
     if batch:
         windows.append(batch)
+    return windows
+
+
+def _windows(blocks: list[tuple[int, str]]):
+    windows = pack_windows(blocks)
     limit = _max_windows()
     if limit is None and len(windows) > _MAX_WINDOWS:
         raise ValueError("Source exceeds the metadata extraction limit")
@@ -170,9 +176,11 @@ def _facts(response: Proposal, window: list, area_codes: dict) -> list[dict]:
         if entry.field == "location" and key in area_codes:
             fact["area"] = area_codes[key].model_dump(exclude_none=True)
         facts.append(fact)
-    if not any(fact["field"] == "category" and fact["value"] == "Crop" for fact in facts):
-        if crop := next((fact for fact in facts if fact["field"] == "crop"), None):
-            facts.append({"field": "category", "value": "Crop", "evidence": crop["evidence"]})
+    labelled = {fact["evidence"]["block"] for fact in facts if fact["field"] == "category" and fact["value"] == "Crop"}
+    for fact in list(facts):
+        if fact["field"] == "crop" and fact["evidence"]["block"] not in labelled:
+            labelled.add(fact["evidence"]["block"])
+            facts.append({"field": "category", "value": "Crop", "evidence": fact["evidence"]})
     return facts
 
 
@@ -190,49 +198,83 @@ def fact_key(fact: dict) -> tuple:
     return fact["field"], normalized_key(fact["value"]), proof["block"], proof["start"], proof["end"]
 
 
+_RETRY_STATUS = {429, 500, 502, 503, 504}
+_ATTEMPTS = 6
+
+
+def _retry_delay(response: httpx.Response | None, attempt: int) -> float:
+    """Honour the gateway's Retry-After (a rate limit says when to come back), else back off."""
+    after = response.headers.get("retry-after", "") if response is not None else ""
+    delay = float(after) if after.replace(".", "", 1).isdigit() else 5 * 2 ** attempt
+    return min(delay, 120) + random.uniform(0, 3)
+
+
+class MetadataModel:
+    """One client for extraction requests: METADATA_CONCURRENCY in flight, rate limits retried."""
+
+    def __init__(self):
+        endpoint, self.model = extraction_config()
+        if not endpoint or not self.model:
+            raise RuntimeError("Metadata model is not configured")
+        self.url = f"{endpoint}/chat/completions"
+        api_key = os.getenv("METADATA_API_KEY") or ""
+        self.headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        self.areas = _area_codes()
+        self.prompt = _prompt()
+        self.wanted = set(extract_fields())
+        self.timeout = _number("METADATA_REQUEST_TIMEOUT_SECONDS", 30)
+        tokens = "max_completion_tokens" if os.getenv("METADATA_USE_MAX_COMPLETION_TOKENS") == "true" else "max_tokens"
+        self.body = {"model": self.model, tokens: int(_number("METADATA_MAX_TOKENS", 4096))}
+        if os.getenv("METADATA_TEMPERATURE", "").strip():
+            self.body["temperature"] = _number("METADATA_TEMPERATURE", 0, minimum=0)
+        self.gate = asyncio.Semaphore(concurrency())
+        self.client = None
+
+    async def __aenter__(self):
+        self.client = httpx.AsyncClient(timeout=self.timeout, headers=self.headers)
+        return self
+
+    async def __aexit__(self, *exc):
+        await self.client.aclose()
+
+    async def facts(self, window: list[tuple[int, int, str]]) -> list[dict]:
+        """Checked facts for one window; evidence blocks are the window's block numbers."""
+        source = json.dumps([{"block": block, "text": text} for block, _, text in window], ensure_ascii=False)
+        body = {**self.body, "messages": [{"role": "user", "content": f"{self.prompt}\n\nSOURCE BLOCKS\n{source}"}]}
+        for attempt in range(_ATTEMPTS):
+            last = attempt == _ATTEMPTS - 1
+            async with self.gate:
+                try:
+                    response = await self.client.post(self.url, json=body)
+                except httpx.TransportError:
+                    if last:
+                        raise
+                    response = None
+            if response is not None and (response.status_code not in _RETRY_STATUS or last):
+                break
+            await asyncio.sleep(_retry_delay(response, attempt))
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"].strip()
+        content = re.sub(r"^\x60\x60\x60(?:json)?\s*|\s*\x60\x60\x60$", "", content)
+        return [fact for fact in _facts(Proposal.model_validate_json(content), window, self.areas) if fact["field"] in self.wanted]
+
+    def proposal(self, digest: str, facts: list[dict]) -> dict:
+        return {"source_digest": digest, "origin": "extracted", "model": self.model,
+                "prompt_version": _PROMPT_VERSION, "facts": facts}
+
+
 async def extract_metadata(blocks: list[tuple[int, str]]) -> dict:
-    endpoint, model = extraction_config()
-    if not endpoint or not model:
-        raise RuntimeError("Metadata model is not configured")
+    model = MetadataModel()
     windows = _windows(blocks)
     if not windows:
         raise ValueError("No saved text to extract metadata from")
     total_windows = len(windows)
     if (limit := _max_windows()) is not None:
         windows = windows[:limit]
-    api_key = os.getenv("METADATA_API_KEY") or ""
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-    areas = _area_codes()
-
-    prompt_text = _prompt()
-    wanted = set(extract_fields())
-    request_timeout = _number("METADATA_REQUEST_TIMEOUT_SECONDS", 30)
-    total_timeout = _number("METADATA_TOTAL_TIMEOUT_SECONDS", 600)
-    max_tokens = int(_number("METADATA_MAX_TOKENS", 4096))
-    extra = {}
-    if os.getenv("METADATA_TEMPERATURE", "").strip():
-        extra["temperature"] = _number("METADATA_TEMPERATURE", 0, minimum=0)
-
-    gate = asyncio.Semaphore(concurrency())
-
-    async def ask(client, window):
-        prompt = json.dumps([{"block": block, "text": text} for block, _, text in window], ensure_ascii=False)
-        async with gate:
-            response = await client.post(f"{endpoint}/chat/completions", json={
-                "model": model,
-                "messages": [{"role": "user", "content": f"{prompt_text}\n\nSOURCE BLOCKS\n{prompt}"}],
-                **extra,
-                ("max_completion_tokens" if os.getenv("METADATA_USE_MAX_COMPLETION_TOKENS") == "true"
-                 else "max_tokens"): max_tokens,
-            })
-        response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"].strip()
-        content = re.sub(r"^\x60\x60\x60(?:json)?\s*|\s*\x60\x60\x60$", "", content)
-        return _facts(Proposal.model_validate_json(content), window, areas)
 
     async def run():
-        async with httpx.AsyncClient(timeout=request_timeout, headers=headers) as client:
-            tasks = [asyncio.ensure_future(ask(client, window)) for window in windows]
+        async with model:
+            tasks = [asyncio.ensure_future(model.facts(window)) for window in windows]
             try:
                 results = await asyncio.gather(*tasks)
             except BaseException:
@@ -243,18 +285,14 @@ async def extract_metadata(blocks: list[tuple[int, str]]) -> dict:
         facts = {}
         for window_facts in results:
             for fact in window_facts:
-                if fact["field"] in wanted:
-                    facts.setdefault(fact_key(fact), fact)
+                facts.setdefault(fact_key(fact), fact)
         if len(facts) > 256:
             raise ValueError("Metadata suggestions exceed the review limit")
         return list(facts.values())
 
+    facts = await asyncio.wait_for(run(), timeout=_number("METADATA_TOTAL_TIMEOUT_SECONDS", 600))
     return {
-        "source_digest": source_digest(blocks),
-        "origin": "extracted",
-        "model": model,
-        "prompt_version": _PROMPT_VERSION,
-        "facts": await asyncio.wait_for(run(), timeout=total_timeout),
+        **model.proposal(source_digest(blocks), facts),
         **({"windows_used": len(windows), "windows_total": total_windows} if len(windows) < total_windows else {}),
     }
 
