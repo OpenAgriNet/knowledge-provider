@@ -14,7 +14,7 @@ def list_visible_providers(allowed_codes: list[str] | None = None) -> list[dict]
     if groups is None:
         return registered
 
-    registration_ids = {row["provider"]: row["id"] for row in registered}
+    registrations = {row["provider"]: row for row in registered}
     root = provider_group_root()
     allowed = set(allowed_codes) if allowed_codes is not None else None
     providers = []
@@ -22,7 +22,11 @@ def list_visible_providers(allowed_codes: list[str] | None = None) -> list[dict]
         name = group["name"]
         code = name.lower()
         if allowed is None or code in allowed:
-            providers.append({"id": registration_ids.get(code), "provider": code, "group": f"/{root}/{name}"})
+            registration = registrations.get(code, {})
+            providers.append({
+                "id": registration.get("id"), "provider": code, "group": f"/{root}/{name}",
+                "display_name": registration.get("display_name"),
+            })
     return sorted(providers, key=lambda row: row["provider"])
 
 

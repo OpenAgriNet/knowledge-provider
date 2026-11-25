@@ -53,6 +53,7 @@ export default function ProviderAccessPanel({ isSuperAdmin, requestedInstance, r
   const [memberQuery, setMemberQuery] = useState('')
   const [memberRole, setMemberRole] = useState('all')
   const appliedInstance = useRef('')
+  const selectedInstance = providers.find(option => option.provider === provider)
   const path = `/providers/${encodeURIComponent(provider)}/members`
   const query = memberQuery.trim().toLowerCase()
   const visibleMembers = members.filter(member =>
@@ -132,6 +133,27 @@ export default function ProviderAccessPanel({ isSuperAdmin, requestedInstance, r
     }
   }
 
+  async function saveDisplayName(event) {
+    event.preventDefault()
+    const displayName = new FormData(event.currentTarget).get('display_name').trim()
+    setBusy(true)
+    setNotice('')
+    setActionError('')
+    try {
+      const updated = await fetchJson(`/providers/${encodeURIComponent(provider)}/display-name`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ display_name: displayName || null }),
+      })
+      setProviders(current => current.map(option => option.provider === provider ? { ...option, ...updated } : option))
+      setNotice('Instance display name saved.')
+    } catch (error) {
+      setActionError(error.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function revoke() {
     if (await change(`${path}/${encodeURIComponent(revoking.user_id)}`, 'DELETE', undefined, 'Instance access revoked.')) {
       setRevoking(null)
@@ -143,13 +165,17 @@ export default function ProviderAccessPanel({ isSuperAdmin, requestedInstance, r
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h2 id="instance-access-title" className="text-lg font-semibold">Instance access</h2>
-          <p className="mt-1 text-sm text-muted-foreground">Manage members, intake and Registry settings for the selected instance.</p>
+          <p className="mt-1 text-sm text-muted-foreground">Manage the selected instance’s display name, members, intake and Registry settings.</p>
         </div>
         {providers.length > 0 && (
           <div className="w-full space-y-1.5 sm:max-w-64">
             <Label htmlFor="managed-instance">Instance</Label>
             <select id="managed-instance" className={selectStyle} value={provider} disabled={busy} onChange={selectInstance}>
-              {providers.map(option => <option key={option.provider} value={option.provider}>{formatInstanceLabel(option.provider) ?? 'Default instance'}</option>)}
+              {providers.map(option => {
+                const code = formatInstanceLabel(option.provider) ?? 'Default instance'
+                const label = option.display_name && option.display_name !== code ? `${option.display_name} (${code})` : code
+                return <option key={option.provider} value={option.provider}>{label}</option>
+              })}
             </select>
           </div>
         )}
@@ -168,9 +194,28 @@ export default function ProviderAccessPanel({ isSuperAdmin, requestedInstance, r
         <Tabs defaultValue="members" className="space-y-3">
           <TabsList aria-label="Instance settings">
             <TabsTrigger value="members">Members</TabsTrigger>
+            <TabsTrigger value="details">Details</TabsTrigger>
             <TabsTrigger value="intake">Intake</TabsTrigger>
             <TabsTrigger value="registry">Registry</TabsTrigger>
           </TabsList>
+
+          <TabsContent value="details" className="rounded-xl border border-border bg-card p-4 sm:p-5">
+            <form key={JSON.stringify([provider, selectedInstance?.display_name])} className="max-w-lg space-y-4" onSubmit={saveDisplayName}>
+              <div className="space-y-1">
+                <p className="text-sm font-medium">Instance code</p>
+                <p className="break-all text-sm text-muted-foreground">{provider}</p>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="instance-display-name">Display name</Label>
+                <Input id="instance-display-name" name="display_name" maxLength={120} aria-describedby="instance-display-name-hint"
+                  defaultValue={selectedInstance?.display_name || ''} disabled={busy || !selectedInstance?.id} />
+                <p id="instance-display-name-hint" className="text-sm text-muted-foreground">
+                  {selectedInstance?.id ? 'Shown in the instance picker and available for search citations. Leave blank to use the code in the picker.' : 'A display name can be set after the instance is registered.'}
+                </p>
+              </div>
+              <Button type="submit" disabled={busy || !selectedInstance?.id}>{busy ? 'Saving…' : 'Save display name'}</Button>
+            </form>
+          </TabsContent>
 
           <TabsContent value="members" className="overflow-hidden rounded-xl border border-border bg-card">
             <div className="flex flex-wrap items-end gap-3 border-b border-border px-4 py-4 sm:px-5">

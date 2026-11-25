@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Path
-from pydantic import BaseModel, StringConstraints
+from pydantic import BaseModel, ConfigDict, StringConstraints
 
 from pipeline import db
 from pipeline.auth import keycloak_admin
@@ -29,6 +29,13 @@ Email = Annotated[str, StringConstraints(strip_whitespace=True, max_length=254, 
 
 class OnboardProvider(BaseModel):
     admin_email: Email
+
+
+class UpdateDisplayName(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120,
+                                                   pattern=r"^[^\x00-\x1f\x7f]+$")] | None
 
 
 class ChangeProviderRole(BaseModel):
@@ -98,6 +105,16 @@ def onboard_provider(provider: ProviderCode, body: OnboardProvider, user: Requir
     instance_id = db.upsert_instance(group["path"], keycloak_group_id=group["id"])
     _set_member(provider, admin_id, ROLE_STATE_ADMIN, user)
     return {"id": instance_id, "provider": provider, "group": group["path"], "admin_user_id": admin_id}
+
+
+@router.put("/{provider}/display-name")
+def update_instance_display_name(provider: ProviderCode, body: UpdateDisplayName, user: CurrentUser):
+    _require_provider_manager(user, provider)
+    instance = db.set_instance_display_name(provider, body.display_name)
+    if instance is None:
+        raise HTTPException(404, "Registered instance not found")
+    logger.info("instance_display_name_updated provider=%s actor=%s", provider, user.user_id)
+    return instance
 
 
 @router.get("/{provider}/members")

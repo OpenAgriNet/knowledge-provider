@@ -4,6 +4,7 @@ CREATE TABLE public.instances (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     keycloak_group_id text,
     name text NOT NULL,
+    display_name text CHECK (char_length(display_name) BETWEEN 1 AND 120),
     path text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL

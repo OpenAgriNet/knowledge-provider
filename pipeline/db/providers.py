@@ -56,7 +56,7 @@ def list_provider_instances(allowed_codes: list[str] | None) -> list[dict]:
     with connection.get_connection() as conn:
         rows = conn.execute(
             """
-            SELECT id, name AS provider, path AS "group"
+            SELECT id, name AS provider, path AS "group", display_name
             FROM instances
             WHERE keycloak_group_id IS NOT NULL AND split_part(path, '/', 2) = %s
               AND (%s::text[] IS NULL OR name = ANY(%s::text[]))
@@ -65,6 +65,20 @@ def list_provider_instances(allowed_codes: list[str] | None) -> list[dict]:
             (provider_group_root(), allowed_codes, allowed_codes),
         ).fetchall()
     return [common._clean_row(row) for row in rows]
+
+
+def set_instance_display_name(provider: str, display_name: str | None) -> dict | None:
+    """Update the presentation label of a registered provider."""
+    with connection.get_connection() as conn:
+        row = conn.execute(
+            """
+            UPDATE instances SET display_name = %s, updated_at = now()
+            WHERE name = %s AND path = %s AND keycloak_group_id IS NOT NULL
+            RETURNING id, name AS provider, path AS "group", display_name
+            """,
+            (display_name, provider, _tenant_path(provider)),
+        ).fetchone()
+    return common._clean_row(row)
 
 
 def get_or_create_instance(instance: Optional[str], conn=None) -> str:

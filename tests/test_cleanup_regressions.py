@@ -1,6 +1,7 @@
 """Integration regressions found during the metadata and retrieval review."""
 
 import json
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -74,6 +75,11 @@ def test_local_liveness_requires_serving_state_owner_and_current_chunk(db_connec
     assert db.visible_document_hits([hit], index_name="serving") == []
     db.upsert_document_index_status(owner, "serving", doc_id=key, status="indexed")
     assert db.visible_document_hits([hit, {**hit, "chunk_num": 2}, {**hit, "chunk_num": 99}, {**hit, "instance": "mh"}], index_name="serving") == [hit]
+    with db.get_connection() as conn:
+        conn.execute("UPDATE instances SET display_name = 'Bharat Vistaar' WHERE name = 'bv'")
+    assert db.visible_document_hits([hit], index_name="serving") == [{**hit, "instance_name": "Bharat Vistaar"}]
+    with db.get_connection() as conn:
+        conn.execute("UPDATE instances SET display_name = NULL WHERE name = 'bv'")
     assert db.visible_document_hits([hit], index_name="unregistered") == []
     db.upsert_document_index_status(owner, "serving", doc_id="old-fingerprint", status="indexed")
     assert db.visible_document_hits([hit], index_name="serving") == []
@@ -167,8 +173,6 @@ async def test_editing_suggestion_retains_proof_and_accepting_subset_retains_oth
 
 
 def test_baseline_upgrade_preserves_catalog_ids_and_projection_ownership(db_connection):
-    from pathlib import Path
-
     db = db_connection
     owner = db.upsert_document('upgrade-owner', 'a'*32, 'test.pdf', 'blob://test.pdf', kind='scheme', code='upgrade')
     catalog_id = db.get_document(owner)['catalog_id']
@@ -181,7 +185,7 @@ def test_baseline_upgrade_preserves_catalog_ids_and_projection_ownership(db_conn
             conn.execute('ALTER TABLE catalogs ADD CONSTRAINT catalogs_instance_id_type_key UNIQUE(instance_id,type)')
             conn.execute("CREATE VIEW legacy_document_catalog_types AS SELECT * FROM (VALUES ('scheme','openagrinet:AgricultureResource'),('advisory','openagrinet:KnowledgeAdvisory'),('video','openagrinet:VideoResource')) m(kind,catalog_type)")
             conn.execute('CREATE VIEW catalog_status AS SELECT id FROM documents')
-            conn.execute("DELETE FROM schema_migrations WHERE version='0025'")
+            conn.execute("DELETE FROM schema_migrations WHERE version > '0024'")
             conn.execute("INSERT INTO schema_migrations(version,name) VALUES ('0024','previous_baseline')")
             conn.execute("UPDATE documents SET metadata=metadata || %s WHERE id=%s", (Jsonb({
                 'index_status': {'dev': {'index_name':'serving','doc_id':'a'*32,'status':'indexed'}, 'prod': {'index_name':'published','doc_id':'b'*32,'status':'indexed'}},
@@ -193,3 +197,21 @@ def test_baseline_upgrade_preserves_catalog_ids_and_projection_ownership(db_conn
             assert set(metadata['index_status']) == {'serving','published'}
             assert metadata['index_status']['published']['publication'] is True
             assert metadata['superseded_doc_ids'] == {'published':['old-key']}
+
+
+def test_instance_label_migration_preserves_existing_instance_identity(db_connection):
+    db = db_connection
+    instance_id = db.upsert_instance("/states/RICE", "rice-group-for-label-upgrade")
+    migration = Path(__file__).resolve().parents[1] / "migrations/0026_instance_display_name.sql"
+    with db.get_connection() as conn:
+        with conn.transaction(force_rollback=True):
+            conn.execute("ALTER TABLE instances DROP COLUMN display_name")
+            conn.execute(migration.read_text())
+            conn.execute(migration.read_text())
+            row = conn.execute(
+                "SELECT name, path, keycloak_group_id, display_name FROM instances WHERE id = %s", (instance_id,),
+            ).fetchone()
+            assert row == {
+                "name": "rice", "path": "/states/RICE", "keycloak_group_id": "rice-group-for-label-upgrade",
+                "display_name": None,
+            }
