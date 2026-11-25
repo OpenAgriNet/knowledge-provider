@@ -94,6 +94,11 @@ def _number(name: str, default: float, *, minimum: float = 1) -> float:
         return default
 
 
+def chunk_tagging_timeout() -> float:
+    """Total time for tagging all chunks; below the 30-minute chunking activity so it stops cleanly."""
+    return _number("METADATA_CHUNK_TAGGING_TIMEOUT_SECONDS", 1500)
+
+
 def _prompt() -> str:
     path = os.getenv("METADATA_PROMPT_PATH", "").strip()
     text = open(path, encoding="utf-8").read() if path else _PROMPT

@@ -348,6 +348,7 @@ The document pipeline can propose metadata after it saves the source text and ch
 | `METADATA_REQUEST_TIMEOUT_SECONDS` | `30` | Per-request timeout. |
 | `METADATA_TOTAL_TIMEOUT_SECONDS` | `600` | Whole-extraction timeout. It runs inside the 30-minute chunking activity, so keep it well below that. |
 | `METADATA_CONCURRENCY` | `4` | Requests in flight at once. A rate limit (429) or outage (5xx) is retried up to six times, waiting as the endpoint's `Retry-After` says (at most 120 s). Lower it if the endpoint rate-limits. |
+| `METADATA_CHUNK_TAGGING_TIMEOUT_SECONDS` | `1500` | Total time to tag all chunks of a document. Keep it below the 30-minute chunking activity. On timeout, chunks already tagged stay saved, the rest are reported as failed, and a retry or **Generate** resumes them. A chunk or combined document suggestion with more than 256 facts is not stored whole: a chunk fails, and the document keeps its first 256 and records `facts_total`. |
 | `METADATA_PROMPT_PATH` | unset | File that replaces the built-in extraction prompt. |
 | `METADATA_MAX_WINDOWS` | unset | Read only the first N windows (about 12,000 characters each) of a long document instead of failing with "Source exceeds the metadata extraction limit". Without it, up to 120 windows (about 300 pages) are read. The proposal records `windows_used` and `windows_total`. Reviewers add anything missed with **Edit metadata**. |
 

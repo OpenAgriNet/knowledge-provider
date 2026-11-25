@@ -12,6 +12,7 @@ from pipeline.documents import document_validity
 from pipeline.metadata.extraction import (
     MetadataModel,
     auto_accept_fields,
+    chunk_tagging_timeout,
     extract_metadata,
     extraction_config,
     fact_key,
@@ -23,6 +24,8 @@ from pipeline.metadata.metadata_edits import MetadataEdit, supplied_facts
 from pipeline.metadata.schema_packs import validate_subject_category
 
 from . import audit, connection, document_reads, document_writes
+
+_MAX_FACTS = 256  # same review limit as accept_review and whole-document extraction
 
 
 class StaleMetadata(ValueError):
@@ -306,7 +309,7 @@ async def tag_chunks(doc_id: str, workflow_id: str | None = None, progress=None)
     windows = pack_windows(blocks)
     # A chunk longer than one window spans several; it is saved once all of them answer.
     remaining = Counter(number for window in windows for number in {block for block, _, _ in window})
-    found, errors, failed = defaultdict(list), {}, []
+    found, errors, failed, saved = defaultdict(list), {}, [], set()
 
     def save(number):
         if number in errors:
@@ -315,12 +318,17 @@ async def tag_chunks(doc_id: str, workflow_id: str | None = None, progress=None)
         unique = {}
         for fact in found.pop(number, []):
             unique.setdefault(fact_key(fact), fact)
+        if len(unique) > _MAX_FACTS:
+            failed.append((number, "TooManyFacts"))
+            return
         row_id, state, digest = todo[number]
         try:
             _save_proposal(doc_id, number, row_id, state, digest, model.proposal(digest, list(unique.values())),
                            automatic=True, workflow_id=workflow_id)
         except Exception as exc:
             failed.append((number, type(exc).__name__))
+        else:
+            saved.add(number)
 
     async def run(window):
         numbers = sorted({block for block, _, _ in window})
@@ -336,8 +344,13 @@ async def tag_chunks(doc_id: str, workflow_id: str | None = None, progress=None)
         if progress:
             progress(len(todo) - sum(1 for left in remaining.values() if left), len(todo))
 
-    async with model:
-        await asyncio.gather(*(run(window) for window in windows))
+    # Saved chunks stay saved: on timeout the rest are reported as failed and a retry resumes them.
+    try:
+        async with model:
+            await asyncio.wait_for(asyncio.gather(*(run(window) for window in windows)), chunk_tagging_timeout())
+    except asyncio.TimeoutError:
+        done = saved | {number for number, _ in failed}
+        failed.extend((number, "Timeout") for number in todo if number not in done)
     combine_chunk_reviews(doc_id, workflow_id)
     return {"chunks": len(rows), "failed": sorted(failed)}
 
@@ -380,6 +393,10 @@ def _combine(conn, doc_id: str, workflow_id: str | None, *, chunk_edit: bool = F
         "id": str(uuid4()), "source_digest": digest, "origin": "chunks",
         "model": extraction_config()[1], "facts": list(facts.values()),
     }
+    if len(proposal["facts"]) > _MAX_FACTS:
+        # Keep the earliest facts and say so: a reviewer adds anything missed with Edit metadata.
+        proposal["facts_total"] = len(proposal["facts"])
+        proposal["facts"] = proposal["facts"][:_MAX_FACTS]
     current = {**fresh, "pending": proposal}
     if (current.get("accepted") or {}).get("origin") == "extracted-auto":
         # A machine-accepted list follows the chunks; a reviewer's accepted list is kept.

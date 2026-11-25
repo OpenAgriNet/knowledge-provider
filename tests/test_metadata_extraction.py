@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import httpx
@@ -439,3 +440,78 @@ def test_retry_delay_follows_the_gateway(monkeypatch):
     assert extraction._retry_delay(httpx.Response(429, headers={"retry-after": "60"}), 0) == 60
     assert extraction._retry_delay(None, 2) == 20
     assert extraction._retry_delay(httpx.Response(429, headers={"retry-after": "900"}), 0) == 120
+
+
+def _seed_chunks(db_connection, sample_document, texts):
+    wid = sample_document["workflow_id"]
+    doc_id = db_connection.get_document(wid)["id"]
+    db_connection.save_pages(wid, [{"page_number": 1, "original_markdown": " ".join(texts.values())}])
+    db_connection.save_chunks(wid, [{"chunk_number": n, "original_text": text} for n, text in texts.items()])
+    return wid, doc_id
+
+
+def _serve(monkeypatch, reply):
+    real_client = httpx.AsyncClient
+    monkeypatch.setenv("METADATA_BASE_URL", "http://model.invalid/v1")
+    monkeypatch.setenv("METADATA_MODEL", "local-test")
+    monkeypatch.setattr(extraction.httpx, "AsyncClient", lambda **kw: real_client(transport=httpx.MockTransport(reply), **kw))
+
+
+def _one_crop_per_block(request):
+    prompt = json.loads(request.content)["messages"][0]["content"]
+    facts = [
+        {"field": "crop", "value": f"Crop{item['block']}", "block": item["block"], "quote": item["text"][:12]}
+        for item in json.loads(prompt.split("SOURCE BLOCKS\n", 1)[1])
+    ]
+    return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"facts": facts})}}]})
+
+
+@pytest.mark.asyncio
+async def test_chunk_tagging_stops_at_the_total_timeout_and_a_retry_resumes(db_connection, sample_document, monkeypatch):
+    wid, doc_id = _seed_chunks(db_connection, sample_document, {1: "alpha text", 2: "beta text"})
+    slow = True
+
+    async def reply(request):
+        if slow:
+            await asyncio.sleep(5)
+        return _one_crop_per_block(request)
+
+    _serve(monkeypatch, reply)
+    monkeypatch.setenv("METADATA_CHUNK_TAGGING_TIMEOUT_SECONDS", "1")
+    result = await metadata_review.tag_chunks(doc_id, wid)
+    assert result == {"chunks": 2, "failed": [(1, "Timeout"), (2, "Timeout")]}
+
+    slow = False  # the retry finishes what the timeout left
+    assert (await metadata_review.tag_chunks(doc_id, wid))["failed"] == []
+    assert metadata_review.get_review(doc_id, 1)["pending"]["facts"]
+
+
+@pytest.mark.asyncio
+async def test_chunk_with_too_many_facts_fails_alone(db_connection, sample_document, monkeypatch):
+    # One response may carry 128 facts, but a long chunk spans several windows and adds them up.
+    long_chunk = " ".join(f"marker{n:05d}" for n in range(4000))
+    wid, doc_id = _seed_chunks(db_connection, sample_document, {1: long_chunk, 2: "tiny chunk"})
+
+    def reply(request):
+        prompt = json.loads(request.content)["messages"][0]["content"]
+        item = json.loads(prompt.split("SOURCE BLOCKS\n", 1)[1])[0]
+        words = item["text"].split()[:100] if item["block"] == 1 else []
+        facts = [{"field": "crop", "value": f"Crop{word}", "block": 1, "quote": word} for word in words]
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"facts": facts})}}]})
+
+    _serve(monkeypatch, reply)
+    result = await metadata_review.tag_chunks(doc_id, wid)
+    assert result["failed"] == [(1, "TooManyFacts")]
+    assert "pending" not in metadata_review.get_review(doc_id, 1)
+
+
+@pytest.mark.asyncio
+async def test_combined_document_suggestion_keeps_the_first_256_facts(db_connection, sample_document, monkeypatch):
+    # Each chunk fills a window of its own, so every chunk adds one crop and the union reaches 300.
+    wid, doc_id = _seed_chunks(db_connection, sample_document, {n: f"passage {n}: " + "x" * 8000 for n in range(1, 301)})
+    _serve(monkeypatch, _one_crop_per_block)
+    assert (await metadata_review.tag_chunks(doc_id, wid))["failed"] == []
+    pending = metadata_review.get_review(doc_id, None)["pending"]
+    assert len(pending["facts"]) == 256
+    assert pending["facts_total"] == 300 + 1  # 300 crops and the shared Crop category
+    assert pending["facts"][0]["value"] == "Crop1"
