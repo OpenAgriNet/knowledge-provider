@@ -15,6 +15,36 @@ from pipeline.auth.permissions import Permission
 from pipeline.vector_store import qdrant_store
 
 
+def test_instance_display_name_updates_only_the_scoped_label(db_connection, monkeypatch):
+    monkeypatch.setenv("AUTH_DISABLED", "false")
+    monkeypatch.setenv("KEYCLOAK_VERIFY_LIVE_GROUPS", "true")
+    monkeypatch.setenv("KEYCLOAK_PROVIDER_GROUP_ROOT", "states")
+    monkeypatch.setattr(keycloak_admin, "list_provider_groups", lambda: [
+        {"name": "RICE-LAB"}, {"name": "COTTON-HUB"},
+    ])
+    instance_id = db.upsert_instance("/states/RICE-LAB", "rice-group")
+    db.upsert_instance("/states/COTTON-HUB", "cotton-group")
+    app = FastAPI()
+    app.include_router(providers.router)
+    app.dependency_overrides[deps.get_current_user] = lambda: claims_to_user({
+        "sub": "owner", "groups": ["/states/RICE-LAB/admin"],
+    })
+    client = TestClient(app)
+    path = "/providers/rice-lab/display-name"
+
+    assert client.put("/providers/cotton-hub/display-name", json={"display_name": "Other"}).status_code == 403
+    assert client.put(path, json={"display_name": "  "}).status_code == 422
+    assert client.put(path, json={"display_name": "Rice Laboratory", "provider": "other"}).status_code == 422
+    response = client.put(path, json={"display_name": " Rice Laboratory "})
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "id": instance_id, "provider": "rice-lab", "group": "/states/RICE-LAB", "display_name": "Rice Laboratory",
+    }
+    assert db.upsert_instance("/states/RICE-LAB", "rice-group") == instance_id
+    assert client.get("/providers").json()["providers"] == [response.json()]
+    assert client.put(path, json={"display_name": None}).json()["display_name"] is None
+
+
 class KeycloakGroups:
     """Test double at the Keycloak HTTP boundary, with independent memberships."""
 

@@ -74,6 +74,11 @@ def test_local_liveness_requires_serving_state_owner_and_current_chunk(db_connec
     assert db.visible_document_hits([hit], index_name="serving") == []
     db.upsert_document_index_status(owner, "serving", doc_id=key, status="indexed")
     assert db.visible_document_hits([hit, {**hit, "chunk_num": 2}, {**hit, "chunk_num": 99}, {**hit, "instance": "mh"}], index_name="serving") == [hit]
+    with db.get_connection() as conn:
+        conn.execute("UPDATE instances SET display_name = 'Bharat Vistaar' WHERE name = 'bv'")
+    assert db.visible_document_hits([hit], index_name="serving") == [{**hit, "instance_name": "Bharat Vistaar"}]
+    with db.get_connection() as conn:
+        conn.execute("UPDATE instances SET display_name = NULL WHERE name = 'bv'")
     assert db.visible_document_hits([hit], index_name="unregistered") == []
     db.upsert_document_index_status(owner, "serving", doc_id="old-fingerprint", status="indexed")
     assert db.visible_document_hits([hit], index_name="serving") == []

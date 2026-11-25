@@ -64,6 +64,13 @@ def clear_superseded_doc_ids(workflow_id: str, env: str, doc_ids: list[str]) -> 
         )
 
 
+def _with_instance_name(hit: dict, display_name: str | None) -> dict:
+    result = {key: value for key, value in hit.items() if key != "instance_name"}
+    if display_name:
+        result["instance_name"] = display_name
+    return result
+
+
 def visible_document_hits(hits: list[dict], *, index_name: str) -> list[dict]:
     """Require a successful serving projection and PostgreSQL passage ownership."""
     keys = list({str(hit.get("doc_id")) for hit in hits if hit.get("doc_id")})
@@ -72,7 +79,7 @@ def visible_document_hits(hits: list[dict], *, index_name: str) -> list[dict]:
     with connection.get_connection() as conn:
         documents = conn.execute(
             """
-            SELECT d.id::text, i.name AS instance, state.value->>'doc_id' AS indexed_key,
+            SELECT d.id::text, i.name AS instance, i.display_name, state.value->>'doc_id' AS indexed_key,
                    cw.id::text AS current_workflow_id, cw.temporal_workflow_id,
                    frozen.workflow_id::text AS frozen_workflow_id, frozen.passages
             FROM documents d JOIN instances i ON i.id = d.provider_id
@@ -103,7 +110,7 @@ def visible_document_hits(hits: list[dict], *, index_name: str) -> list[dict]:
     from pipeline.search.passage_projection import clean_text_for_ingestion
 
     current_chunks = {(row["document_id"], row["chunk_number"]): row for row in chunks}
-    accepted = set()
+    accepted = {}
     for row in documents:
         owner = projection_owner(row["indexed_key"])
         if owner is not None and owner != row["id"]:
@@ -124,8 +131,8 @@ def visible_document_hits(hits: list[dict], *, index_name: str) -> list[dict]:
                     continue
             elif not current or current["is_excluded"] or clean_text_for_ingestion(current["text"]) != hit.get("text"):
                 continue
-            accepted.add(id(hit))
-    return [hit for hit in hits if id(hit) in accepted]
+            accepted[id(hit)] = row["display_name"]
+    return [_with_instance_name(hit, accepted[id(hit)]) for hit in hits if id(hit) in accepted]
 
 
 def visible_release_hits(hits: list[dict], *, network_id: str | None = None) -> list[dict]:
@@ -137,15 +144,16 @@ def visible_release_hits(hits: list[dict], *, network_id: str | None = None) -> 
         return [] if network_id else hits
     with connection.get_connection() as conn:
         rows = conn.execute(
-            "SELECT n.revision_id::text, n.network_id FROM network_releases n "
+            "SELECT n.revision_id::text, n.network_id, i.display_name FROM network_releases n "
             "JOIN documents d ON d.id = n.document_id "
+            "JOIN instances i ON i.id = d.provider_id "
             "WHERE n.revision_id = ANY(%s::uuid[]) AND n.withdrawn_at IS NULL AND NOT d.is_disabled "
             "AND d.metadata->>'network_visible' IS DISTINCT FROM 'false'",
             (list(revision_ids),),
         ).fetchall()
-    active = {(row["revision_id"], row["network_id"]) for row in rows}
+    active = {(row["revision_id"], row["network_id"]): row["display_name"] for row in rows}
     return [
-        hit
+        _with_instance_name(hit, active.get((hit.get("revision_id"), hit.get("release_network_id"))))
         for hit in hits
         if (network_id is None or hit.get("release_network_id") == network_id)
         and ((network_id is None and not hit.get("revision_id") and not hit.get("release_network_id"))

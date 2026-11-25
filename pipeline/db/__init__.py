@@ -262,6 +262,9 @@ from .providers import (
     list_provider_instances as list_provider_instances,
 )
 from .providers import (
+    set_instance_display_name as set_instance_display_name,
+)
+from .providers import (
     upsert_instance as upsert_instance,
 )
 from .providers import (
