@@ -1,6 +1,18 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
+import { ChevronDown } from 'lucide-react'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
+
+const suggestedSeasons = ['Kharif', 'Rabi', 'Navarai', 'Samba']
+
+function distinctValues(values) {
+  const labels = new Map()
+  for (const value of values) {
+    const label = value?.trim()
+    if (label && !labels.has(label.toLowerCase())) labels.set(label.toLowerCase(), label)
+  }
+  return [...labels.values()]
+}
 
 function seedRows(facts) {
   const usedRules = new Set(facts.map(fact => fact.rule).filter(Boolean))
@@ -21,6 +33,7 @@ function seedRows(facts) {
 }
 
 export default function MetadataEditor({ review, labels, useSuggestions, isChunk, saving, busy, onSave, onCancel }) {
+  const suggestionId = useId()
   const saved = review.accepted?.facts || []
   const categoryOptions = review.category_options ?? []
   const owned = review.accepted?.overrides || saved.map(fact => fact.field)
@@ -36,6 +49,7 @@ export default function MetadataEditor({ review, labels, useSuggestions, isChunk
   const [editedFields, setEditedFields] = useState(proposedFields)
   const [clearedFields, setClearedFields] = useState(() => new Set(owned.filter(field => !saved.some(fact => fact.field === field))))
   const [nextKey, setNextKey] = useState(facts.length)
+  const knownFacts = [...current, ...(review.pending?.facts || []), ...(review.inherited || [])]
   const [error, setError] = useState('')
   const initialStart = review.validity_days?.valid_from || ''
   const initialEnd = review.validity_days?.valid_to || ''
@@ -119,23 +133,37 @@ export default function MetadataEditor({ review, labels, useSuggestions, isChunk
       {Object.keys(labels).map(field => {
         const label = labels[field]
         const fieldRows = rows.filter(row => row.field === field)
+        const options = distinctValues([
+          ...(field === 'season' ? suggestedSeasons : []),
+          ...knownFacts.filter(fact => fact.field === field).map(fact => fact.value),
+        ])
+        const listId = `${suggestionId}-${field}`
+        const hasCategoryEnum = field === 'category' && categoryOptions.length > 0
         return (
           <fieldset className="min-w-0 space-y-2 border-b border-border pb-3" key={field} disabled={busy}>
             <legend className="mb-1 text-sm font-semibold">{label}</legend>
             {fieldRows.length === 0 && <p className="text-xs text-muted-foreground">{isChunk && clearedFields.has(field) ? 'Cleared for this chunk' : 'No value recorded'}</p>}
+            {options.length > 0 && !hasCategoryEnum && (
+              <datalist id={listId}>
+                {options.map(option => <option key={option} value={option} />)}
+              </datalist>
+            )}
             {fieldRows.map((row, index) => (
               <div key={row.key} className="space-y-2">
                 <div className="flex flex-wrap items-center gap-2">
-                  {field === 'category' && categoryOptions.length > 0 ? (
-                    <select aria-label={`${label} ${index + 1}`} className="h-9 min-w-0 max-w-full flex-1 rounded-md border border-input bg-background px-3 text-sm"
-                      value={row.value} onChange={event => update(row, { value: event.target.value })}>
-                      <option value="" disabled>Choose a category</option>
-                      {[...new Set([...categoryOptions, ...(row.value ? [row.value] : [])])].map(option => (
-                        <option key={option} value={option}>{option}</option>
-                      ))}
-                    </select>
+                  {hasCategoryEnum ? (
+                    <div className="relative min-w-0 basis-40 flex-1">
+                      <select aria-label={`${label} ${index + 1}`} className="h-9 w-full appearance-none rounded-md border border-input bg-background ps-3 pe-9 text-sm"
+                        value={row.value} onChange={event => update(row, { value: event.target.value })}>
+                        <option value="" disabled>Choose a category</option>
+                        {[...new Set([...categoryOptions, ...(row.value ? [row.value] : [])])].map(option => (
+                          <option key={option} value={option}>{option}</option>
+                        ))}
+                      </select>
+                      <ChevronDown aria-hidden="true" className="pointer-events-none absolute end-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                    </div>
                   ) : (
-                    <Input aria-label={`${label} ${index + 1}`} className="min-w-40 flex-1" maxLength={128}
+                    <Input list={options.length ? listId : undefined} aria-label={`${label} ${index + 1}`} className="min-w-0 basis-40 flex-1" maxLength={128}
                       value={row.value} onChange={event => update(row, { value: event.target.value })} />
                   )}
                   <Button type="button" size="sm" variant="ghost" aria-label={`Remove ${label.toLowerCase()} ${index + 1}`}

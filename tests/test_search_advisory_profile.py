@@ -32,18 +32,25 @@ ADVISORIES = [
 
 
 def advisory_points(doc, pop, season, areas, window, crop, origin):
-    texts = [TEXT + (WINDOW if window else "")]
+    structured = doc.startswith("a-")
+    texts = [TEXT + (WINDOW if window and not structured else "")]
     if doc.startswith("a-"):
         texts.append("sorghum advisory second passage")  # same entry: must collapse to one hit
-    db.upsert_document(doc, doc, f"{doc}.txt", f"blob://{doc}.txt", instance="bv", kind="advisory", code=doc, name=doc)
-    db.save_chunks(doc, [{"chunk_number": n, "original_text": t} for n, t in enumerate(texts, start=1)])
-    db.upsert_document_index_status(doc, INDEX, doc_id=doc, chunk_count_indexed=len(texts), status="indexed")
     metadata = {"subject_categories": ["Crop"], "seasons": [season], "coverage_areas": areas,
                 "agriculture_subjects": [{"descriptor": {"name": crop}}],
                 "subjects": [{"type": "crop", "descriptor": {"name": crop}}],
                 "attributes": {"source_record": {"content_id": 1, "pop_id": pop}}}
+    if structured:
+        metadata["attributes"]["applicability"] = [{"relativeTiming": {
+            "event": "Sowing", "fromDays": 105, "toDays": 120,
+        }}]
+    db.upsert_document(doc, doc, f"{doc}.txt", f"blob://{doc}.txt", instance="bv", kind="advisory",
+                       code=doc, name=doc, knowledge_metadata=metadata)
+    db.save_chunks(doc, [{"chunk_number": n, "original_text": t} for n, t in enumerate(texts, start=1)])
+    db.upsert_document_index_status(doc, INDEX, doc_id=doc, chunk_count_indexed=len(texts), status="indexed")
+    saved_metadata = db.get_document(doc)["knowledge_metadata"]
     records = _prepare_records(doc, doc, [{"chunk_number": n, "original_text": t} for n, t in enumerate(texts, start=1)],
-                               workflow_id=doc, instance="bv", kind="advisory", knowledge_metadata=metadata, source_type=origin)
+                               workflow_id=doc, instance="bv", kind="advisory", knowledge_metadata=saved_metadata, source_type=origin)
     return [{**record, "doc_id": doc} for record in records]
 
 
@@ -76,6 +83,8 @@ def test_season_crop_stage_and_place_order_the_answer(advisory_store, test_clien
     # a: +0.2 place +0.15 window +0.1 season | d: window+season | b: statewide place | c: season only
     assert [hit["doc_id"] for hit in body["hits"]] == [
         "a-pune-rabi-window", "d-elsewhere-rabi-window", "b-maharashtra-kharif", "c-national-rabi"]
+    assert body["hits"][0]["metadata"]["attributes"]["applicability"][0]["relativeTiming"]["fromDays"] == 105
+    assert "start_period" not in body["hits"][0]["advisory"]
     assert [hit["location_match"] for hit in body["hits"]] == ["matched", "other", "matched", "national"]
     assert [hit["origin"] for hit in body["hits"]] == ["webhook", "webhook", "webhook", "docs-pipeline"]
     assert body["advisory_search"] == {
