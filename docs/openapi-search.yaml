@@ -196,14 +196,6 @@ components:
           minLength: 1
           title: Query
           type: string
-        search_profile:
-          default: default
-          enum:
-          - default
-          - scheme
-          - advisory
-          title: Search Profile
-          type: string
         advisory:
           anyOf:
           - $ref: '#/components/schemas/AdvisoryContext'
@@ -763,7 +755,7 @@ components:
       type: object
     AdvisoryContext:
       additionalProperties: false
-      description: 'The farmer''s situation for the advisory profile. The crop filters;
+      description: 'The farmer''s situation for an advisory search. The crop filters;
 
         season, crop stage and place only reorder.'
       properties:

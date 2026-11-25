@@ -1,4 +1,4 @@
-"""Scheme question understanding for the ``scheme`` search profile.
+"""Scheme question understanding for ``document_kind="scheme"``.
 
 Ported from the BV provider (bharat-provider-backend ``scheme-query.util.ts``)
 so this API answers scheme questions the way the BV consumer did: resolve the
