@@ -13,7 +13,7 @@ it('edits a supplied category as text when the schema has no enum', async () => 
   const details = screen.getByText('Document metadata').closest('details')
   details.open = true
   fireEvent(details, new Event('toggle'))
-  const field = await screen.findByRole('textbox', { name: 'Category 1' })
+  const field = await screen.findByLabelText('Category 1')
   expect(field.value).toBe('Incident response')
   fireEvent.change(field, { target: { value: 'Emergency advice' } })
   fireEvent.click(screen.getByRole('button', { name: 'Save metadata' }))
@@ -62,13 +62,13 @@ it.each([undefined, 2])('edits and renders saved metadata for scope %s', async c
   details.open = true
   fireEvent(details, new Event('toggle'))
   fireEvent.click(await screen.findByRole('button', { name: 'Edit suggestions' }))
-  fireEvent.change(screen.getByRole('textbox', { name: 'Crop 1' }), { target: { value: 'Maize' } })
+  fireEvent.change(screen.getByLabelText('Crop 1'), { target: { value: 'Maize' } })
   fireEvent.click(screen.getByRole('button', { name: 'Save metadata' }))
   await waitFor(() => expect(fetchJson).toHaveBeenCalledWith(base + suffix, expect.objectContaining({
     method: 'PUT',
     body: JSON.stringify({ version: 'test-version', overrides: ['crop'], facts: [{ field: 'crop', value: 'Maize', evidence }] }),
   })))
-  expect(await screen.findByRole('textbox', { name: 'Crop 1' })).toHaveValue('Maize')
+  expect(await screen.findByLabelText('Crop 1')).toHaveValue('Maize')
 })
 
 it('edits document validity together with other metadata', async () => {
@@ -110,7 +110,7 @@ it('opens directly on chunk fields and inherits after removing the last local va
   details.open = true
   fireEvent(details, new Event('toggle'))
 
-  expect(await screen.findByRole('textbox', { name: 'Crop 1' })).toHaveValue('Maize')
+  expect(await screen.findByLabelText('Crop 1')).toHaveValue('Maize')
   expect(screen.queryByRole('combobox', { name: 'Category 1' })).not.toBeInTheDocument()
   expect(screen.getByRole('button', { name: 'Add category' })).toBeInTheDocument()
   expect(screen.queryByRole('checkbox', { name: /override/i })).not.toBeInTheDocument()
@@ -138,8 +138,8 @@ it('shows supplied document values and saves only edited fields as reviewer valu
   fireEvent(details, new Event('toggle'))
 
   expect(await screen.findByRole('combobox', { name: 'Category 1' })).toHaveValue('Crop')
-  expect(screen.getByRole('textbox', { name: 'Crop 1' })).toHaveValue('Wheat')
-  fireEvent.change(screen.getByRole('textbox', { name: 'Crop 1' }), { target: { value: 'Maize' } })
+  expect(screen.getByLabelText('Crop 1')).toHaveValue('Wheat')
+  fireEvent.change(screen.getByLabelText('Crop 1'), { target: { value: 'Maize' } })
   fireEvent.click(screen.getByRole('button', { name: 'Save metadata' }))
   await waitFor(() => expect(fetchJson).toHaveBeenCalledWith(path, expect.objectContaining({
     method: 'PUT',
@@ -180,4 +180,27 @@ it('can clear a chunk field explicitly and then return to the document value', a
   await waitFor(() => expect(fetchJson.mock.calls.filter(([, options]) => options.method === 'PUT')).toHaveLength(2))
   requests = fetchJson.mock.calls.filter(([, options]) => options.method === 'PUT')
   expect(JSON.parse(requests[1][1].body)).toMatchObject({ overrides: [], facts: [] })
+})
+
+it('suggests current and schema season values and allows a new local season', async () => {
+  fetchJson.mockReset().mockResolvedValueOnce({
+    version: 'test-version',
+    supplied: [{ field: 'season', value: 'Local dry season' }],
+    pending: { id: 'proposal', facts: [{ field: 'season', value: 'rabi' }] },
+  }).mockResolvedValueOnce({
+    version: 'saved-version',
+    accepted: { facts: [{ field: 'season', value: 'Locally named season' }], overrides: ['season'] },
+  })
+  render(<MetadataReview workflowId="doc-suggestions" canEdit />)
+  const details = screen.getByText('Document metadata').closest('details')
+  details.open = true
+  fireEvent(details, new Event('toggle'))
+  const season = await screen.findByRole('combobox', { name: 'Season 1' })
+  expect([...season.list.options].map(option => option.value)).toEqual(
+    ['Kharif', 'Rabi', 'Navarai', 'Samba', 'Local dry season'],
+  )
+  fireEvent.change(season, { target: { value: 'Locally named season' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save metadata' }))
+  await waitFor(() => expect(fetchJson).toHaveBeenCalledWith('/documents/doc-suggestions/metadata-review',
+    expect.objectContaining({ method: 'PUT', body: expect.stringContaining('Locally named season') })))
 })
