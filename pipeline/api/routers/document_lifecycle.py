@@ -90,7 +90,9 @@ def _delete_document_points_from_prod(doc: dict) -> dict:
         store = QdrantVectorStore(client=client)
         return _delete_all_doc_ids(store, collection, doc_ids)
     except Exception as exc:
-        logging.exception("prod vector delete failed doc_ids=%s collection=%s", doc_ids, collection)
+        logging.exception(
+            "prod vector delete failed", extra={"doc_ids": doc_ids, "collection": collection}
+        )
         return {"deleted": False, "error": str(exc), "collection": collection}
 
 
@@ -121,7 +123,9 @@ def _delete_scheme_points_from_prod(doc: dict) -> dict:
         store = QdrantVectorStore(client=client)
         return _delete_all_doc_ids(store, collection, doc_ids)
     except Exception as exc:
-        logging.exception("prod vector delete failed doc_ids=%s collection=%s", doc_ids, collection)
+        logging.exception(
+            "prod vector delete failed", extra={"doc_ids": doc_ids, "collection": collection}
+        )
         return {"deleted": False, "error": str(exc), "collection": collection}
 
 def _delete_stored_artifacts(workflow_id: str) -> dict:

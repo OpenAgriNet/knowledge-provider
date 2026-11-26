@@ -17,7 +17,7 @@ from pipeline.intake.source_intake import reconcile_pending_sources
 from pipeline.metadata.intake_profiles import load_intake_profiles
 from pipeline.network.network_publisher import validate_network_adapters
 from pipeline.network.release_policy import validate_projection_destinations
-from pipeline.telemetry.logs import configure_logs, reset_logs
+from pipeline.telemetry.logs import configure_console, configure_logs, reset_logs
 from pipeline.temporal.activities.indexing import (
     ingest_document_from_db,
     ingest_to_vector_db,
@@ -61,11 +61,7 @@ from pipeline.translation.service import (
 LOG_LEVEL = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").strip().upper(), logging.INFO)
 
 # Configure verbose logging
-logging.basicConfig(
-    level=LOG_LEVEL,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    datefmt='%H:%M:%S'
-)
+configure_console(LOG_LEVEL)
 
 # Set Temporal SDK logging to INFO regardless of LOG_LEVEL - its own DEBUG
 # output is noisy and rarely what LOG_LEVEL=DEBUG is set to see.
@@ -123,7 +119,7 @@ async def _run():
 
     temporal_host = os.environ.get("TEMPORAL_HOST", "localhost:7233")
     max_concurrent_activities = int(os.environ.get("TEMPORAL_MAX_CONCURRENT_ACTIVITIES", "4"))
-    logging.info("worker startup: connecting to Temporal at %s", temporal_host)
+    logging.info("worker startup: connecting to Temporal", extra={"temporal": temporal_host})
 
     client = await Client.connect(temporal_host)
 
@@ -162,10 +158,12 @@ async def _run():
 
 
     logging.info(
-        "worker started queue=%s temporal=%s activity_concurrency=%s",
-        TASK_QUEUE,
-        temporal_host,
-        max_concurrent_activities,
+        "worker started",
+        extra={
+            "queue": TASK_QUEUE,
+            "temporal": temporal_host,
+            "activity_concurrency": max_concurrent_activities,
+        },
     )
     recovery = asyncio.create_task(_recover_source_starts(client))
     pulls = asyncio.create_task(_poll_scheduled_sources())

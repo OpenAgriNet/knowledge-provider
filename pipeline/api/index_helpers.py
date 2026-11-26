@@ -12,7 +12,9 @@ def delete_single_chunk_from_index(document_id: str, chunk_num: int, index_name:
         resolved_index = index_name or get_default_index_name()
         return store.delete_chunk(resolved_index, document_id, chunk_num)
     except Exception as e:
-        logging.exception("vector chunk delete failed doc_id=%s chunk=%s", document_id, chunk_num)
+        logging.exception(
+            "vector chunk delete failed", extra={"doc_id": document_id, "chunk": chunk_num}
+        )
         return {"deleted": False, "error": str(e)}
 
 
@@ -28,5 +30,5 @@ def delete_chunks_from_index(document_id: str, index_name: str | None = None) ->
             result["doc_id"] = document_id
         return result
     except Exception as e:
-        logging.exception("vector document delete failed doc_id=%s", document_id)
+        logging.exception("vector document delete failed", extra={"doc_id": document_id})
         return {"deleted": 0, "doc_id": document_id, "error": str(e)}

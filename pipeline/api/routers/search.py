@@ -312,11 +312,13 @@ async def run_search(payload: SearchRequest, user: RequireSearch):
         raise HTTPException(422, "strict_language requires a boolean and a language when true")
 
     logging.info(
-        "search request user_id=%s index=%s query_length=%s top_k=%s",
-        user.user_id,
-        index_name,
-        len(query),
-        payload.get("top_k"),
+        "search request",
+        extra={
+            "user_id": user.user_id,
+            "index": index_name,
+            "query_length": len(query),
+            "top_k": payload.get("top_k"),
+        },
     )
 
     # The scheme profile keeps the BV provider's retrieval shape unless the
@@ -565,11 +567,13 @@ async def run_search(payload: SearchRequest, user: RequireSearch):
     choices = list(scheme_candidates.values()) if len(scheme_candidates) > 1 and not selected_workflow else []
 
     logging.info(
-        "search response user_id=%s index=%s candidate_count=%s final_count=%s",
-        user.user_id,
-        index_name,
-        len(hits),
-        len(final_hits),
+        "search response",
+        extra={
+            "user_id": user.user_id,
+            "index": index_name,
+            "candidate_count": len(hits),
+            "final_count": len(final_hits),
+        },
     )
     score_field = next((field for field in ("_scheme_score", "_advisory_score", "_rerank_score", "_hybrid_score")
                         if final_hits and all(field in hit for hit in final_hits)), "_score")
