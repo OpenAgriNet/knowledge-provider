@@ -1,5 +1,8 @@
 # syntax=docker/dockerfile:1
-FROM python:3.10-slim
+# Docker Hardened Images (dhi.io; needs `docker login dhi.io`). Build runs in the
+# -dev variant (shell, root); the shipped image is the minimal nonroot runtime.
+# Both put the interpreter at /usr/bin/python, so the venv copies across intact.
+FROM dhi.io/python:3.10-dev AS build
 
 WORKDIR /app
 
@@ -40,6 +43,18 @@ COPY test_data/ ./test_data/
 
 # Create books directory
 RUN mkdir -p /app/books
+
+# Writable data dirs for the nonroot runtime user (uid 65532). New named
+# volumes mounted here inherit this ownership; volumes created by an earlier
+# root-run image need a one-time chown.
+RUN mkdir -p /data/documents && chown -R 65532:65532 /data /app/books
+
+FROM dhi.io/python:3.10
+
+WORKDIR /app
+COPY --from=build /app /app
+COPY --from=build --chown=65532:65532 /data /data
+ENV PATH="/app/.venv/bin:$PATH"
 
 EXPOSE 8001
 
