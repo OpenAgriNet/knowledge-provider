@@ -1,9 +1,4 @@
-"""``POST /search`` with ``search_profile="scheme"`` through the real Qdrant engine.
-
-Mirrors the BV provider's scheme search: the question names the scheme, the
-asked section steers the embedding query, a scheme without indexed passages
-widens to all schemes, and a scheme outside the index is answered with nothing.
-"""
+"""Search scheme documents through the real Qdrant engine."""
 
 import pytest
 from qdrant_client import QdrantClient
@@ -56,7 +51,7 @@ def scheme_store(monkeypatch, test_client):
 
 
 def search(test_client, query, **fields):
-    response = test_client.post("/search", json={"query": query, "index_name": INDEX, "search_profile": "scheme", **fields})
+    response = test_client.post("/search", json={"query": query, "index_name": INDEX, "document_kind": "scheme", **fields})
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -66,15 +61,15 @@ def search(test_client, query, **fields):
 def test_question_names_the_scheme_and_answers_only_from_it(scheme_store, test_client):
     body = search(test_client, "PM Kisan overview")
     assert body["scheme_search"] == {
-        "resolved_scheme_code": "pk", "scheme_code_source": "query", "effective_scheme_code": "pk",
-        "widened_to_all_schemes": False, "query_intent": None, "section_focus": None,
+        "resolved_scheme_code": "pk", "scheme_code_source": "query",
+        "query_intent": None, "section_focus": None,
         "supplemental_section": None, "supplemental_hits": 0, "status": "success", "message": None,
     }
     assert {hit["scheme_code"] for hit in body["hits"]} == {"pk"}
     # No per-document cap: all three PM Kisan passages come back (BV decision).
     assert body["final_count"] == 3
     config = body["effective_config"]
-    assert (config["search_profile"], config["document_kind"], config["search_mode"]) == ("scheme", "scheme", "TENSOR")
+    assert (config["document_kind"], config["search_mode"]) == ("scheme", "TENSOR")
     assert (config["top_k"], config["candidate_cap"], config["max_chunks_per_doc"]) == (10, 80, None)
 
 
@@ -89,13 +84,11 @@ def test_asked_section_steers_the_embedding_query(scheme_store, test_client):
 
 @pytest.mark.integration
 @pytest.mark.api
-def test_scheme_without_indexed_passages_widens_to_catalogued_schemes(scheme_store, test_client):
+def test_resolved_scheme_never_widens_when_passages_are_missing(scheme_store, test_client):
     body = search(test_client, "MIF eligibility for farmers")
-    scheme = body["scheme_search"]
-    assert (scheme["resolved_scheme_code"], scheme["effective_scheme_code"], scheme["widened_to_all_schemes"]) == ("mif", None, True)
-    assert scheme["status"] == "success" and body["hits"]
-    # Widened answers still come only from schemes in the catalog.
-    assert {hit["scheme_code"] for hit in body["hits"]} <= {"pk", "kcc"}
+    assert body["scheme_search"]["resolved_scheme_code"] == "mif"
+    assert body["scheme_search"]["status"] == "not_found"
+    assert body["hits"] == []
 
 
 @pytest.mark.integration
@@ -109,29 +102,28 @@ def test_unindexed_scheme_returns_nothing_without_searching(scheme_store, test_c
 
 @pytest.mark.integration
 @pytest.mark.api
-def test_known_request_code_is_kept_and_unknown_code_falls_back_to_the_question(scheme_store, test_client):
+def test_request_code_is_exact_even_when_not_in_the_catalog(scheme_store, test_client):
     kept = search(test_client, "farmers loan eligibility", document_code="kcc")
     assert kept["scheme_search"]["scheme_code_source"] == "request"
     assert {hit["scheme_code"] for hit in kept["hits"]} == {"kcc"}
-    fallback = search(test_client, "PM Kisan benefit", document_code="not-catalogued")
-    assert (fallback["scheme_search"]["resolved_scheme_code"], fallback["scheme_search"]["scheme_code_source"]) == ("pk", "query")
+    missing = search(test_client, "PM Kisan benefit", document_code="not-catalogued")
+    assert missing["scheme_search"]["resolved_scheme_code"] == "not-catalogued"
+    assert missing["scheme_search"]["scheme_code_source"] == "request"
+    assert missing["hits"] == []
 
 
 @pytest.mark.integration
 @pytest.mark.api
-def test_default_profile_is_unchanged(scheme_store, test_client):
-    response = test_client.post("/search", json={
-        "query": "MIF eligibility for farmers", "index_name": INDEX, "document_kind": "scheme", "document_code": "mif",
-    })
+def test_unscoped_search_uses_shared_defaults(scheme_store, test_client):
+    response = test_client.post("/search", json={"query": "PM Kisan overview", "index_name": INDEX})
     assert response.status_code == 200, response.text
     body = response.json()
-    # Default search never widens an exact code and reports no scheme analysis.
-    assert body["hits"] == [] and body["scheme_search"] is None
-    assert body["effective_config"]["search_profile"] == "default"
+    assert body["hits"] and body["scheme_search"] is None
+    assert body["effective_config"]["document_kind"] is None
 
 
-def test_scheme_profile_rejects_other_kinds(test_client):
-    response = test_client.post("/search", json={"query": "x", "search_profile": "scheme", "document_kind": "advisory"})
+def test_search_profile_is_rejected(test_client):
+    response = test_client.post("/search", json={"query": "x", "search_profile": "scheme"})
     assert response.status_code == 422
 
 

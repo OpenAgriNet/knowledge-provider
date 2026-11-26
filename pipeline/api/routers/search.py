@@ -279,9 +279,9 @@ async def run_search(payload: SearchRequest, user: RequireSearch):
     if not index_only_mode():
         index_name = payload.get("index_name") or index_name
     release_network = payload.get("network_id")
-    scheme_profile = payload.get("search_profile") == "scheme"
-    advisory_profile = payload.get("search_profile") == "advisory"
-    document_kind = "scheme" if scheme_profile else "advisory" if advisory_profile else payload.get("document_kind")
+    document_kind = payload.get("document_kind")
+    scheme_search_requested = document_kind == "scheme"
+    advisory_search_requested = document_kind == "advisory"
     document_code = payload.get("document_code")
     try:
         if release_network:
@@ -321,26 +321,26 @@ async def run_search(payload: SearchRequest, user: RequireSearch):
         },
     )
 
-    # The scheme profile keeps the BV provider's retrieval shape unless the
+    # The scheme search keeps the BV provider's retrieval shape unless the
     # caller overrides it: dense search, ten answers drawn from max(8x, 40)
     # candidates, and no per-document cap so one guideline can fill the answer.
-    # The advisory profile keeps the BV provider's shape too: dense search, five
+    # The advisory search keeps the BV provider's shape too: dense search, five
     # answers (ADVISORY_QDRANT_TOP_K overrides) from forty candidates.
-    if scheme_profile:
-        profile_defaults = {"searchMethod": "TENSOR", "limit": 10}
-    elif advisory_profile:
+    if scheme_search_requested:
+        kind_defaults = {"searchMethod": "TENSOR", "limit": 10}
+    elif advisory_search_requested:
         advisory_top_k = os.environ.get("ADVISORY_QDRANT_TOP_K", "").strip()
-        profile_defaults = {"searchMethod": "TENSOR", "limit": int(advisory_top_k) if advisory_top_k.isdigit() else 5}
+        kind_defaults = {"searchMethod": "TENSOR", "limit": int(advisory_top_k) if advisory_top_k.isdigit() else 5}
     else:
-        profile_defaults = {}
-    search_mode = (payload.get("search_mode") or profile_defaults.get("searchMethod")
+        kind_defaults = {}
+    search_mode = (payload.get("search_mode") or kind_defaults.get("searchMethod")
                    or settings.get("searchMethod") or "HYBRID").upper()
-    top_k = max(1, min(int(payload.get("top_k") or profile_defaults.get("limit") or settings.get("limit") or 12), 50))
+    top_k = max(1, min(int(payload.get("top_k") or kind_defaults.get("limit") or settings.get("limit") or 12), 50))
     candidate_multiplier = max(1, int(payload.get("candidate_multiplier") or settings.get("candidateMultiplier") or 10))
     requested_candidate_cap = payload.get("candidate_cap")
-    if requested_candidate_cap is None and advisory_profile:
+    if requested_candidate_cap is None and advisory_search_requested:
         candidate_cap = 40
-    elif requested_candidate_cap is None and scheme_profile:
+    elif requested_candidate_cap is None and scheme_search_requested:
         candidate_cap = max(top_k * 8, 40)
     elif requested_candidate_cap is None:
         candidate_cap = min(max(top_k * candidate_multiplier, top_k), int(settings.get("candidateCap") or 120))
@@ -349,7 +349,7 @@ async def run_search(payload: SearchRequest, user: RequireSearch):
     candidate_cap = max(top_k, min(candidate_cap, 200))
     # None = no per-document cap: section balancing must see every candidate.
     max_chunks_per_doc = payload.get("max_chunks_per_doc") or (
-        None if scheme_profile or advisory_profile else settings.get("maxChunksPerDoc") or 2)
+        None if scheme_search_requested or advisory_search_requested else settings.get("maxChunksPerDoc") or 2)
     max_chunks_per_doc = max(1, int(max_chunks_per_doc)) if max_chunks_per_doc is not None else None
     use_e5_prefix = bool(payload.get("use_e5_prefix", settings.get("useE5Prefix", True)))
     exclude_reference = bool(payload.get("exclude_reference", settings.get("excludeReference", True)))
@@ -399,9 +399,9 @@ async def run_search(payload: SearchRequest, user: RequireSearch):
     except ValueError as exc:
         raise HTTPException(422, "Invalid agriculture applicability filters") from exc
     advisory_context = payload.get("advisory") or {}
-    advisory_crop = advisory_query.normalize_crop(advisory_context.get("crop")) if advisory_profile else ""
+    advisory_crop = advisory_query.normalize_crop(advisory_context.get("crop")) if advisory_search_requested else ""
     if advisory_crop:
-        # The crop is the advisory profile's one hard filter (BV parity).
+        # The crop is the advisory search's one hard filter (BV parity).
         metadata_filters = {"scope": "document", **metadata_filters, "crop": normalized_key(advisory_crop)}
     try:
         expanded_query = expand_query(query, query_expansion_profile)
@@ -411,19 +411,16 @@ async def run_search(payload: SearchRequest, user: RequireSearch):
     search_query = expanded_query
     scheme_search = None
     scheme_registry: list = []
-    if scheme_profile:
-        try:
-            scheme_registry = await asyncio.to_thread(
-                load_scheme_registry, network_id=release_network, group=group, permitted=permitted,
-            )
-        except Exception as error:
-            logging.warning("scheme registry unavailable error_type=%s", type(error).__name__)
-        known_codes = {entry["scheme_code"] for entry in scheme_registry}
-        # A code the caller sends is trusted when the registry knows it, or when
-        # the registry cannot be read; otherwise the question text decides.
-        if document_code and (not known_codes or document_code in known_codes):
+    if scheme_search_requested:
+        if document_code:
             code_source = "request"
         else:
+            try:
+                scheme_registry = await asyncio.to_thread(
+                    load_scheme_registry, network_id=release_network, group=group, permitted=permitted,
+                )
+            except Exception as error:
+                logging.warning("scheme registry unavailable error_type=%s", type(error).__name__)
             document_code = resolve_scheme_code(query, scheme_registry)
             code_source = "query" if document_code else None
         intent = classify_query_intent(query)
@@ -431,7 +428,6 @@ async def run_search(payload: SearchRequest, user: RequireSearch):
         search_query = expand_query_for_search(expanded_query, intent, section_focus)
         scheme_search = {
             "resolved_scheme_code": document_code, "scheme_code_source": code_source,
-            "effective_scheme_code": document_code, "widened_to_all_schemes": False,
             "query_intent": intent, "section_focus": section_focus,
             "supplemental_section": None, "supplemental_hits": 0,
             # An empty registry means the catalog could not be read; never
@@ -486,13 +482,6 @@ async def run_search(payload: SearchRequest, user: RequireSearch):
             result, hits = {}, []
         else:
             result, hits = await retrieve(search_arguments)
-            if scheme_search and document_code and not hits:
-                # The catalog and the indexed passages can disagree about a
-                # code. Answer from the question across all schemes rather
-                # than returning nothing; the response says it widened.
-                search_arguments.pop("document_code", None)
-                result, hits = await retrieve(search_arguments)
-                scheme_search.update(effective_scheme_code=None, widened_to_all_schemes=True)
             if scheme_search:
                 hits = with_section_types(hits)
                 needed = supplemental_section(scheme_search["section_focus"], scheme_search["query_intent"])
@@ -518,12 +507,12 @@ async def run_search(payload: SearchRequest, user: RequireSearch):
     if search_mode == "HYBRID" and backend == "qdrant":
         hits = _rank_hybrid_candidates(query, hits, alpha, ranking_method, hybrid_rrf_k)
     hits = _rerank_hits(query, hits, rerank_mode)
-    if scheme_search and not scheme_search["effective_scheme_code"] and scheme_registry:
+    if scheme_search and not document_code and scheme_registry:
         known_codes = {entry["scheme_code"] for entry in scheme_registry}
         hits = [hit for hit in hits if (hit.get("scheme_code") or "").lower() in known_codes]
     if scheme_search:
         hits = rerank_scheme_hits(query, hits, scheme_search["query_intent"])
-    if advisory_profile:
+    if advisory_search_requested:
         season = advisory_query.preferred_season(advisory_context.get("season"))
         days_after_sowing = advisory_context.get("days_after_sowing")
         state, district = advisory_context.get("state_lgd_code"), advisory_context.get("district_lgd_code")
@@ -540,7 +529,7 @@ async def run_search(payload: SearchRequest, user: RequireSearch):
             continue
         per_doc_counts[doc_key] = per_doc_counts.get(doc_key, 0) + 1
         final_hits.append(hit)
-        # The scheme profile chooses its top_k after section balancing below.
+        # The scheme search chooses its top_k after section balancing below.
         if len(final_hits) >= top_k and not scheme_search:
             break
     if scheme_search:
@@ -578,7 +567,7 @@ async def run_search(payload: SearchRequest, user: RequireSearch):
     score_field = next((field for field in ("_scheme_score", "_advisory_score", "_rerank_score", "_hybrid_score")
                         if final_hits and all(field in hit for hit in final_hits)), "_score")
     advisory_search = None
-    if advisory_profile:
+    if advisory_search_requested:
         advisory_search = {
             "status": "success" if final_hits else "not_found",
             "message": None if final_hits else "No advisory found for this question",
@@ -601,7 +590,6 @@ async def run_search(payload: SearchRequest, user: RequireSearch):
 
     return {
         "effective_config": {
-            "search_profile": payload.get("search_profile", "default"),
             "index_name": index_name,
             "network_id": release_network,
             "document_kind": document_kind,
