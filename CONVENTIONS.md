@@ -110,11 +110,16 @@ Rebase merge only for new PR's. Each commit lands individually on `main` — ind
 
 ## Logging
 Always include `request_id`. Never log raw PII in newly added code.
+Keep the message short and fixed; put fields in `extra=`, so HyperDX can filter on them.
 ```python
 # Good
-logger.info("request_id=%s moderation_category=%s", request_id, category)
-logger.warning("request_id=%s pretranslation_failed=True falling_back=True", request_id)
+logger.info("search request", extra={"request_id": request_id, "index": index_name})
+
+# Bad — the fields are text inside the message, so nothing can filter on them
+logger.info("search request request_id=%s index=%s", request_id, index_name)
 ```
+Don't use a built-in log record name as a key (`name`, `msg`, `args`, `module`…); logging raises.
+The console still prints each extra as `key=value`, so greps keep working.
 Levels: `DEBUG` internal state · `INFO` turn lifecycle · `WARNING` recoverable failure · `ERROR` unrecoverable failure.
 
 In `pipeline`/`worker` code with no HTTP request in scope, use `workflow_id` as the correlation key instead of `request_id` — it's the identifier that actually threads through Temporal signals, activities, and the audit log for a given document.

@@ -83,9 +83,8 @@ class DiscoveryPublishService:
         prepared = self.prepare(document_kind, group)
         if prepared is None:
             logger.info(
-                "workflow_id=%s document_kind=%s network_publish_skipped=True",
-                workflow_id,
-                document_kind,
+                "network publish skipped",
+                extra={"workflow_id": workflow_id, "document_kind": document_kind},
             )
             return self._skipped()
         return self.publish_prepared(transaction_id, prepared, workflow_id)
@@ -134,14 +133,18 @@ class DiscoveryPublishService:
             "message": {"catalogs": [catalog], "publishDirectives": [prepared.directive]},
         }
         url = f"{self.endpoint.rstrip('/')}/publish"
+        publish_fields = {
+            "workflow_id": workflow_id,
+            "catalog_id": catalog["id"],
+            "transaction_id": transaction_id,
+        }
         logger.info(
-            "workflow_id=%s catalog_id=%s transaction_id=%s message_id=%s "
-            "network_publish_url=%s",
-            workflow_id,
-            catalog["id"],
-            transaction_id,
-            envelope["context"]["messageId"],
-            url,
+            "network publish sent",
+            extra={
+                **publish_fields,
+                "message_id": envelope["context"]["messageId"],
+                "network_publish_url": url,
+            },
         )
         logger.debug("Request to %s with \n body %s", url, envelope)
         try:
@@ -152,30 +155,17 @@ class DiscoveryPublishService:
             # The activity records no artifact when publish raises, so this is
             # the only trace of a transport failure.
             logger.error(
-                "workflow_id=%s catalog_id=%s network_publish_failed=True transaction_id=%s "
-                "status_code=%s",
-                workflow_id,
-                catalog["id"],
-                transaction_id,
-                exc.response.status_code,
+                "network publish failed",
+                extra={**publish_fields, "error": str(exc), "response_body": exc.response.text},
             )
             raise
         except httpx.HTTPError as exc:
-            logger.error(
-                "workflow_id=%s catalog_id=%s network_publish_failed=True transaction_id=%s error=%s",
-                workflow_id,
-                catalog["id"],
-                transaction_id,
-                exc,
-            )
+            logger.error("network publish failed", extra={**publish_fields, "error": str(exc)})
             raise
 
         logger.info(
-            "workflow_id=%s catalog_id=%s network_publish_status=%s transaction_id=%s",
-            workflow_id,
-            catalog["id"],
-            response.status_code,
-            transaction_id
+            "network publish answered",
+            extra={**publish_fields, "network_publish_status": response.status_code},
         )
 
         result_status, errors = self._read_result(response, catalog["id"], workflow_id)
@@ -232,9 +222,12 @@ class DiscoveryPublishService:
                 raise ValueError("no results")
         except Exception:
             logger.warning(
-                "workflow_id=%s catalog_id=%s network_publish_result=unreadable",
-                workflow_id,
-                catalog_id,
+                "network publish result unreadable",
+                extra={
+                    "workflow_id": workflow_id,
+                    "catalog_id": catalog_id,
+                    "response_body": response.text[:200],
+                },
             )
             return None, []
 
@@ -247,11 +240,13 @@ class DiscoveryPublishService:
 
         if result_status != RESULT_ACCEPTED:
             logger.warning(
-                "workflow_id=%s catalog_id=%s network_publish_result=%s errors=%s",
-                workflow_id,
-                catalog_id,
-                result_status,
-                errors,
+                "network publish not accepted",
+                extra={
+                    "workflow_id": workflow_id,
+                    "catalog_id": catalog_id,
+                    "network_publish_result": result_status,
+                    "errors": str(errors),
+                },
             )
 
         return result_status, errors

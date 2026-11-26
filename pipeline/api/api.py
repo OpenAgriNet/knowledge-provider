@@ -34,7 +34,7 @@ from pipeline.documents.models import DocumentStage, DocumentSummary
 from pipeline.network.catalog import scheme_catalog
 from pipeline.network.network_publisher import validate_network_adapters
 from pipeline.network.release_policy import prod_stage_disabled
-from pipeline.telemetry.logs import configure_logs, reset_logs
+from pipeline.telemetry.logs import configure_console, configure_logs, reset_logs
 
 from ..auth.config import load_auth_config, validate_auth_config
 from ..auth.models import AuthUser
@@ -59,11 +59,7 @@ LOG_LEVEL = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").strip().upper()
 # logging.info() calls in this module (e.g. /search) are silently dropped
 # without configuring the root logger too - same LOG_LEVEL convention as
 # pipeline/worker.py.
-logging.basicConfig(
-    level=LOG_LEVEL,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    datefmt='%H:%M:%S',
-)
+configure_console(LOG_LEVEL)
 
 logger = logging.getLogger(__name__)
 

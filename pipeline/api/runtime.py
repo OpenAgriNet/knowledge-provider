@@ -47,10 +47,12 @@ async def _start_services():
         )
     else:
         logging.info(
-            "Auth enabled: issuer=%s audience=%s jwks=%s",
-            auth_cfg.keycloak_issuer,
-            auth_cfg.keycloak_audience or "(none)",
-            auth_cfg.keycloak_jwks_url,
+            "auth enabled",
+            extra={
+                "issuer": auth_cfg.keycloak_issuer,
+                "audience": auth_cfg.keycloak_audience or "(none)",
+                "jwks": auth_cfg.keycloak_jwks_url,
+            },
         )
 
     logging.info("api startup: initializing PostgreSQL database")
@@ -66,12 +68,16 @@ async def _start_services():
     _api.object_store = _api.open_object_store(storage)
     if storage.create_bucket:
         await asyncio.to_thread(_api.object_store.ensure_bucket, _api.OBJECT_STORE_BUCKET)
-        logging.info("api startup: ensured object storage bucket %s", _api.OBJECT_STORE_BUCKET)
+        logging.info(
+            "api startup: ensured object storage bucket", extra={"bucket": _api.OBJECT_STORE_BUCKET}
+        )
 
     logging.info(
-        "api started auth=%s temporal=%s object_storage=%s bucket=%s",
-        "disabled" if auth_cfg.disabled else "enabled",
-        temporal_host,
-        storage.provider,
-        _api.OBJECT_STORE_BUCKET,
+        "api started",
+        extra={
+            "auth": "disabled" if auth_cfg.disabled else "enabled",
+            "temporal": temporal_host,
+            "object_storage": storage.provider,
+            "bucket": _api.OBJECT_STORE_BUCKET,
+        },
     )

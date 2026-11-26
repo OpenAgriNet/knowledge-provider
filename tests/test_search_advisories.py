@@ -1,4 +1,4 @@
-"""``POST /search`` with ``search_profile="advisory"`` through the real Qdrant engine.
+"""``POST /search`` for advisory documents through the real Qdrant engine.
 
 Every advisory shares one text, so retrieval scores tie and the order comes
 only from the BV provider's season, sowing-window and place boosts.
@@ -68,7 +68,7 @@ def advisory_store(monkeypatch, test_client):
 
 
 def search(test_client, **fields):
-    response = test_client.post("/search", json={"query": TEXT, "index_name": INDEX, "search_profile": "advisory", **fields})
+    response = test_client.post("/search", json={"query": TEXT, "index_name": INDEX, "document_kind": "advisory", **fields})
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -101,7 +101,7 @@ def test_one_passage_per_entry_and_bv_defaults(advisory_store, test_client):
     doc_ids = [hit["doc_id"] for hit in body["hits"]]
     assert len(doc_ids) == len(set(doc_ids)) == 5           # entry a's two passages collapsed to one
     config = body["effective_config"]
-    assert (config["search_profile"], config["document_kind"], config["search_mode"]) == ("advisory", "advisory", "TENSOR")
+    assert (config["document_kind"], config["search_mode"]) == ("advisory", "TENSOR")
     assert (config["top_k"], config["candidate_cap"], config["max_chunks_per_doc"]) == (5, 40, None)
     assert body["advisory_search"]["location_status"] == "not_requested"
 
@@ -125,8 +125,8 @@ def test_state_only_place_is_a_partial_match(advisory_store, test_client):
     assert body["hits"][0]["doc_id"] == "b-maharashtra-kharif"
 
 
-def test_advisory_context_needs_the_advisory_profile(test_client):
+def test_advisory_context_needs_the_advisory_kind(test_client):
     for body in ({"query": "x", "advisory": {"crop": "wheat"}},
-                 {"query": "x", "search_profile": "advisory", "document_kind": "scheme"},
-                 {"query": "x", "search_profile": "advisory", "advisory": {"days_after_sowing": "ten"}}):
+                 {"query": "x", "document_kind": "scheme", "advisory": {"crop": "wheat"}},
+                 {"query": "x", "document_kind": "advisory", "advisory": {"days_after_sowing": "ten"}}):
         assert test_client.post("/search", json=body).status_code == 422

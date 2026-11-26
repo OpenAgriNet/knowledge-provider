@@ -1,4 +1,4 @@
-"""Advisory search for the ``advisory`` search profile.
+"""Advisory search for ``document_kind="advisory"``.
 
 Ported from the BV provider (bharat-provider-backend ``advisory-qdrant.util.ts``):
 keep the best passage per advisory entry, then prefer advisories for the
