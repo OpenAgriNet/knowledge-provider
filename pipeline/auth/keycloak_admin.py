@@ -12,13 +12,15 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi import HTTPException
 
 from .groups import (
-    ROLE_BH_VIEWER,
+    GLOBAL_VIEWER_GROUP_PATH,
+    GLOBAL_VIEWER_ROLE_ALIASES,
+    ROLE_GLOBAL_VIEWER,
     ROLE_STATE_ADMIN,
     ROLE_STATE_APPROVER,
     ROLE_STATE_CONTRIBUTOR,
@@ -27,8 +29,10 @@ from .groups import (
     STATE_ROLES,
     group_leaf_for_role,
     normalize_role,
+    parse_group_paths,
+    provider_group_root,
 )
-from .tenancy import PORTAL_INSTANCE
+from .tenancy import portal_instance
 
 # Realm-role descriptions written when a role is auto-created.
 STATE_ROLE_DESCRIPTIONS: dict[str, str] = {
@@ -39,49 +43,27 @@ STATE_ROLE_DESCRIPTIONS: dict[str, str] = {
 }
 
 # Global access types accepted by ``ensure_access_group``.
-_SUPER_ADMIN_ACCESS_TYPES = ("super_admin", "super-admin", "bv", "portal")
-_BH_VIEWER_ACCESS_TYPES = ("bh_viewer", "bh-viewer", "bh_view")
-
-# Common state codes for the admin UI picker (Keycloak groups created on demand).
-DEFAULT_STATE_CODES = [
-    "MH",
-    "BH",
-    "UP",
-    "GJ",
-    "RJ",
-    "MP",
-    "KA",
-    "TS",
-    "AP",
-    "TN",
-    "WB",
-    "OR",
-    "PB",
-    "HR",
-    "KL",
-    "AS",
-    "JH",
-    "CG",
-    "UK",
-    "HP",
-    "GA",
-    "DL",
-    "JK",
-    "LA",
-]
-
+_SUPER_ADMIN_ACCESS_TYPES = ("super_admin", "super-admin", "portal")
 
 @dataclass
 class KeycloakAdminConfig:
     base_url: str
     realm: str
-    admin_username: str
-    admin_password: str
-    token_realm: str = "master"
+    client_id: str
+    client_secret: str = field(repr=False)
+    token_realm: str = ""
+    admin_username: str = ""
+    admin_password: str = field(default="", repr=False)
+
+    @property
+    def uses_password_grant(self) -> bool:
+        return bool(self.admin_username and self.admin_password)
 
     @property
     def configured(self) -> bool:
-        return bool(self.base_url and self.realm and self.admin_username and self.admin_password)
+        if not (self.base_url and self.realm):
+            return False
+        return self.uses_password_grant or bool(self.client_id and self.client_secret)
 
 
 def load_keycloak_admin_config() -> KeycloakAdminConfig:
@@ -98,20 +80,20 @@ def load_keycloak_admin_config() -> KeycloakAdminConfig:
         if not realm:
             realm = realm_part.split("/")[0]
 
-    username = (
-        os.environ.get("KEYCLOAK_ADMIN_USERNAME")
-        or os.environ.get("KEYCLOAK_ADMIN")
-        or ""
-    ).strip()
-    password = (os.environ.get("KEYCLOAK_ADMIN_PASSWORD") or "").strip()
-    token_realm = (os.environ.get("KEYCLOAK_ADMIN_TOKEN_REALM") or "master").strip() or "master"
+    admin_username = (os.environ.get("KEYCLOAK_ADMIN_USERNAME") or "").strip()
+    admin_password = (os.environ.get("KEYCLOAK_ADMIN_PASSWORD") or "").strip()
+    # A password login is issued by the master realm's admin-cli client; a service
+    # account token comes from the managed realm itself.
+    default_token_realm = "master" if admin_username and admin_password else realm
 
     return KeycloakAdminConfig(
         base_url=base,
-        realm=realm or "bharat-vistaar",
-        admin_username=username,
-        admin_password=password,
-        token_realm=token_realm,
+        realm=realm,
+        token_realm=(os.environ.get("KEYCLOAK_ADMIN_TOKEN_REALM") or default_token_realm).strip(),
+        client_id=(os.environ.get("KEYCLOAK_ADMIN_CLIENT_ID") or "").strip(),
+        client_secret=os.environ.get("KEYCLOAK_ADMIN_CLIENT_SECRET") or "",
+        admin_username=admin_username,
+        admin_password=admin_password,
     )
 
 
@@ -152,15 +134,20 @@ def _req(
 
 
 def _admin_token(cfg: KeycloakAdminConfig) -> str:
-    status, body = _req(
-        "POST",
-        f"{cfg.base_url}/realms/{cfg.token_realm}/protocol/openid-connect/token",
-        form={
+    token_realm = cfg.token_realm or cfg.realm
+    if cfg.uses_password_grant:
+        form = {
             "grant_type": "password",
             "client_id": "admin-cli",
             "username": cfg.admin_username,
             "password": cfg.admin_password,
-        },
+        }
+    else:
+        form = {"grant_type": "client_credentials", "client_id": cfg.client_id, "client_secret": cfg.client_secret}
+    status, body = _req(
+        "POST",
+        f"{cfg.base_url}/realms/{token_realm}/protocol/openid-connect/token",
+        form=form,
     )
     if status != 200 or not isinstance(body, dict) or not body.get("access_token"):
         raise HTTPException(502, "Unable to obtain Keycloak admin token")
@@ -176,11 +163,46 @@ def require_admin_config() -> KeycloakAdminConfig:
     if not cfg.configured:
         raise HTTPException(
             503,
-            "Keycloak admin is not configured. Set KEYCLOAK_ADMIN_USERNAME and "
-            "KEYCLOAK_ADMIN_PASSWORD (and KEYCLOAK_ISSUER or KEYCLOAK_ADMIN_BASE_URL / "
-            "KEYCLOAK_ADMIN_REALM).",
+            "Keycloak admin is not configured. Configure a realm service account "
+            "(KEYCLOAK_ADMIN_CLIENT_ID / KEYCLOAK_ADMIN_CLIENT_SECRET) or an admin login "
+            "(KEYCLOAK_ADMIN_USERNAME / KEYCLOAK_ADMIN_PASSWORD).",
         )
     return cfg
+
+
+def _user_admin_url(admin: str, user_id: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9:_-]{1,200}", user_id):
+        raise HTTPException(400, "Invalid Keycloak user ID")
+    return f"{admin}/users/{urllib.parse.quote(user_id, safe='')}"
+
+
+def _list_keycloak(admin_url: str, token: str) -> list[dict]:
+    page_size = 100
+    result = []
+    while True:
+        _, page = _req("GET", f"{admin_url}?first={len(result)}&max={page_size}", token=token)
+        if not isinstance(page, list) or any(not isinstance(item, dict) for item in page):
+            raise HTTPException(502, "Invalid Keycloak list response")
+        result.extend(page)
+        if len(page) < page_size:
+            return result
+
+
+def current_user_group_paths(user_id: str) -> list[str]:
+    """Read current memberships, including removal since the JWT was issued."""
+    cfg = require_admin_config()
+    try:
+        user_url = _user_admin_url(_admin_root(cfg), user_id)
+        token = _admin_token(cfg)
+        _, identity = _req("GET", user_url, token=token)
+        if not isinstance(identity, dict) or identity.get("enabled") is not True:
+            raise HTTPException(401, "Keycloak user is inactive")
+        groups = _list_keycloak(f"{user_url}/groups", token)
+    except HTTPException as exc:
+        if exc.status_code in (400, 401, 404):
+            raise HTTPException(401, "Keycloak user access could not be verified") from exc
+        raise HTTPException(503, "Unable to verify current Keycloak membership") from exc
+    return [group["path"] for group in groups if isinstance(group.get("path"), str)]
 
 
 def _ensure_realm_role(admin: str, token: str, name: str, description: str = "") -> dict:
@@ -231,8 +253,7 @@ def _get_children(admin: str, token: str, parent_id: str) -> list[dict]:
     same way — surfacing as "Failed to create child group <name>" even
     though the group was there all along.
     """
-    status, children = _req("GET", f"{admin}/groups/{parent_id}/children?max=200", token=token)
-    return children if isinstance(children, list) else []
+    return _list_keycloak(f"{admin}/groups/{parent_id}/children", token)
 
 
 def _find_child(admin: str, token: str, parent_id: str, name: str) -> dict | None:
@@ -244,9 +265,7 @@ def _find_child(admin: str, token: str, parent_id: str, name: str) -> dict | Non
 
 def _ensure_child_group(admin: str, token: str, parent_id: str | None, name: str) -> dict:
     if parent_id is None:
-        status, top = _req("GET", f"{admin}/groups?max=200", token=token)
-        groups = top if isinstance(top, list) else []
-        for g in groups:
+        for g in _list_keycloak(f"{admin}/groups", token):
             if g.get("name") == name:
                 return _get_group(admin, token, g["id"])
         try:
@@ -254,8 +273,7 @@ def _ensure_child_group(admin: str, token: str, parent_id: str | None, name: str
         except HTTPException as exc:
             if exc.status_code not in (409,):
                 raise
-        status, top = _req("GET", f"{admin}/groups?max=200", token=token)
-        for g in top or []:
+        for g in _list_keycloak(f"{admin}/groups", token):
             if g.get("name") == name:
                 return _get_group(admin, token, g["id"])
         raise HTTPException(502, f"Failed to create group {name}")
@@ -287,6 +305,121 @@ def _map_role_on_group(admin: str, token: str, group_id: str, role: dict) -> Non
     )
 
 
+def _provider_group(admin: str, token: str, provider: str, *, create: bool = False) -> dict:
+    name = provider.upper()
+    root = provider_group_root()
+    if create:
+        providers = _ensure_child_group(admin, token, None, root)
+        return _ensure_child_group(admin, token, providers["id"], name)
+    _, group = _req("GET", f"{admin}/group-by-path/{root}/{name}", token=token)
+    if not isinstance(group, dict) or group.get("path") != f"/{root}/{name}" or not group.get("id"):
+        raise HTTPException(502, "Invalid Keycloak provider group")
+    return group
+
+
+def create_provider_group(provider: str) -> dict:
+    """Idempotently create the Keycloak group for a provider code."""
+    cfg = require_admin_config()
+    return _provider_group(_admin_root(cfg), _admin_token(cfg), provider, create=True)
+
+
+def find_verified_user_id(email: str) -> str:
+    """Resolve one existing and verified account for a provider grant."""
+    cfg = require_admin_config()
+    params = urllib.parse.urlencode({"email": email, "exact": "true"})
+    _, users = _req("GET", f"{_admin_root(cfg)}/users?{params}", token=_admin_token(cfg))
+    if not isinstance(users, list):
+        raise HTTPException(502, "Invalid Keycloak account lookup response")
+    verified = [user for user in users if (
+        str(user.get("email", "")).lower() == email.lower()
+        and user.get("emailVerified") is True and user.get("enabled") is True
+    )]
+    if len(verified) != 1 or not verified[0].get("id"):
+        raise HTTPException(404, "An active, verified Keycloak account is required")
+    return verified[0]["id"]
+
+
+def find_webhook_service_subject(client_id: str) -> str:
+    """Return the enabled service account for an existing confidential client."""
+    cfg = require_admin_config()
+    admin, token = _admin_root(cfg), _admin_token(cfg)
+    params = urllib.parse.urlencode({"clientId": client_id, "search": "false", "max": 2})
+    _, rows = _req("GET", f"{admin}/clients?{params}", token=token)
+    if not isinstance(rows, list):
+        raise HTTPException(502, "Invalid Keycloak client lookup response")
+    clients = [row for row in rows if isinstance(row, dict) and row.get("clientId") == client_id]
+    if len(clients) != 1:
+        raise HTTPException(404, "Keycloak webhook client not found")
+    client = clients[0]
+    if (client.get("enabled") is not True or client.get("serviceAccountsEnabled") is not True
+            or client.get("publicClient") is not False or not client.get("id")):
+        raise HTTPException(422, "The webhook client must be confidential with an enabled service account")
+    client_uuid = urllib.parse.quote(str(client["id"]), safe="")
+    _, account = _req("GET", f"{admin}/clients/{client_uuid}/service-account-user", token=token)
+    if not isinstance(account, dict) or account.get("enabled") is not True or not account.get("id"):
+        raise HTTPException(422, "An active Keycloak service account is required")
+    return str(account["id"])
+
+
+def set_provider_membership(
+    provider: str, user_id: str, role: str | None, *, allow_admin_changes: bool,
+) -> dict:
+    """Set or remove one provider role, leaving all other scopes in place."""
+    if role is not None:
+        role = normalize_role(role)
+        if role not in STATE_ROLES:
+            raise HTTPException(400, "Invalid provider role")
+    cfg = require_admin_config()
+    token, admin = _admin_token(cfg), _admin_root(cfg)
+    provider_group = _provider_group(admin, token, provider)
+    user_url = _user_admin_url(admin, user_id)
+    groups_url = f"{user_url}/groups"
+    current = _list_keycloak(groups_url, token)
+    provider_groups = [group for group in current if provider in parse_group_paths([group.get("path")]).state_roles]
+    if not allow_admin_changes and (
+        role == ROLE_STATE_ADMIN
+        or any(parse_group_paths([group.get("path")]).state_roles[provider] == ROLE_STATE_ADMIN for group in provider_groups)
+    ):
+        raise HTTPException(403, "Only a platform administrator can manage provider administrators")
+
+    desired_group_id = None
+    if role:
+        group = _ensure_child_group(admin, token, provider_group["id"], group_leaf_for_role(role))
+        desired_group_id = group["id"]
+        if all(existing["id"] != desired_group_id for existing in provider_groups):
+            _req("PUT", f"{groups_url}/{desired_group_id}", token=token)
+    for existing in provider_groups:
+        if existing["id"] != desired_group_id:
+            _req("DELETE", f"{groups_url}/{existing['id']}", token=token)
+    final_groups = _list_keycloak(groups_url, token)
+    final_ids = {group["id"] for group in final_groups if provider in parse_group_paths([group.get("path")]).state_roles}
+    if final_ids != ({desired_group_id} if desired_group_id else set()):
+        raise HTTPException(502, "Keycloak provider membership change could not be confirmed")
+    return {"provider": provider, "user_id": user_id, "role": role}
+
+
+def list_provider_memberships(provider: str) -> list[dict]:
+    """List only the requested provider's users and provider roles."""
+    cfg = require_admin_config()
+    token, admin = _admin_token(cfg), _admin_root(cfg)
+    provider_group = _provider_group(admin, token, provider)
+    groups = [provider_group, *_get_children(admin, token, provider_group["id"])]
+    members: dict[str, dict] = {}
+    for group in groups:
+        role = parse_group_paths([group.get("path")]).state_roles.get(provider)
+        if not role:
+            continue
+        for member in _list_keycloak(f"{admin}/groups/{group['id']}/members", token):
+            user_id = member["id"]
+            current = members.get(user_id)
+            if current is None or STATE_ROLES.index(role) < STATE_ROLES.index(current["role"]):
+                members[user_id] = {
+                    "user_id": user_id, "role": role, "email": member.get("email") or "",
+                    "username": member.get("username") or "", "enabled": member.get("enabled") is True,
+                }
+    return sorted(members.values(), key=lambda member: (member["email"], member["user_id"]))
+
+
 def ensure_access_group(
     cfg: KeycloakAdminConfig,
     *,
@@ -299,15 +432,15 @@ def ensure_access_group(
     admin = _admin_root(cfg)
     access_type = (access_type or "").strip().lower()
 
-    if access_type in _BH_VIEWER_ACCESS_TYPES:
+    if access_type in GLOBAL_VIEWER_ROLE_ALIASES:
         viewer_role = _ensure_realm_role(
-            admin, token, ROLE_BH_VIEWER, "Bharat Vistaar viewer — all states, read-only"
+            admin, token, ROLE_GLOBAL_VIEWER, "Viewer with read-only access to all providers"
         )
         global_g = _ensure_child_group(admin, token, None, "global")
-        leaf = _ensure_child_group(admin, token, global_g["id"], "bh-viewer")
+        leaf = _ensure_child_group(admin, token, global_g["id"], group_leaf_for_role(ROLE_GLOBAL_VIEWER))
         leaf_full = _get_group(admin, token, leaf["id"])
         _map_role_on_group(admin, token, leaf_full["id"], viewer_role)
-        return leaf_full.get("path") or "/global/bh-viewer", leaf_full
+        return leaf_full.get("path") or GLOBAL_VIEWER_GROUP_PATH, leaf_full
 
     if access_type in _SUPER_ADMIN_ACCESS_TYPES:
         sa_role = _ensure_realm_role(
@@ -331,8 +464,8 @@ def ensure_access_group(
 
     state_code = (state or "").strip().upper()
     role_canon = normalize_role(role) or (role or "").strip().lower()
-    if not state_code or not re.fullmatch(r"[A-Z0-9]{2,5}", state_code):
-        raise HTTPException(400, "state must be a 2–5 letter code (e.g. MH, UP)")
+    if not re.fullmatch(r"[A-Z0-9](?:[A-Z0-9_-]{0,61}[A-Z0-9])?", state_code):
+        raise HTTPException(400, "Invalid provider code")
     if role_canon not in STATE_ROLES:
         raise HTTPException(
             400,
@@ -347,11 +480,10 @@ def ensure_access_group(
     )
     # Group leaf: /states/MH/admin or /states/MH/view
     leaf_name = group_leaf_for_role(role_canon)
-    states = _ensure_child_group(admin, token, None, "states")
-    state_g = _ensure_child_group(admin, token, states["id"], state_code)
+    state_g = _provider_group(admin, token, state_code, create=False)
     leaf = _ensure_child_group(admin, token, state_g["id"], leaf_name)
     _map_role_on_group(admin, token, leaf["id"], realm_role)
-    path = leaf.get("path") or f"/states/{state_code}/{leaf_name}"
+    path = leaf.get("path") or f"/{provider_group_root()}/{state_code}/{leaf_name}"
     return path, leaf
 
 
@@ -407,6 +539,11 @@ def provision_user(
     if isinstance(found, list) and found:
         uid = found[0]["id"]
         body["username"] = found[0].get("username") or uname
+        actions = found[0].get("requiredActions")
+        if isinstance(actions, list):
+            body["requiredActions"] = [action for action in actions if action != "UPDATE_PASSWORD"]
+        else:
+            body.pop("requiredActions")
         _req("PUT", f"{admin}/users/{uid}", token=token, body=body)
     else:
         try:
@@ -441,11 +578,11 @@ def provision_user(
     # JWT through the group. Deliberately no direct user→role mapping here:
     # direct assignments produce users who carry permissions with no tenant
     # scope, and they are invisible in the group tree.
-    access_key = (access_type or "").lower()
+    access_key = (access_type or "").strip().lower()
     if access_key in _SUPER_ADMIN_ACCESS_TYPES:
         role_name = ROLE_SUPER_ADMIN
-    elif access_key in _BH_VIEWER_ACCESS_TYPES:
-        role_name = ROLE_BH_VIEWER
+    elif access_key in GLOBAL_VIEWER_ROLE_ALIASES:
+        role_name = ROLE_GLOBAL_VIEWER
     else:
         role_name = normalize_role(role) or (role or "").strip().lower()
 
@@ -457,9 +594,9 @@ def provision_user(
     login_url = f"{ui_url}/login" if not ui_url.endswith("/login") else ui_url
 
     if role_name == ROLE_SUPER_ADMIN:
-        access_label = "Super Admin (Bharat Vistaar — all states)"
-    elif role_name == ROLE_BH_VIEWER:
-        access_label = "BH Viewer (Bharat Vistaar — all states, read-only)"
+        access_label = "Platform administrator"
+    elif role_name == ROLE_GLOBAL_VIEWER:
+        access_label = "Viewer"
     else:
         access_label = f"{(state or '').upper()} · {(role or '').capitalize()}"
 
@@ -495,8 +632,8 @@ def provision_user(
         "access_type": (
             "super_admin"
             if role_name == ROLE_SUPER_ADMIN
-            else "bh_viewer"
-            if role_name == ROLE_BH_VIEWER
+            else ROLE_GLOBAL_VIEWER
+            if role_name == ROLE_GLOBAL_VIEWER
             else "state"
         ),
         "state": (state or "").upper() or None,
@@ -506,39 +643,60 @@ def provision_user(
         "roles": [r.get("name") for r in (roles or []) if isinstance(r, dict)],
         "app_url": ui_url,
         "login_url": login_url,
-        "portal_instance": PORTAL_INSTANCE,
+        "portal_instance": portal_instance(),
         "share_message": "\n".join(share_lines),
     }
 
 
+def list_provider_groups(cfg: KeycloakAdminConfig | None = None) -> list[dict] | None:
+    """Return the realm's direct provider groups, or None without an admin client."""
+    cfg = cfg or load_keycloak_admin_config()
+    if not cfg.configured:
+        return None
+    root_name = provider_group_root()
+    admin, token = _admin_root(cfg), _admin_token(cfg)
+    root = next((group for group in _list_keycloak(f"{admin}/groups", token) if group.get("name") == root_name), None)
+    if root is None:
+        return []
+    return [
+        group for group in _get_children(admin, token, root["id"])
+        if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", group.get("name", ""))
+    ]
+
+
 def list_access_options() -> dict[str, Any]:
-    """Static options for the admin form (no Keycloak call required)."""
+    """List the provider groups that exist in this Keycloak realm."""
     cfg = load_keycloak_admin_config()
+    root_name = provider_group_root()
+    providers = [
+        {"code": group["name"].upper(), "label": group["name"]}
+        for group in list_provider_groups(cfg) or []
+    ]
     return {
         "keycloak_admin_configured": cfg.configured,
         "realm": cfg.realm,
-        "portal_instance": PORTAL_INSTANCE,
+        "portal_instance": portal_instance(),
         "access_types": [
             {
                 "id": "super_admin",
-                "label": "Super Admin (Bharat Vistaar)",
+                "label": "Platform administrator",
                 "description": "Full access to all states, settings, user management, and PROD approval",
                 "group": "/global/super-admin",
             },
             {
-                "id": "bh_viewer",
-                "label": "BH Viewer (Bharat Vistaar)",
-                "description": "Read-only access across all states. No upload, edit, or approve.",
-                "group": "/global/bh-viewer",
+                "id": ROLE_GLOBAL_VIEWER,
+                "label": "Viewer",
+                "description": "Read-only access across all providers.",
+                "group": GLOBAL_VIEWER_GROUP_PATH,
             },
             {
                 "id": "state",
-                "label": "State / Centre role",
+                "label": "Provider role",
                 "description": (
                     "Access limited to one state or centre, as Admin, Approver, "
                     "Contributor, or View"
                 ),
-                "group_template": "/states/{STATE}/{admin|approver|contributor|view}",
+                "group_template": f"/{root_name}/{{PROVIDER}}/{{admin|approver|contributor|view}}",
             },
         ],
         "state_roles": [
@@ -570,21 +728,19 @@ def list_access_options() -> dict[str, Any]:
                 "description": "View-only access within the state (search / browse)",
             },
         ],
-        "states": [{"code": c, "label": c} for c in DEFAULT_STATE_CODES],
+        "states": sorted(providers, key=lambda provider: provider["code"]),
         "required_fields": {
             "super_admin": ["email", "first_name", "last_name"],
-            "bh_viewer": ["email", "first_name", "last_name"],
+            ROLE_GLOBAL_VIEWER: ["email", "first_name", "last_name"],
             "state": ["email", "first_name", "last_name", "state", "role"],
         },
         "notes": [
             "Users sign in with Google SSO using the same email you enter.",
             "No app password is required for normal SSO login.",
-            "State codes must match document instance tags (mh, up, …).",
-            "A centre is modelled as just another state code.",
-            "Super admin (BV) documents can use portal instance 'bv'.",
+            "Provider codes match the instance codes used by documents.",
             "Access comes from group membership only — no direct role assignment.",
-            "Keycloak groups: /global/super-admin, /global/bh-viewer, "
-            "/states/{STATE}/{admin|approver|contributor|view}",
+            f"Keycloak groups: /global/super-admin, {GLOBAL_VIEWER_GROUP_PATH}, "
+            f"/{root_name}/{{PROVIDER}}/{{admin|approver|contributor|view}}",
         ],
     }
 
@@ -592,14 +748,10 @@ def list_access_options() -> dict[str, Any]:
 def _is_product_group_path(path: str) -> bool:
     """True when a group path grants a product role.
 
-    ``/global/super-admin``, ``/global/bh-viewer``, or ``/states/{CODE}/{leaf}``.
+    ``/global/super-admin``, ``/global/global-viewer``, or ``/states/{CODE}/{leaf}``.
     Anything else (org units, ad-hoc groups) is left alone when changing a role.
     """
-    clean = (path or "").rstrip("/")
-    if clean in ("/global/super-admin", "/global/bh-viewer"):
-        return True
-    parts = [p for p in clean.split("/") if p]
-    return len(parts) == 3 and parts[0].lower() == "states"
+    return bool(parse_group_paths([path]).roles)
 
 
 def set_user_access(
@@ -609,29 +761,22 @@ def set_user_access(
     state: str | None = None,
     role: str | None = None,
 ) -> dict[str, Any]:
-    """Move an existing user to exactly one product role.
-
-    A user holds at most ONE product group: the target is joined and every
-    other product group is left, so roles never stack. Direct realm-role
-    assignments are stripped too — group membership is the only source of
-    access, and a leftover direct role would silently outrank the new group.
-
-    The change only reaches the user's JWT on their next login.
-    """
+    """Update the user's role in the selected provider or platform scope."""
     cfg = require_admin_config()
     token = _admin_token(cfg)
     admin = _admin_root(cfg)
 
-    status, target_user = _req("GET", f"{admin}/users/{user_id}", token=token)
+    user_url = _user_admin_url(admin, user_id)
+    status, target_user = _req("GET", user_url, token=token)
     if status != 200 or not target_user:
         raise HTTPException(404, "User not found")
 
     path, group = ensure_access_group(cfg, access_type=access_type, state=state, role=role)
 
-    _req("PUT", f"{admin}/users/{user_id}/groups/{group['id']}", token=token)
+    _req("PUT", f"{user_url}/groups/{group['id']}", token=token)
 
-    # Exactly one product group.
-    _, current = _req("GET", f"{admin}/users/{user_id}/groups", token=token)
+    target_scope = parse_group_paths([path]).state_roles.keys()
+    current = _list_keycloak(f"{user_url}/groups", token)
     removed: list[str] = []
     for existing in current or []:
         existing_path = existing.get("path") or ""
@@ -639,25 +784,28 @@ def set_user_access(
             continue
         if not _is_product_group_path(existing_path):
             continue
-        _req("DELETE", f"{admin}/users/{user_id}/groups/{existing['id']}", token=token)
+        existing_scope = parse_group_paths([existing_path]).state_roles.keys()
+        if existing_scope != target_scope:
+            continue
+        _req("DELETE", f"{user_url}/groups/{existing['id']}", token=token)
         removed.append(existing_path)
 
     # Groups are the only source of roles.
-    _, mapped = _req("GET", f"{admin}/users/{user_id}/role-mappings/realm", token=token)
+    _, mapped = _req("GET", f"{user_url}/role-mappings/realm", token=token)
     stripped: list[str] = []
     for realm_role in mapped or []:
         name = realm_role.get("name") or ""
-        if name in ("offline_access", "uma_authorization") or name.startswith("default-roles"):
+        if not normalize_role(name):
             continue
         _req(
             "DELETE",
-            f"{admin}/users/{user_id}/role-mappings/realm",
+            f"{user_url}/role-mappings/realm",
             token=token,
             body=[{"id": realm_role["id"], "name": name}],
         )
         stripped.append(name)
 
-    _, after = _req("GET", f"{admin}/users/{user_id}/groups", token=token)
+    after = _list_keycloak(f"{user_url}/groups", token)
     paths = [g.get("path") or "" for g in (after or [])]
     summary = _access_summary_from_groups(paths)
 
@@ -681,66 +829,30 @@ def _access_summary_from_groups(group_paths: list[str]) -> dict[str, Any]:
     Users without product groups (super_admin / state roles) are labeled
     **Dashboard** — baseline SSO access (search/view only), not an error state.
     """
-    paths = [p or "" for p in group_paths]
-    if any(
-        "/global/super-admin" in p
-        or p.rstrip("/").endswith("/super-admin")
-        or p.rstrip("/").endswith("global/super-admin")
-        for p in paths
-    ):
+    access = parse_group_paths(group_paths)
+    if access.is_super_admin:
         return {
             "access_type": "super_admin",
             "access_label": "Super Admin",
             "states": [],
             "roles": [ROLE_SUPER_ADMIN],
         }
-    if any(
-        p.rstrip("/").endswith("/bh-viewer") or p.rstrip("/").endswith("/bh_viewer")
-        for p in paths
-    ):
+    if access.is_global_viewer:
         return {
-            "access_type": "bh_viewer",
-            "access_label": "BH Viewer",
+            "access_type": ROLE_GLOBAL_VIEWER,
+            "access_label": "Viewer",
             "states": [],
-            "roles": [ROLE_BH_VIEWER],
+            "roles": access.roles,
+            "provider_roles": dict(access.state_roles),
         }
-    states: list[str] = []
-    roles: list[str] = []
-    for p in paths:
-        m = re.match(r"^/states/([A-Za-z0-9_-]+)/([A-Za-z0-9_-]+)/?$", p, re.I)
-        if not m:
-            continue
-        states.append(m.group(1).upper())
-        leaf = m.group(2).lower().replace("-", "_")
-        roles.append(normalize_role(leaf) or leaf)
-    # unique preserve order
-    seen_s: set[str] = set()
-    uniq_states = []
-    for s in states:
-        if s not in seen_s:
-            seen_s.add(s)
-            uniq_states.append(s)
-    seen_r: set[str] = set()
-    uniq_roles = []
-    for r in roles:
-        if r not in seen_r:
-            seen_r.add(r)
-            uniq_roles.append(r)
-
-    if uniq_states:
-        # e.g. "MH · contributor" or multi "MH · contributor, UP · reviewer"
-        pairs = []
-        if len(uniq_states) == len(uniq_roles):
-            pairs = [f"{s} · {r}" for s, r in zip(uniq_states, uniq_roles)]
-        elif uniq_roles:
-            pairs = [f"{', '.join(uniq_states)} · {', '.join(uniq_roles)}"]
-        else:
-            pairs = list(uniq_states)
+    if access.state_roles:
+        memberships = sorted(access.state_roles.items())
         return {
             "access_type": "state",
-            "access_label": ", ".join(pairs),
-            "states": uniq_states,
-            "roles": uniq_roles,
+            "access_label": ", ".join(f"{provider.upper()} · {role}" for provider, role in memberships),
+            "states": [provider.upper() for provider, _ in memberships],
+            "roles": access.roles,
+            "provider_roles": dict(access.state_roles),
         }
 
     # No product group → baseline dashboard / search-only access after SSO
@@ -800,12 +912,13 @@ def list_realm_users(*, search: str = "", max_results: int = 100) -> dict[str, A
                 "access_label": summary["access_label"],
                 "states": summary["states"],
                 "roles": summary["roles"],
+                "provider_roles": summary.get("provider_roles", {}),
             }
         )
 
     # Prefer users with product groups first, then by email
     def sort_key(row: dict) -> tuple:
-        rank = 0 if row.get("access_type") in ("super_admin", "bh_viewer", "state") else 1
+        rank = 0 if row.get("access_type") in ("super_admin", ROLE_GLOBAL_VIEWER, "state") else 1
         return (rank, (row.get("email") or row.get("username") or "").lower())
 
     rows.sort(key=sort_key)

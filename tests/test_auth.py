@@ -95,10 +95,9 @@ def test_local_bypass_has_all_permissions():
     assert set(Permission).issubset(user.permissions)
 
 
-def test_auth_disabled_by_default():
-    with patch.dict(os.environ, {"AUTH_DISABLED": "true"}):
-        cfg = load_auth_config()
-        assert cfg.disabled is True
+def test_auth_enabled_by_default(monkeypatch):
+    monkeypatch.delenv("AUTH_DISABLED")
+    assert not load_auth_config().disabled
 
 
 def test_enabled_auth_requires_keycloak_config_at_startup():
@@ -118,8 +117,24 @@ def test_disabled_auth_does_not_require_keycloak_config():
         keycloak_issuer="",
         keycloak_audience="docs-pipeline-api",
         keycloak_jwks_url="",
+        runtime_profile="local",
     )
     validate_auth_config(config)
+
+
+def test_production_requires_api_audience_and_disallows_bypass():
+    issuer = "https://example.com/realms/test"
+    with pytest.raises(RuntimeError, match="KEYCLOAK_AUDIENCE"):
+        validate_auth_config(AuthConfig(False, issuer, "", f"{issuer}/protocol/openid-connect/certs"))
+    with pytest.raises(RuntimeError, match="KP_RUNTIME_PROFILE"):
+        validate_auth_config(AuthConfig(True, "", "", ""))
+
+
+def test_only_configured_client_roles_are_trusted():
+    user = claims_to_user({"sub": "u1", "resource_access": {
+        "unrelated-client": {"roles": ["super_admin"]}, "knowledge-api": {"roles": ["viewer"]},
+    }}, client_id="knowledge-api")
+    assert "super_admin" not in user.roles
 
 
 @pytest.mark.asyncio
@@ -184,22 +199,28 @@ def test_every_route_is_gated_or_explicitly_classified():
     right auth dependency instead of widening the allowlist.
     """
     from pipeline.api import app
+    from pipeline.api.routers.webhook_sources import require_webhook_sender
 
     # The ONLY intentionally-public application routes.
     public = {
         ("GET", "/health"),
-        # Login. Necessarily unauthenticated — these are how a caller obtains a
-        # token in the first place. Guarded instead by RATE_LIMIT_OTP, an
-        # enumeration-safe send response, and single-use codes in Keycloak.
-        ("POST", "/auth/otp/request"),
-        ("POST", "/auth/otp/verify"),
-        # SSO code exchange: the browser cannot do it (confidential client), and
-        # the authorization code it posts here is single-use and PKCE-bound.
-        ("POST", "/auth/sso/exchange"),
+        # These console routes establish a session from an email code.
+        # Logout and refresh require the session refresh token.
+        ("GET", "/auth/google"),
+        ("POST", "/auth/google/start"),
+        ("GET", "/auth/google/callback"),
+        ("POST", "/auth/google/complete"),
+        ("POST", "/auth/email/send"),
+        ("POST", "/auth/email/verify"),
+        ("POST", "/auth/session/logout"),
         # Refresh is public for the same reason: the refresh token is itself the
         # credential, and the access token has usually expired by then.
         ("POST", "/auth/session/refresh"),
         ("POST", "/auth/otp/refresh"),
+        # Inbound webhook for external systems: gated by its own x-api-key
+        # (require_webhook_key, fails closed when WEBHOOK_API_KEY is unset),
+        # not by a user token.
+        ("POST", "/webhook"),
     }
     def dependency_calls(dependant):
         calls = {dependant.call}
@@ -211,13 +232,14 @@ def test_every_route_is_gated_or_explicitly_classified():
     # application_routes descends into included routers; a plain walk over
     # app.routes would skip every router-mounted endpoint and pass vacuously.
     for method, path, route in application_routes(app):
-        has_auth = get_current_user in dependency_calls(route.dependant)
+        calls = dependency_calls(route.dependant)
+        has_auth = get_current_user in calls or require_webhook_sender in calls
         if not has_auth and (method, path) not in public:
             ungated.append(f"{method} {path}")
 
     assert not ungated, (
         "These routes are neither gated nor on the public allowlist "
-        f"(only /health may be public): {sorted(ungated)}"
+        f": {sorted(ungated)}"
     )
 
 

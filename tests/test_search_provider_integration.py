@@ -3,7 +3,7 @@ from qdrant_client import QdrantClient
 
 from pipeline.vector_store import qdrant_store
 from tests.test_qdrant_validity import TODAY, clock_at
-from tests.test_search_group_integration import VECTOR_SIZE, bag_of_words_vector
+from tests.test_search_group_integration import VECTOR_SIZE, bag_of_words_vector, serving_record
 
 INDEX = "provider-integration"
 
@@ -23,11 +23,12 @@ CHUNKS = [
 @pytest.fixture
 def local_store(monkeypatch, test_client):
     monkeypatch.setenv("EMBEDDING_VECTOR_SIZE", str(VECTOR_SIZE))
+    monkeypatch.setenv("VECTOR_DB_COLLECTION_NAME", INDEX)
     monkeypatch.setattr(qdrant_store, "embed_passages", lambda texts, **_: [bag_of_words_vector(t) for t in texts])
     monkeypatch.setattr(qdrant_store, "embed_query", lambda query, **_: bag_of_words_vector(query))
 
     store = qdrant_store.QdrantVectorStore(client=QdrantClient(":memory:"), clock=clock_at(TODAY))
-    store.upsert(INDEX, [{"chunk_num": 1, "is_reference": False, **chunk} for chunk in CHUNKS])
+    store.upsert(INDEX, [serving_record(chunk, INDEX) for chunk in CHUNKS])
     monkeypatch.setattr("pipeline.vector_store.get_vector_store", lambda: store)
     return store
 
@@ -64,4 +65,3 @@ def test_provider_composes_with_group(local_store, test_client):
     body = search(test_client, provider_id="bv.provider.oan.dev", group="mh")
 
     assert body["hits"] == []
-

@@ -1,4 +1,5 @@
 import { Building2, Check, LogOut, Shield, X as XIcon } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { useAuth } from '../auth/AuthProvider'
 import {
   formatStateList,
@@ -130,7 +131,7 @@ export function UserAccessSheet({ open, onOpenChange }) {
                 </Badge>
                 {isSuperAdmin ? (
                   <Badge variant="outline" className="text-[10px]">
-                    All states
+                    All instances
                   </Badge>
                 ) : states.length > 0 ? (
                   <Badge variant="outline" className="gap-1 text-[10px]">
@@ -156,8 +157,7 @@ export function UserAccessSheet({ open, onOpenChange }) {
             <div className="space-y-3">
               {catalog.length === 0 ? (
                 <p className="rounded-lg border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">
-                  No product role mapped yet. Ask an admin to assign a Keycloak group
-                  (e.g. /states/MH/admin or /states/MH/view).
+                  No product role mapped yet. Ask your administrator to assign an instance role.
                 </p>
               ) : (
                 catalog.map((role) => (
@@ -178,7 +178,7 @@ export function UserAccessSheet({ open, onOpenChange }) {
               </h2>
               {states.length > 0 && !isSuperAdmin ? (
                 <div>
-                  <div className="text-[11px] font-medium text-muted-foreground">States</div>
+                  <div className="text-[11px] font-medium text-muted-foreground">Instances</div>
                   <div className="mt-1 flex flex-wrap gap-1">
                     {states.map((code) => (
                       <Badge key={code} variant="secondary" className="text-[10px]">
@@ -219,7 +219,10 @@ export function UserAccessSheet({ open, onOpenChange }) {
           )}
         </div>
 
-        <div className="mt-auto border-t border-border px-5 py-4">
+        <div className="mt-auto grid gap-2 border-t border-border px-5 py-4">
+          <Button asChild variant="outline">
+            <Link to="/users?view=account" onClick={() => onOpenChange(false)}>Your access</Link>
+          </Button>
           <Button
             type="button"
             variant="outline"

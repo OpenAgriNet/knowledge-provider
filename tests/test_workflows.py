@@ -1,19 +1,21 @@
-"""Tests for pipeline/workflows.py module-level configuration."""
+"""Temporal workflow execution and replay checks."""
 
 import uuid
 
 import pytest
 from temporalio import activity
 from temporalio.testing import WorkflowEnvironment
-from temporalio.worker import UnsandboxedWorkflowRunner, Worker
+from temporalio.worker import Replayer, UnsandboxedWorkflowRunner, Worker
 
-from pipeline import workflows as workflows_module
-from pipeline.workflows import (
+from pipeline.temporal.workflows import (
     DocumentPipelineWorkflow,
     PromoteToProdWorkflow,
     ReingestionWorkflow,
-    _network_publish_retry_policy,
+    document,
+    policies,
+    releases,
 )
+from pipeline.temporal.workflows.policies import _network_publish_retry_policy
 
 
 class TestNetworkPublishRetryPolicy:
@@ -49,9 +51,9 @@ class TestNetworkPublishRetryPolicy:
         assert policy.maximum_attempts == 3
 
 
-def _stub_activities(call_log: list):
+def _stub_activities(call_log: list, source_first_flags: dict | None = None):
     """Fake activities recording call order; registered on the test Worker and
-    monkeypatched over the real ones referenced by pipeline.workflows."""
+    monkeypatched over the real activities referenced by the workflow."""
 
     @activity.defn(name="run_ocr_and_store")
     async def run_ocr_and_store(workflow_id: str, filepath: str) -> dict:
@@ -65,9 +67,11 @@ def _stub_activities(call_log: list):
 
     @activity.defn(name="create_chunks_from_db")
     async def create_chunks_from_db(
-        workflow_id: str, chunk_size: int, chunk_overlap: int, min_tokens: int
+        workflow_id: str, chunk_size: int, chunk_overlap: int, min_tokens: int, source_first: bool = False,
     ) -> dict:
         call_log.append("create_chunks_from_db")
+        if source_first_flags is not None:
+            source_first_flags["chunking"] = source_first
         return {"chunk_count": 1}
 
     @activity.defn(name="auto_tag_chunks_from_db")
@@ -77,9 +81,13 @@ def _stub_activities(call_log: list):
 
     @activity.defn(name="ingest_document_from_db")
     async def ingest_document_from_db(
-        workflow_id: str, document_id: str, filename: str, index_name: str = "documents-index"
+        workflow_id: str, document_id: str, filename: str, index_name: str = "documents-index",
+        batch_size: int = 10, release_network_id: str | None = None, source_first: bool = False,
+        freeze_draft_revision: bool = False, revision_workflow_id: str | None = None,
     ) -> dict:
         call_log.append("ingest_document_from_db")
+        if source_first_flags is not None:
+            source_first_flags["indexing"] = source_first
         return {"records_ingested": 1}
 
     @activity.defn(name="promote_document_to_prod_qdrant")
@@ -115,6 +123,13 @@ def _stub_activities(call_log: list):
     }
 
 
+def _install_stubs(monkeypatch, workflow_module, stubs):
+    monkeypatch.setattr(policies, "update_document_state", stubs["update_document_state"])
+    for name, fn in stubs.items():
+        if hasattr(workflow_module, name):
+            monkeypatch.setattr(workflow_module, name, fn)
+
+
 def _activity_calls(call_log: list) -> list:
     """call_log entries that aren't state-mirroring noise."""
     return [c for c in call_log if not c.startswith("state:")]
@@ -129,8 +144,7 @@ class TestPublishAfterProdOrdering:
     async def test_document_pipeline_publishes_after_prod_promotion(self, monkeypatch):
         call_log: list = []
         stubs = _stub_activities(call_log)
-        for name, fn in stubs.items():
-            monkeypatch.setattr(workflows_module, name, fn)
+        _install_stubs(monkeypatch, document, stubs)
 
         task_queue = f"test-queue-{uuid.uuid4()}"
         async with await WorkflowEnvironment.start_time_skipping() as env:
@@ -157,39 +171,58 @@ class TestPublishAfterProdOrdering:
         )
 
     @pytest.mark.asyncio
-    async def test_document_pipeline_skip_prod_never_publishes(self, monkeypatch):
+    @pytest.mark.parametrize("filename,filepath,source_first,legacy", [
+        ("test.pdf", "/tmp/test.pdf", False, False),
+        ("notice.json", "/tmp/notice.json", True, False),
+        ("source.txt", "intake://test", True, False),
+        ("notice.json", "/tmp/notice.json", False, True),
+    ])
+    async def test_document_pipeline_skip_prod_never_publishes(self, monkeypatch, filename, filepath, source_first, legacy):
         call_log: list = []
-        stubs = _stub_activities(call_log)
-        for name, fn in stubs.items():
-            monkeypatch.setattr(workflows_module, name, fn)
+        source_first_flags = {}
+        stubs = _stub_activities(call_log, source_first_flags)
+        _install_stubs(monkeypatch, document, stubs)
 
         task_queue = f"test-queue-{uuid.uuid4()}"
-        async with await WorkflowEnvironment.start_time_skipping() as env:
-            async with Worker(
-                env.client,
-                task_queue=task_queue,
-                workflows=[DocumentPipelineWorkflow],
-                activities=list(stubs.values()),
-                workflow_runner=UnsandboxedWorkflowRunner(),
-            ):
-                handle = await env.client.start_workflow(
-                    DocumentPipelineWorkflow.run,
-                    args=["doc-1", "test.pdf", "/tmp/test.pdf", 450, 128, 100, "documents-index", True, False, True],
-                    id=f"test-wf-{uuid.uuid4()}",
-                    task_queue=task_queue,
+        with monkeypatch.context() as execution:
+            if legacy:
+                patched = document.workflow.patched
+                execution.setattr(
+                    document.workflow, "patched",
+                    lambda name: False if name == "source-first-structured-draft-v1" else patched(name),
                 )
-                await handle.result()
+            async with await WorkflowEnvironment.start_time_skipping() as env:
+                async with Worker(
+                    env.client,
+                    task_queue=task_queue,
+                    workflows=[DocumentPipelineWorkflow],
+                    activities=list(stubs.values()),
+                    workflow_runner=UnsandboxedWorkflowRunner(),
+                ):
+                    handle = await env.client.start_workflow(
+                        DocumentPipelineWorkflow.run,
+                        args=["doc-1", filename, filepath, 450, 128, 100, "documents-index", True, False, True],
+                        id=f"test-wf-{uuid.uuid4()}",
+                        task_queue=task_queue,
+                    )
+                    await handle.result()
+                    history = await handle.fetch_history()
+
+        await Replayer(
+            workflows=[DocumentPipelineWorkflow], workflow_runner=UnsandboxedWorkflowRunner(),
+        ).replay_workflow(history)
 
         activities_called = _activity_calls(call_log)
         assert "publish_catalog_to_network" not in activities_called
         assert "promote_document_to_prod_qdrant" not in activities_called
+        assert source_first_flags == {"chunking": source_first, "indexing": source_first}
 
     @pytest.mark.asyncio
-    async def test_reingestion_workflow_does_not_publish(self, monkeypatch):
+    @pytest.mark.parametrize("index_only", [False, True])
+    async def test_reingestion_workflow_does_not_publish(self, monkeypatch, index_only):
         call_log: list = []
         stubs = _stub_activities(call_log)
-        for name, fn in stubs.items():
-            monkeypatch.setattr(workflows_module, name, fn)
+        _install_stubs(monkeypatch, releases, stubs)
 
         task_queue = f"test-queue-{uuid.uuid4()}"
         async with await WorkflowEnvironment.start_time_skipping() as env:
@@ -202,7 +235,7 @@ class TestPublishAfterProdOrdering:
             ):
                 handle = await env.client.start_workflow(
                     ReingestionWorkflow.run,
-                    args=["doc-1", "test.pdf", "orig-wf-1", 1, 1, "documents-index"],
+                    args=["doc-1", "test.pdf", "orig-wf-1", 1, 1, "documents-index", *([True] if index_only else [])],
                     id=f"test-wf-{uuid.uuid4()}",
                     task_queue=task_queue,
                 )
@@ -211,14 +244,13 @@ class TestPublishAfterProdOrdering:
         activities_called = _activity_calls(call_log)
         assert "ingest_document_from_db" in activities_called
         assert "publish_catalog_to_network" not in activities_called
-        assert result["stage"] == "approval_for_prod"
+        assert result["stage"] == ("completed" if index_only else "approval_for_prod")
 
     @pytest.mark.asyncio
     async def test_promote_to_prod_workflow_publishes_after_promotion(self, monkeypatch):
         call_log: list = []
         stubs = _stub_activities(call_log)
-        for name, fn in stubs.items():
-            monkeypatch.setattr(workflows_module, name, fn)
+        _install_stubs(monkeypatch, releases, stubs)
 
         task_queue = f"test-queue-{uuid.uuid4()}"
         async with await WorkflowEnvironment.start_time_skipping() as env:
@@ -239,3 +271,44 @@ class TestPublishAfterProdOrdering:
 
         activities_called = _activity_calls(call_log)
         assert activities_called == ["promote_document_to_prod_qdrant", "publish_catalog_to_network"]
+
+
+@pytest.mark.workflow
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_manual_review_has_no_chunk_review_pause(monkeypatch, legacy):
+    """New documents go from chunking straight to the ingestion gate; histories
+    recorded before skip-chunk-review-v1 keep the chunk review pause."""
+    call_log: list = []
+    stubs = _stub_activities(call_log)
+    _install_stubs(monkeypatch, document, stubs)
+    if legacy:
+        patched = document.workflow.patched
+        monkeypatch.setattr(
+            document.workflow, "patched", lambda name: False if name == "skip-chunk-review-v1" else patched(name),
+        )
+
+    task_queue = f"test-queue-{uuid.uuid4()}"
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with Worker(
+            env.client, task_queue=task_queue, workflows=[DocumentPipelineWorkflow],
+            activities=list(stubs.values()), workflow_runner=UnsandboxedWorkflowRunner(),
+        ):
+            handle = await env.client.start_workflow(
+                DocumentPipelineWorkflow.run,
+                args=["doc-1", "test.pdf", "/tmp/test.pdf", 450, 128, 100, "documents-index", False, False, True],
+                id=f"test-wf-{uuid.uuid4()}",
+                task_queue=task_queue,
+            )
+            for signal in (DocumentPipelineWorkflow.approve_ocr, DocumentPipelineWorkflow.approve_translation,
+                           DocumentPipelineWorkflow.approve_ingestion):
+                await handle.signal(signal)
+            if legacy:
+                await handle.signal(DocumentPipelineWorkflow.approve_chunks)
+            await handle.result()
+            history = await handle.fetch_history()
+
+    await Replayer(workflows=[DocumentPipelineWorkflow], workflow_runner=UnsandboxedWorkflowRunner()).replay_workflow(history)
+    assert ("state:chunk_review" in call_log) is legacy
+    assert "auto_tag_chunks_from_db" in call_log
+    assert call_log.index("state:ready_for_ingestion") > call_log.index("auto_tag_chunks_from_db")

@@ -52,10 +52,13 @@ const adminNav = [
 export function AppSidebar() {
   const { state } = useSidebar()
   const collapsed = state === 'collapsed'
-  const { hasPermission } = useAuth()
+  const { hasPermission, user, stateRoles } = useAuth()
   const canUpload = hasPermission('upload')
   const canSearch = hasPermission('search')
-  const visible = (items) => items.filter((item) => !item.permission || hasPermission(item.permission))
+  const canManageProvider = user?.live_provider_access && Object.values(stateRoles || {}).includes('state_admin')
+  const visible = (items) => items.filter((item) => (
+    !item.permission || hasPermission(item.permission) || (item.permission === 'manage_users' && canManageProvider)
+  ))
 
   const [queueTotal, setQueueTotal] = useState(0)
 
@@ -191,7 +194,7 @@ export function AppSidebar() {
                 <TooltipTrigger asChild>
                   <NavLink
                     to="/ingest"
-                    className="flex size-9 items-center justify-center rounded-lg bg-primary text-primary-foreground hover:bg-primary/90"
+                    className="flex size-9 items-center justify-center rounded-lg bg-primary text-primary-foreground! hover:bg-primary/90"
                   >
                     <Upload className="size-4" />
                     <span className="sr-only">New Document</span>
@@ -205,7 +208,7 @@ export function AppSidebar() {
               to="/ingest"
               className={cn(
                 'flex w-full items-center justify-center gap-2 rounded-xl px-3 py-3',
-                'text-sm font-semibold text-primary-foreground shadow-sm',
+                'text-sm font-semibold text-primary-foreground! shadow-sm',
                 'bg-primary hover:bg-primary/90 hover:shadow-md transition-all',
               )}
             >

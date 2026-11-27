@@ -13,7 +13,7 @@ To swap or add a model:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 
@@ -21,7 +21,7 @@ from typing import Callable, Optional
 class OcrConfig:
     provider: str
     model: str = ""
-    api_key: str = ""
+    api_key: str = field(default="", repr=False)
     endpoint: str = ""
     api_url: str = ""
     inference_mode: str = "hf"
@@ -31,6 +31,8 @@ class OcrConfig:
     max_workers: int = 4
     image_dpi: int = 192
     request_timeout_seconds: float = 300.0
+    executable: str = ""
+    skip_text_layer: bool | None = None
 
 
 PageDict = dict
@@ -38,6 +40,8 @@ PageDict = dict
 
 class OcrProvider(ABC):
     name: str
+    # Layout parsers need the source page even when it already has text.
+    requires_all_pages = False
 
     @abstractmethod
     def process_pdf_range(

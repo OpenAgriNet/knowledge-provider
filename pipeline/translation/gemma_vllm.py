@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import httpx
 
+from pipeline.metadata.localization import normalize_language_tag
+
 from .base import TranslationConfig, TranslationProvider
 
-TRANSLATE_PROMPT = """Translate the following text to English.
+TRANSLATE_PROMPT = """Translate the following text to the language with tag {target_language}.
 Preserve all formatting, including markdown syntax, tables, and bullet points.
 Maintain technical terminology accurately.
 If there are proper nouns or names, keep them as-is or transliterate appropriately.
@@ -26,14 +28,17 @@ class GemmaVllmTranslationProvider(TranslationProvider):
         self._endpoint = config.endpoint.rstrip("/") + "/chat/completions"
 
     def translate(self, text: str, *, source_lang: str, target_language: str) -> str:
-        del source_lang, target_language
+        del source_lang
+        target_tag = normalize_language_tag(target_language)
+        if not target_tag:
+            raise ValueError("Translation target must be a BCP 47 language tag")
         headers = {"Content-Type": "application/json"}
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
 
         payload = {
             "model": self.config.model,
-            "messages": [{"role": "user", "content": TRANSLATE_PROMPT.format(text=text)}],
+            "messages": [{"role": "user", "content": TRANSLATE_PROMPT.format(text=text, target_language=target_tag)}],
         }
         if self.config.temperature is not None:
             payload["temperature"] = self.config.temperature

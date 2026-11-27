@@ -1,19 +1,15 @@
 """Unit tests for the Network Catalog Envelope's catalog builder."""
 
+import json
+
 import pytest
 
-from pipeline.catalog_builder import (
+from pipeline.network.catalog.catalog_builder import (
     build_catalog,
     is_publishable_kind,
     normalize_document_kind,
 )
-from pipeline.network_constants import (
-    ADVISORY_CATALOG_ID,
-    ADVISORY_RESOURCE_ID,
-    SCHEMES_CATALOG_ID,
-    SCHEMES_RESOURCE_ID,
-)
-from pipeline.network_provider import Group
+from pipeline.network.network_provider import Group
 
 PROVIDER = {
     "id": "bv.provider.oan.dev",
@@ -23,8 +19,38 @@ MH_PROVIDER = {
     "id": "mh.provider.oan.dev",
     "descriptor": {"code": "mh.provider.oan.dev", "name": "Maharashtra"},
 }
+ADVISORY_CATALOG_ID = "cat-oan-knowledge-provider-advisories"
+ADVISORY_RESOURCE_ID = "res-oan-knowledge-provider-advisories"
+SCHEMES_CATALOG_ID = "cat-oan-knowledge-provider-schemes"
+SCHEMES_RESOURCE_ID = "res-oan-knowledge-provider-schemes"
 CATALOG_NAME = "Knowledge from documents"
 MH_CATALOG_NAME = "Maharashtra knowledge from documents"
+
+
+def test_profile_can_describe_a_catalog_for_another_domain(monkeypatch, tmp_path):
+    from pipeline.network.network_group import load_provider_naming, provider_for
+
+    profile = tmp_path / "catalogs.json"
+    attributes = {"@type": "example:MaintenanceBulletin", "languages": ["fr"]}
+    profile.write_text(json.dumps({
+        "maintenance": {
+            "catalog_name": "Maintenance notices",
+            "domain": "maintenance",
+            "catalog_id": "maintenance-catalog",
+            "resource_name": "Maintenance bulletin",
+            "resource_id": "maintenance-resource",
+            "resource_attributes": attributes,
+        },
+    }))
+    monkeypatch.setenv("BECKN_CATALOG_PROFILE_PATH", str(profile))
+    naming = load_provider_naming("network.example")
+    provider = provider_for(naming, "maintenance", None)
+
+    catalog = build_catalog("maintenance", provider, naming.catalog_name("maintenance", None))
+
+    assert catalog["descriptor"]["name"] == "Maintenance notices"
+    assert catalog["resources"][0]["resourceAttributes"] == attributes
+    assert not is_publishable_kind("advisory")
 
 # Forbidden by the KnowledgeAdvisory schema under informationMode OnDemand.
 # Both advisory and scheme resources use this schema.

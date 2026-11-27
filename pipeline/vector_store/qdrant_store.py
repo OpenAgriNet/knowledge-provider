@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 from typing import Any, Optional
@@ -11,8 +12,11 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
 from qdrant_client.http.exceptions import UnexpectedResponse
 
-from ..document_validity import Clock, system_clock, today
-from .embeddings import embed_passages, embed_query, get_vector_size
+from pipeline.documents.document_validity import Clock, system_clock, today
+from pipeline.metadata.localization import indexed_document_labels, normalize_language_tag
+from pipeline.search.document_identity import indexed_identity
+
+from .embeddings import embed_passages, embed_query, get_embedding_prompt_style, get_vector_size
 
 logger = logging.getLogger(__name__)
 
@@ -22,20 +26,36 @@ PAYLOAD_FIELDS = (
     "doc_id",
     "workflow_id",
     "instance",
-    "instance_name",
     "provider_id",
+    "localized_labels",
+    "topics",
+    "document_tags",
+    "subject_categories",
+    "metadata",
+    "crop_keys",
+    "document_scope",
+    "subjects",
+    "agriculture_subject_ids",
+    "coverage_area_keys",
+    "excluded_coverage_area_keys",
+    "season_keys",
+    "applicability_groups",
+    "applicability_scope",
+    "tag_keys",
+    "chunk_tags",
+    "source_url",
     "type",
     "source",
     "filename",
-    "name_gu",
-    "name_en",
-    "title_en",
-    "title_gu",
-    "doc_language",
-    "category_tags",
-    "doc_short_description",
-    "doc_llm_description",
-    "ingestion_status",
+    "name",
+    "primary_language",
+    "primary_text",
+    "text_language",
+    "translations",
+    "source_evidence",
+    "available_languages",
+    "revision_id",
+    "release_network_id",
     "description",
     "text",
     "chunk_num",
@@ -44,18 +64,16 @@ PAYLOAD_FIELDS = (
     "page_start",
     "page_end",
     "is_reference",
-    "quality_score",
-    "priority_rank",
     "text_for_embedding",
-    "priority",
-    # Scheme index payload (type=scheme → schemes-index)
-    "scheme_code",
-    "scheme_name",
-    "scheme_aliases",
+    "document_identity",
     "chunk_id",
     "chunk_index",
+    # Advisory entry, sowing window and LGD place, read by the advisory
+    # search profile. Namespaced: legacy top-level pop_id/season stay dropped.
+    "advisory",
     # Document validity - the period this chunk is searchable in. Absent on
     # points written before validity existed, which search treats as current.
+    "validity",
     "start_date",
     "end_date",
 )
@@ -157,18 +175,46 @@ def _record_payload(record: dict[str, Any]) -> dict[str, Any]:
         if key in record and record[key] is not None:
             payload[key] = record[key]
 
+    if labels := indexed_document_labels(record):
+        payload["localized_labels"] = labels
+    if not payload.get("primary_language") and (language := normalize_language_tag(record.get("doc_language"))):
+        payload["primary_language"] = language
+
+    if "subjects" not in payload and record.get("crop_subjects"):
+        payload["subjects"] = [{**crop, "type": "crop"} for crop in record["crop_subjects"]]
+    if identity := indexed_identity(record):
+        payload["document_identity"] = identity
+
     if "text" not in payload:
         payload["text"] = record.get("text") or ""
     return payload
 
 
+def _same_cosine_vector(stored: Any, expected: list[float]) -> bool:
+    if not isinstance(stored, list) or len(stored) != len(expected):
+        return False
+    stored_norm = math.hypot(*stored)
+    expected_norm = math.hypot(*expected)
+    if not 0 < stored_norm < math.inf or not 0 < expected_norm < math.inf:
+        return False
+    return all(
+        math.isclose(left / stored_norm, right / expected_norm, abs_tol=1e-6, rel_tol=1e-5)
+        for left, right in zip(stored, expected)
+    )
+
+
 def _hit_from_point(point: Any) -> dict[str, Any]:
-    payload = dict(point.payload or {})
+    payload = _record_payload(point.payload or {})
     hit = {
         "_id": str(point.id),
         "_score": float(getattr(point, "score", 0.0) or 0.0),
         **payload,
     }
+    if crops := [
+        {key: value for key, value in subject.items() if key != "type"}
+        for subject in payload.get("subjects", []) if subject.get("type") == "crop"
+    ]:
+        hit["crop_subjects"] = crops
     if hit.get("chunk_num") is not None:
         hit.setdefault("chunk_number", hit["chunk_num"])
     return hit
@@ -220,6 +266,16 @@ def _exact(key: str, value: Any) -> qmodels.FieldCondition:
     return qmodels.FieldCondition(key=key, match=qmodels.MatchValue(value=value))
 
 
+def _scoped_condition(field: str, condition, scope: str):
+    if scope == "chunk":
+        return condition(field)
+    differs = _exact("document_scope.fields", field)
+    return qmodels.Filter(should=[
+        qmodels.Filter(must=[differs, condition(f"document_scope.{field}")]),
+        qmodels.Filter(must=[condition(field)], must_not=[differs]),
+    ])
+
+
 def _build_filter(
     doc_id: Optional[str] = None,
     chunk_num: Optional[int] = None,
@@ -227,6 +283,16 @@ def _build_filter(
     valid_on: Optional[str] = None,
     instance: Optional[str] = None,
     provider_id: Optional[str] = None,
+    document_kind: Optional[str] = None,
+    document_code: Optional[str] = None,
+    release_network_id: Optional[str] = None,
+    crop_subject_ids: Optional[list[str]] = None,
+    allowed_instances: Optional[list[str]] = None,
+    strict_language: Optional[str] = None,
+    applicability: Optional[dict[str, list[str]]] = None,
+    excluded_revision_ids: Optional[list[str]] = None,
+    document_workflow_id: Optional[str] = None,
+    metadata_filters: Optional[dict] = None,
 ) -> Optional[qmodels.Filter]:
     """Assemble a Qdrant filter. `valid_on` (`YYYY-MM-DD`) restricts the result
     to chunks valid on that day; None leaves validity out entirely, which is
@@ -234,10 +300,93 @@ def _build_filter(
     document's chunk. `instance` keeps only chunks tagged with that group
     code (the API calls it `group`); None means every group."""
     must: list[qmodels.Condition] = []
+    must_not: list[qmodels.Condition] = []
     if instance is not None:
         must.append(_exact("instance", instance))
+    if allowed_instances is not None:
+        must.append(qmodels.FieldCondition(
+            key="instance", match=qmodels.MatchAny(any=allowed_instances),
+        ))
     if provider_id is not None:
         must.append(_exact("provider_id", provider_id))
+    if document_kind is not None:
+        must.append(_exact("type", document_kind))
+    if document_code is not None:
+        must.append(qmodels.Filter(should=[
+            _exact("document_identity.code", document_code),
+            qmodels.Filter(must=[
+                qmodels.IsEmptyCondition(is_empty=qmodels.PayloadField(key="document_identity.code")),
+                _exact("scheme_code", document_code),
+            ]),
+        ]))
+    if release_network_id is not None:
+        must.append(_exact("release_network_id", release_network_id))
+    if strict_language is not None:
+        must.append(_exact("available_languages", strict_language))
+    if crop_subject_ids:
+        subjects = qmodels.NestedCondition(nested=qmodels.Nested(key="subjects", filter=qmodels.Filter(must=[
+            _exact("type", "crop"),
+            qmodels.FieldCondition(key="subjectId", match=qmodels.MatchAny(any=crop_subject_ids)),
+        ])))
+        legacy = qmodels.FieldCondition(key="crop_subjects[].subjectId", match=qmodels.MatchAny(any=crop_subject_ids))
+        must.append(qmodels.Filter(should=[subjects, legacy]))
+    contextual = []
+    for key, values in (applicability or {}).items():
+        if not values:
+            continue
+        exact = qmodels.FieldCondition(key=key, match=qmodels.MatchAny(any=values))
+        if key == "coverage_area_keys":
+            must_not.append(qmodels.FieldCondition(key="excluded_coverage_area_keys", match=qmodels.MatchAny(any=values)))
+        if key in {"coverage_area_keys", "season_keys"}:
+            contextual.append(exact)
+        else:
+            must.append(exact)
+    if contextual:
+        group_key = "applicability_groups"
+        legacy_or_broad = qmodels.Filter(should=[
+            _exact("applicability_scope", "broad"),
+            qmodels.IsEmptyCondition(is_empty=qmodels.PayloadField(key="applicability_scope")),
+        ])
+        flat = [
+            qmodels.Filter(should=[condition, qmodels.Filter(must=[
+                legacy_or_broad, qmodels.IsEmptyCondition(is_empty=qmodels.PayloadField(key=condition.key)),
+            ])])
+            for condition in contextual
+        ]
+        group_conditions = [
+            qmodels.Filter(should=[condition, qmodels.Filter(must=[
+                _exact("all_areas", True), qmodels.IsEmptyCondition(is_empty=qmodels.PayloadField(key=condition.key)),
+            ])])
+            for condition in contextual
+        ]
+        must.append(qmodels.Filter(should=[
+            qmodels.NestedCondition(nested=qmodels.Nested(
+                key=group_key, filter=qmodels.Filter(must=group_conditions),
+            )),
+            qmodels.Filter(must=[qmodels.IsEmptyCondition(is_empty=qmodels.PayloadField(key=group_key)), *flat]),
+        ]))
+    if metadata_filters:
+        scope = metadata_filters["scope"]
+        for name, field in (("category", "subject_categories"), ("crop", "crop_keys")):
+            if value := metadata_filters.get(name):
+                must.append(_scoped_condition(field, lambda key: _exact(key, value), scope))
+        area = metadata_filters.get("area")
+        season = metadata_filters.get("season")
+        if area:
+            must_not.append(_exact("excluded_coverage_area_keys", area))
+        if area or season:
+            conditions: list[qmodels.Condition] = []
+            if area:
+                conditions.append(qmodels.Filter(should=[_exact("coverage_area_keys", area), _exact("all_areas", True)]))
+            if season:
+                conditions.append(_exact("season_keys", season))
+            must.append(_scoped_condition(
+                "applicability_groups",
+                lambda key: qmodels.NestedCondition(nested=qmodels.Nested(
+                    key=key, filter=qmodels.Filter(must=conditions),
+                )),
+                scope,
+            ))
     if doc_id is not None:
         must.append(_exact("doc_id", doc_id))
     if chunk_num is not None:
@@ -246,9 +395,13 @@ def _build_filter(
         must.append(_exact("is_reference", False))
     if valid_on:
         must.extend(_validity_conditions(valid_on))
-    if not must:
+    if excluded_revision_ids:
+        must_not.append(qmodels.FieldCondition(key="revision_id", match=qmodels.MatchAny(any=excluded_revision_ids)))
+    if document_workflow_id is not None:
+        must.append(_exact("workflow_id", document_workflow_id))
+    if not must and not must_not:
         return None
-    return qmodels.Filter(must=must)
+    return qmodels.Filter(must=must or None, must_not=must_not or None)
 
 
 class QdrantVectorStore:
@@ -277,12 +430,35 @@ class QdrantVectorStore:
     PAYLOAD_INDEXES = {
         "doc_id": qmodels.PayloadSchemaType.KEYWORD,
         "workflow_id": qmodels.PayloadSchemaType.KEYWORD,
+        "revision_id": qmodels.PayloadSchemaType.KEYWORD,
+        "release_network_id": qmodels.PayloadSchemaType.KEYWORD,
+        "document_identity.code": qmodels.PayloadSchemaType.KEYWORD,
+        "type": qmodels.PayloadSchemaType.KEYWORD,
         "filename": qmodels.PayloadSchemaType.KEYWORD,
         "instance": qmodels.PayloadSchemaType.KEYWORD,
         "provider_id": qmodels.PayloadSchemaType.KEYWORD,
+        "available_languages": qmodels.PayloadSchemaType.KEYWORD,
+        "subjects[].subjectId": qmodels.PayloadSchemaType.KEYWORD,
+        "subjects[].type": qmodels.PayloadSchemaType.KEYWORD,
+        "subject_categories": qmodels.PayloadSchemaType.KEYWORD,
+        "agriculture_subject_ids": qmodels.PayloadSchemaType.KEYWORD,
+        "coverage_area_keys": qmodels.PayloadSchemaType.KEYWORD,
+        "excluded_coverage_area_keys": qmodels.PayloadSchemaType.KEYWORD,
+        "season_keys": qmodels.PayloadSchemaType.KEYWORD,
+        "applicability_scope": qmodels.PayloadSchemaType.KEYWORD,
+        "applicability_groups[].coverage_area_keys": qmodels.PayloadSchemaType.KEYWORD,
+        "applicability_groups[].season_keys": qmodels.PayloadSchemaType.KEYWORD,
+        "tag_keys": qmodels.PayloadSchemaType.KEYWORD,
+        "applicability_groups[].all_areas": qmodels.PayloadSchemaType.BOOL,
+        "crop_keys": qmodels.PayloadSchemaType.KEYWORD,
+        "document_scope.fields": qmodels.PayloadSchemaType.KEYWORD,
+        "document_scope.subject_categories": qmodels.PayloadSchemaType.KEYWORD,
+        "document_scope.crop_keys": qmodels.PayloadSchemaType.KEYWORD,
+        "document_scope.applicability_groups[].coverage_area_keys": qmodels.PayloadSchemaType.KEYWORD,
+        "document_scope.applicability_groups[].season_keys": qmodels.PayloadSchemaType.KEYWORD,
+        "document_scope.applicability_groups[].all_areas": qmodels.PayloadSchemaType.BOOL,
         "chunk_num": qmodels.PayloadSchemaType.INTEGER,
         "is_reference": qmodels.PayloadSchemaType.BOOL,
-        "type": qmodels.PayloadSchemaType.KEYWORD,
         "source": qmodels.PayloadSchemaType.KEYWORD,
         "start_date": qmodels.PayloadSchemaType.DATETIME,
         "end_date": qmodels.PayloadSchemaType.DATETIME,
@@ -304,6 +480,15 @@ class QdrantVectorStore:
                 )
             except Exception as exc:
                 logger.debug("Payload index %s skipped/exists: %s", field_name, exc)
+
+    def create_new_collection(self, name: str) -> None:
+        # Qdrant atomically rejects an existing collection. Never delete it.
+        if not self.client.create_collection(
+            collection_name=name,
+            vectors_config=qmodels.VectorParams(size=get_vector_size(), distance=qmodels.Distance.COSINE),
+        ):
+            raise RuntimeError("Qdrant did not create the new collection")
+        self._ensure_payload_indexes(name)
 
     def ensure_collection(self, name: str, recreate: bool = False) -> dict[str, Any]:
         vector_size = get_vector_size()
@@ -387,8 +572,9 @@ class QdrantVectorStore:
             }
 
         passages: list[str] = []
+        use_e5_text = get_embedding_prompt_style() == "e5"
         for record in records:
-            text_for_emb = record.get("text_for_embedding")
+            text_for_emb = record.get("text_for_embedding") if use_e5_text else None
             if text_for_emb is None:
                 text_for_emb = record.get("text") or ""
             passages.append(str(text_for_emb))
@@ -396,6 +582,8 @@ class QdrantVectorStore:
         # If passages already include the E5 "passage:" prefix, do not double-prefix.
         use_prefix = not all(str(p or "").lower().startswith("passage:") for p in passages)
         vectors = embed_passages(passages, use_e5_prefix=use_prefix, batch_size=batch_size)
+        if len(vectors) != len(records):
+            raise ValueError("The embedding model did not return one vector per passage")
 
         points = [
             qmodels.PointStruct(
@@ -408,7 +596,21 @@ class QdrantVectorStore:
 
         for i in range(0, len(points), batch_size):
             batch = points[i : i + batch_size]
-            self.client.upsert(collection_name=name, points=batch)
+            self.client.upsert(collection_name=name, points=batch, wait=True)
+            release_points = [point for point in batch if (point.payload or {}).get("release_network_id")]
+            if release_points:
+                visible = self.client.retrieve(
+                    collection_name=name, ids=[point.id for point in release_points],
+                    with_payload=True, with_vectors=True, consistency="all",
+                )
+                by_id = {str(point.id): point for point in visible}
+                for expected in release_points:
+                    stored = by_id.get(str(expected.id))
+                    if (
+                        stored is None or stored.payload != expected.payload
+                        or not _same_cosine_vector(stored.vector, expected.vector)
+                    ):
+                        raise ValueError("Qdrant could not verify the release projection")
 
         stats = self.get_stats(name)
         return {
@@ -417,6 +619,18 @@ class QdrantVectorStore:
             "supports_prefixed_tensor_field": True,
             "backend": self.backend,
         }
+
+    def remove_superseded_passages(self, name: str, doc_id: str, records: list[dict[str, Any]]) -> None:
+        if not records or any(row["doc_id"] != doc_id for row in records):
+            raise ValueError("Replacement passages must belong to one document")
+        self.client.delete(
+            collection_name=name,
+            points_selector=qmodels.FilterSelector(filter=qmodels.Filter(
+                must=[_exact("doc_id", doc_id)],
+                must_not=[qmodels.HasIdCondition(has_id=[point_id_for_record(row) for row in records])],
+            )),
+            wait=True,
+        )
 
     def delete_by_doc_id(self, name: str, doc_id: str) -> dict[str, Any]:
         try:
@@ -470,8 +684,11 @@ class QdrantVectorStore:
         name: str,
         doc_id: str,
         limit: int = 1000,
+        *,
+        chunk_num: int | None = None,
+        raw_payload: bool = False,
     ) -> list[dict[str, Any]]:
-        filt = _build_filter(doc_id=doc_id)
+        filt = _build_filter(doc_id=doc_id, chunk_num=chunk_num)
         hits: list[dict[str, Any]] = []
         next_offset = None
         remaining = limit
@@ -486,7 +703,7 @@ class QdrantVectorStore:
                 with_vectors=False,
             )
             for point in points:
-                hits.append(_hit_from_point(point))
+                hits.append(dict(point.payload or {}) if raw_payload else _hit_from_point(point))
             remaining = limit - len(hits)
             if next_offset is None or not points:
                 break
@@ -524,6 +741,16 @@ class QdrantVectorStore:
         valid_on: Optional[str] = None,
         instance: Optional[str] = None,
         provider_id: Optional[str] = None,
+        document_kind: Optional[str] = None,
+        document_code: Optional[str] = None,
+        release_network_id: Optional[str] = None,
+        crop_subject_ids: Optional[list[str]] = None,
+        allowed_instances: Optional[list[str]] = None,
+        strict_language: Optional[str] = None,
+        applicability: Optional[dict[str, list[str]]] = None,
+        excluded_revision_ids: Optional[list[str]] = None,
+        document_workflow_id: Optional[str] = None,
+        metadata_filters: Optional[dict] = None,
     ) -> dict[str, Any]:
         """Search `name`, by default returning only chunks valid today.
 
@@ -533,15 +760,27 @@ class QdrantVectorStore:
         and neither is what a caller serving an end user should pass.
 
         `instance` limits the search to one group's chunks (e.g. `mh`); None
-        searches every group. The same filter feeds every mode.
+        searches every permitted group. The same filter feeds every mode.
         """
         mode = (search_mode or "TENSOR").upper()
         as_of = (valid_on or self.today()) if apply_validity else None
+        if allowed_instances == []:
+            return {"hits": [], "backend": self.backend, "search_mode": mode, "valid_on": as_of}
         query_filter = _build_filter(
             exclude_reference=exclude_reference,
             valid_on=as_of,
             instance=instance,
             provider_id=provider_id,
+            document_kind=document_kind,
+            document_code=document_code,
+            release_network_id=release_network_id,
+            crop_subject_ids=crop_subject_ids,
+            allowed_instances=allowed_instances,
+            strict_language=strict_language,
+            applicability=applicability,
+            excluded_revision_ids=excluded_revision_ids,
+            document_workflow_id=document_workflow_id,
+            metadata_filters=metadata_filters,
         )
 
         if mode == "LEXICAL":
@@ -556,9 +795,9 @@ class QdrantVectorStore:
             )
             scored: list[tuple[float, Any]] = []
             for point in points:
-                text = str((point.payload or {}).get("text") or "")
-                desc = str((point.payload or {}).get("description") or "")
-                blob = f"{text} {desc}".lower()
+                payload = point.payload or {}
+                translations = (entry.get("text") or "" for entry in (payload.get("translations") or {}).values())
+                blob = " ".join([payload.get("text") or "", payload.get("description") or "", *translations]).lower()
                 if not tokens:
                     score = 0.0
                 else:

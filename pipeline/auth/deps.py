@@ -5,12 +5,16 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
+import time
 from typing import Annotated, Any, Callable
 
 from fastapi import Depends, HTTPException, Request
 
+from .. import db
 from .config import load_auth_config
 from .jwt import claims_to_user, decode_and_validate_token
+from .keycloak_admin import current_user_group_paths
 from .models import AuthUser, local_bypass_user
 from .permissions import Permission
 
@@ -72,6 +76,28 @@ def _bypass_user_with_optional_jwt(token: str | None) -> AuthUser:
     )
 
 
+_USER_SYNC_INTERVAL_SECONDS = 300
+_user_synced_at: dict[str, float] = {}
+_WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _sync_user_row(user: AuthUser) -> None:
+    """Mirror the caller into ``users`` (at most once per interval per user)."""
+    now = time.monotonic()
+    last = _user_synced_at.get(user.user_id)
+    if last is not None and now - last < _USER_SYNC_INTERVAL_SECONDS:
+        return
+    try:
+        db.upsert_user(
+            user.user_id, user.username, user.email, user.roles,
+            tenants=list(user.instances or []),
+        )
+    except Exception:
+        logging.warning("users upsert failed for %s", user.user_id, exc_info=True)
+        return
+    _user_synced_at[user.user_id] = now
+
+
 async def get_current_user(request: Request) -> AuthUser:
     """Resolve the caller. When AUTH_DISABLED=true, returns a local bypass user.
 
@@ -83,19 +109,50 @@ async def get_current_user(request: Request) -> AuthUser:
     token = _bearer_token(request, required=False)
 
     if config.disabled:
-        return _bypass_user_with_optional_jwt(token)
+        user = _bypass_user_with_optional_jwt(token)
+    else:
+        if not token:
+            raise HTTPException(401, "Missing Bearer token")
+        # JWKS fetch/refresh is sync and can block; keep the event loop free.
+        user = await asyncio.to_thread(decode_and_validate_token, token, config)
+        if config.verify_live_groups:
+            groups = await asyncio.to_thread(current_user_group_paths, user.user_id)
+            user = claims_to_user({
+                "sub": user.user_id,
+                "preferred_username": user.username,
+                "email": user.email,
+                "envs": user.envs,
+                "groups": groups,
+            }, authoritative_groups=True)
 
-    if not token:
-        raise HTTPException(401, "Missing Bearer token")
-    # JWKS fetch/refresh is sync and can block; keep the event loop free.
-    return await asyncio.to_thread(decode_and_validate_token, token, config)
+    if request.method in _WRITE_METHODS and user.user_id:
+        await asyncio.to_thread(_sync_user_row, user)
+    return user
+
+
+async def scoped_current_user(request: Request, user: Annotated[AuthUser, Depends(get_current_user)]) -> AuthUser:
+    from pipeline.search.access import is_network_principal
+
+    permitted = {
+        ("POST", "/search"), ("POST", "/search/"), ("GET", "/search/collections"),
+        ("GET", "/settings/search"),
+        ("GET", "/catalog/v1/version"), ("GET", "/catalog/v1/snapshot"),
+        ("GET", "/catalog/v1/schemes"), ("GET", "/catalog/v1/tool-prompt"), ("GET", "/auth/me"),
+    }
+    path = getattr(request.scope.get("route"), "path", request.url.path)
+    try:
+        if is_network_principal(user) and (request.method, path) not in permitted:
+            raise HTTPException(403, "This principal can access only network retrieval endpoints")
+    except ValueError as exc:
+        raise HTTPException(503, "Network retrieval policy is misconfigured") from exc
+    return user
 
 
 def require_permission(permission: Permission | str) -> Callable[..., AuthUser]:
     """Dependency factory: require a logged-in user with the given permission."""
     needed = permission if isinstance(permission, Permission) else Permission(str(permission))
 
-    async def _checker(user: Annotated[AuthUser, Depends(get_current_user)]) -> AuthUser:
+    async def _checker(user: Annotated[AuthUser, Depends(scoped_current_user)]) -> AuthUser:
         if not user.has_permission(needed):
             raise HTTPException(
                 403,
@@ -117,4 +174,4 @@ RequirePipeline = Annotated[AuthUser, Depends(require_permission(Permission.PIPE
 RequireSearch = Annotated[AuthUser, Depends(require_permission(Permission.SEARCH))]
 RequireAdmin = Annotated[AuthUser, Depends(require_permission(Permission.ADMIN))]
 RequireManageUsers = Annotated[AuthUser, Depends(require_permission(Permission.MANAGE_USERS))]
-CurrentUser = Annotated[AuthUser, Depends(get_current_user)]
+CurrentUser = Annotated[AuthUser, Depends(scoped_current_user)]

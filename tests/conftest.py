@@ -2,7 +2,8 @@
 Pytest configuration and fixtures for the document ingestion pipeline.
 
 Provides fixtures for:
-- SQLite database (in-memory for isolation)
+- Postgres database (a throwaway container, or the server named by
+  TEST_DATABASE_URL; migrations applied once, tables truncated per test)
 - FastAPI TestClient
 - Mock Temporal client
 - Mock MinIO client
@@ -15,31 +16,62 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 # Set test environment before imports
-os.environ["DOCUMENT_DB_PATH"] = ":memory:"
 os.environ["MINIO_ACCESS_KEY"] = "test-access-key"
 os.environ["MINIO_SECRET_KEY"] = "test-secret-key"
 os.environ["TRANSLATION_VLLM_BASE_URL"] = "http://localhost:8000/v1"
 os.environ["AUTH_DISABLED"] = "true"
+os.environ["KP_RUNTIME_PROFILE"] = "local"
+os.environ["KEYCLOAK_PROVIDER_GROUP_ROOT"] = "states"
+os.environ["PORTAL_INSTANCE"] = "bv"
+os.environ["PROVIDER_DISPLAY_NAMES"] = '{"bv":"Bharat Vistaar","mh":"Maharashtra","ka":"Karnataka","up":"Uttar Pradesh","gj":"Gujarat","tn":"Tamil Nadu","wb":"West Bengal","dl":"Delhi","jk":"Jammu and Kashmir","or":"Odisha","od":"Odisha","ts":"Telangana","tg":"Telangana"}'
 
 
-@pytest.fixture(scope="function")
-def temp_db_path(tmp_path):
-    """Create a temporary database path for each test."""
-    db_path = tmp_path / "test.db"
-    os.environ["DOCUMENT_DB_PATH"] = str(db_path)
-    yield str(db_path)
-    # Cleanup happens automatically with tmp_path
+_TRUNCATE_SQL = """
+    TRUNCATE documents, users, instances, catalogs, audit_logs,
+             search_settings, schema_pack_versions, scheduled_source_pulls, email_sign_in_limits CASCADE
+"""
 
 
-@pytest.fixture(scope="function")
-def db_connection(temp_db_path):
-    """Initialize database and provide connection for testing."""
+@pytest.fixture(scope="session")
+def postgres_url():
+    """URL of the Postgres the tests run against, with migrations applied.
+
+    Every table is truncated before each test, so TEST_DATABASE_URL must name a
+    scratch database, never a real one.
+    """
+    url = os.environ.get("TEST_DATABASE_URL")
+    container = None
+    if not url:
+        from testcontainers.postgres import PostgresContainer
+
+        container = PostgresContainer("postgres:15-alpine", driver=None)
+        container.start()
+        url = container.get_connection_url()
+    os.environ["DATABASE_URL"] = url
     from pipeline import db
-    db.DB_PATH = temp_db_path
+
+    db.close_pool()
     db.init_db()
+    yield url
+    db.close_pool()
+    if container is not None:
+        container.stop()
+
+
+@pytest.fixture(scope="function")
+def db_connection(postgres_url):
+    """The db module on an empty database (seed rows restored after each truncate)."""
+    from pipeline import db
+
+    os.environ["DATABASE_URL"] = postgres_url
+    with db.get_connection() as conn:
+        conn.execute(_TRUNCATE_SQL)
+        conn.execute(
+            "INSERT INTO users (keycloak_user_id, username, roles) "
+            "VALUES ('local-admin', 'local-admin', '{superadmin}')"
+        )
+        conn.execute("INSERT INTO search_settings DEFAULT VALUES")
     yield db
-    # Reset for next test
-    db.DB_PATH = os.environ.get("DOCUMENT_DB_PATH", "/data/documents.db")
 
 
 @pytest.fixture
@@ -67,27 +99,25 @@ def mock_temporal_client():
 
 
 @pytest.fixture
-def mock_minio_client():
+def mock_object_store():
     """Mock MinIO client for testing without actual MinIO server."""
     client = MagicMock()
-    client.bucket_exists = MagicMock(return_value=True)
-    client.make_bucket = MagicMock()
-    client.put_object = MagicMock()
-    client.get_object = MagicMock(return_value=MagicMock(read=lambda: b"%PDF-test"))
+    client.ensure_bucket = MagicMock()
+    client.put = MagicMock()
+    client.open = MagicMock(return_value=iter((b"%PDF-test",)))
     return client
 
 
 @pytest.fixture
-def test_client(db_connection, mock_temporal_client, mock_minio_client):
+def test_client(db_connection, mock_temporal_client, mock_object_store):
     """Create FastAPI TestClient with mocked dependencies.
 
     Neutralizes the app's real lifespan (which otherwise connects to a live
     Temporal server and MinIO) before entering TestClient — see
     test_scheme_catalog.py's asgi_client fixture for the same pattern.
 
-    Depends on ``db_connection`` for a file-backed SQLite: an in-memory one
-    lives per connection, so its tables are gone by the time a route opens
-    its own connection.
+    Uses the isolated PostgreSQL test database and resets the shared limiter
+    so requests in one test cannot affect a later test.
     """
     from contextlib import asynccontextmanager
 
@@ -97,7 +127,7 @@ def test_client(db_connection, mock_temporal_client, mock_minio_client):
 
     # Patch the global clients
     api.temporal_client = mock_temporal_client
-    api.minio_client = mock_minio_client
+    api.object_store = mock_object_store
 
     @asynccontextmanager
     async def _noop_lifespan(_app):
@@ -105,11 +135,13 @@ def test_client(db_connection, mock_temporal_client, mock_minio_client):
 
     original = api.app.router.lifespan_context
     api.app.router.lifespan_context = _noop_lifespan
+    api.limiter.reset()
     try:
         with TestClient(api.app) as client:
             yield client
     finally:
         api.app.router.lifespan_context = original
+        api.limiter.reset()
 
 
 class CapturingVectorStore:
@@ -123,20 +155,21 @@ class CapturingVectorStore:
         self.hits: list[dict] = []
 
     def search(self, **kwargs):
-        from datetime import date
+        from pipeline.documents.document_validity import today
 
         self.captured.update(kwargs)
         valid_on = kwargs.get("valid_on")
         if valid_on is None and kwargs.get("apply_validity", True):
-            valid_on = date.today().isoformat()
+            valid_on = today()
         return {"hits": list(self.hits), "valid_on": valid_on}
 
 
 @pytest.fixture
 def capturing_store(monkeypatch):
-    """The API's vector store swapped for a CapturingVectorStore."""
+    """Isolate retrieval/ranking tests from persistence; liveness has separate DB tests."""
     store = CapturingVectorStore()
     monkeypatch.setattr("pipeline.vector_store.get_vector_store", lambda: store)
+    monkeypatch.setattr("pipeline.db.visible_document_hits", lambda hits, **_: hits)
     return store
 
 
@@ -206,7 +239,9 @@ def sample_document(db_connection):
         document_id=document_id,
         filename="test.pdf",
         filepath="/app/books/test.pdf",
-        stage="registered"
+        stage="registered",
+        kind="scheme",
+        code="test-scheme",
     )
 
     return {

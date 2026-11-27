@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, ClipboardList, ExternalLink } from 'lucide-react'
+import PageNavigation from './PageNavigation'
+import { ChevronDown, ChevronUp, ClipboardList, ExternalLink } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { EmptyState } from './EmptyState'
 import { fetchJson, formatCompactDateTime, summarizeAuditAction } from '../lib/pipelineUi'
@@ -213,7 +214,6 @@ export function GlobalAuditLogPanel() {
     }
   }
 
-  const totalPages = Math.max(1, Math.ceil(total / limit))
   const currentPage = Math.floor(offset / limit) + 1
 
   return (
@@ -261,41 +261,8 @@ export function GlobalAuditLogPanel() {
         </CardContent>
       </Card>
 
-      {total > limit ? (
-        <div className="flex items-center justify-between">
-          <span className="text-xs text-muted-foreground">
-            Showing {offset + 1}–{Math.min(offset + limit, total)} of {total}
-          </span>
-          <div className="flex items-center gap-1">
-            <Button variant="ghost" size="icon" className="size-7" disabled={currentPage <= 1} onClick={() => setOffset(Math.max(0, offset - limit))}>
-              <ChevronLeft className="h-3.5 w-3.5" />
-            </Button>
-            {Array.from({ length: totalPages }).slice(0, 8).map((_, index) => {
-              const pageNumber = index + 1
-              return (
-                <Button
-                  key={pageNumber}
-                  variant={currentPage === pageNumber ? 'default' : 'ghost'}
-                  size="icon"
-                  className="size-7 text-xs"
-                  onClick={() => setOffset((pageNumber - 1) * limit)}
-                >
-                  {pageNumber}
-                </Button>
-              )
-            })}
-            <Button
-              variant="ghost"
-              size="icon"
-              className="size-7"
-              disabled={currentPage >= totalPages}
-              onClick={() => setOffset(Math.min((totalPages - 1) * limit, offset + limit))}
-            >
-              <ChevronRight className="h-3.5 w-3.5" />
-            </Button>
-          </div>
-        </div>
-      ) : null}
+      <PageNavigation page={currentPage} pageSize={limit} total={total}
+        onPageChange={page => setOffset((page - 1) * limit)} disabled={loading} />
     </div>
   )
 }

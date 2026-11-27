@@ -137,7 +137,7 @@ export default function QueueView() {
   }
 
   return (
-    <div className="page-shell space-y-4">
+    <div className="page-shell">
       <div>
         <h1 className="font-serif text-2xl font-semibold text-foreground">Review Queue</h1>
         <p className="mt-1 text-sm text-muted-foreground">{queueTotal || queue.length} items awaiting operator action</p>
@@ -204,12 +204,12 @@ export default function QueueView() {
                 <tr key={item.workflow_id} className={`border-b border-border transition-colors hover:bg-accent/40 ${selected.has(item.workflow_id) ? 'bg-accent/40' : ''}`}>
                   <td className="px-4 py-3">
                     {canMutateQueue ? (
-                      <Checkbox checked={selected.has(item.workflow_id)} onCheckedChange={() => toggleSelect(item.workflow_id)} aria-label={`Select ${item.display_name || item.filename || item.workflow_id}`} />
+                      <Checkbox checked={selected.has(item.workflow_id)} onCheckedChange={() => toggleSelect(item.workflow_id)} aria-label={`Select ${item.name || item.filename || item.workflow_id}`} />
                     ) : null}
                   </td>
                   <td className="max-w-[220px] px-4 py-3">
                     <span className="block cursor-pointer truncate font-medium text-primary hover:underline" onClick={() => navigate(`/documents/${item.workflow_id}`)}>
-                      {item.display_name || item.filename}
+                      {item.name || item.filename}
                     </span>
                     <div className="mt-0.5 truncate font-mono text-xs text-muted-foreground">{item.workflow_id}</div>
                   </td>

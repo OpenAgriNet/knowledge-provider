@@ -3,7 +3,7 @@
 Expected Keycloak group layout (full paths in the JWT ``groups`` claim):
 
 - ``/global/super-admin``               → super_admin (all states, full access)
-- ``/global/bh-viewer``                 → bh_viewer (all states, view-only)
+- ``/global/global-viewer``             → global_viewer (all providers, read-only)
 - ``/states/{CODE}/admin``              → state_admin
 - ``/states/{CODE}/approver``           → state_approver
 - ``/states/{CODE}/contributor``        → state_contributor
@@ -17,13 +17,14 @@ A user may hold different roles in different states.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 # Canonical product roles (JWT / Keycloak group leaves + realm roles).
 ROLE_SUPER_ADMIN = "super_admin"
-ROLE_BH_VIEWER = "bh_viewer"
+ROLE_GLOBAL_VIEWER = "global_viewer"
 ROLE_STATE_ADMIN = "state_admin"
 ROLE_STATE_APPROVER = "state_approver"
 ROLE_STATE_CONTRIBUTOR = "state_contributor"
@@ -37,8 +38,13 @@ STATE_ROLES = (
     ROLE_STATE_VIEW,
 )
 
+GLOBAL_VIEWER_ROLE_ALIASES = frozenset({
+    ROLE_GLOBAL_VIEWER, "global-viewer", "bh_viewer", "bh-viewer", "bh_view", "bh-view",
+})
+GLOBAL_VIEWER_GROUP_PATH = "/global/global-viewer"
+
 # Roles that apply across every tenant.
-GLOBAL_ROLES = (ROLE_SUPER_ADMIN, ROLE_BH_VIEWER)
+GLOBAL_ROLES = (ROLE_SUPER_ADMIN, ROLE_GLOBAL_VIEWER)
 
 CANONICAL_ROLES = frozenset(GLOBAL_ROLES + STATE_ROLES)
 
@@ -49,7 +55,7 @@ _ROLE_RANK: dict[str, int] = {
     ROLE_STATE_APPROVER: 40,
     ROLE_STATE_CONTRIBUTOR: 20,
     ROLE_STATE_VIEW: 10,
-    ROLE_BH_VIEWER: 5,
+    ROLE_GLOBAL_VIEWER: 5,
 }
 
 # Leaf / realm-role spellings → canonical role.
@@ -58,13 +64,11 @@ _ROLE_RANK: dict[str, int] = {
 # Before the six-role model it aliased to state_admin, so never reintroduce
 # that mapping — it would silently re-grant edit/approve/delete.
 _ROLE_ALIASES: dict[str, str] = {
-    # Global — Bharat Vistaar platform level
+    # Global platform roles
     "super_admin": ROLE_SUPER_ADMIN,
     "super-admin": ROLE_SUPER_ADMIN,
     "superadmin": ROLE_SUPER_ADMIN,
-    "bh_viewer": ROLE_BH_VIEWER,
-    "bh-viewer": ROLE_BH_VIEWER,
-    "bh_view": ROLE_BH_VIEWER,
+    **dict.fromkeys(GLOBAL_VIEWER_ROLE_ALIASES, ROLE_GLOBAL_VIEWER),
     # Per state / centre
     "state_admin": ROLE_STATE_ADMIN,
     "state-admin": ROLE_STATE_ADMIN,
@@ -81,15 +85,22 @@ _ROLE_ALIASES: dict[str, str] = {
 }
 
 _STATE_GROUP_RE = re.compile(
-    r"^/states/(?P<state>[A-Za-z0-9_-]+)/(?P<role>[A-Za-z0-9_-]+)/?$",
+    r"^/(?P<root>[A-Za-z0-9_-]+)/(?P<state>[A-Za-z0-9_-]+)/(?P<role>[A-Za-z0-9_-]+)/?$",
     re.IGNORECASE,
 )
+
+
+def provider_group_root() -> str:
+    root = os.environ.get("KEYCLOAK_PROVIDER_GROUP_ROOT", "providers").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", root) or root.casefold() == "global":
+        raise ValueError("KEYCLOAK_PROVIDER_GROUP_ROOT must name one provider group root")
+    return root
 _GLOBAL_SUPER_RE = re.compile(
     r"^/global/(?P<role>super[_-]?admin|superadmin)/?$",
     re.IGNORECASE,
 )
 _GLOBAL_VIEWER_RE = re.compile(
-    r"^/global/(?P<role>bh[_-]?viewer|bh[_-]?view)/?$",
+    r"^/global/(?P<role>global[_-]viewer|bh[_-]?viewer|bh[_-]?view)/?$",
     re.IGNORECASE,
 )
 
@@ -120,8 +131,7 @@ class GroupAccess:
     """Access derived from Keycloak ``groups`` claim paths."""
 
     is_super_admin: bool = False
-    # Bharat Vistaar viewer: every state, read-only.
-    is_bh_viewer: bool = False
+    is_global_viewer: bool = False
     # instance (state) → highest role in that state
     state_roles: dict[str, str] = field(default_factory=dict)
     # flat list of group paths as received
@@ -146,6 +156,7 @@ def parse_group_paths(groups: Iterable[str] | None) -> GroupAccess:
     access = GroupAccess()
     if not groups:
         return access
+    group_root = provider_group_root().casefold()
 
     paths: list[str] = []
     for raw in groups:
@@ -165,14 +176,14 @@ def parse_group_paths(groups: Iterable[str] | None) -> GroupAccess:
             continue
 
         if _GLOBAL_VIEWER_RE.match(path):
-            access.is_bh_viewer = True
+            access.is_global_viewer = True
             continue
 
         state_match = _STATE_GROUP_RE.match(path)
-        if not state_match:
-            # Also accept /states/{STATE} alone as "member of state" with view
+        if not state_match or state_match.group("root").casefold() != group_root:
+            # A membership in the provider group itself grants read access.
             parts = [p for p in path.split("/") if p]
-            if len(parts) == 2 and parts[0].lower() == "states":
+            if len(parts) == 2 and parts[0].casefold() == group_root:
                 state = normalize_state_code(parts[1])
                 if state:
                     access.state_roles.setdefault(state, ROLE_STATE_VIEW)
@@ -180,14 +191,7 @@ def parse_group_paths(groups: Iterable[str] | None) -> GroupAccess:
 
         state = normalize_state_code(state_match.group("state"))
         role = normalize_role(state_match.group("role"))
-        if not state or not role:
-            continue
-        if role == ROLE_SUPER_ADMIN:
-            # Super-admin under a state still means full platform access.
-            access.is_super_admin = True
-            continue
-        if role == ROLE_BH_VIEWER:
-            access.is_bh_viewer = True
+        if not state or role not in STATE_ROLES:
             continue
         access.state_roles[state] = _prefer_role(access.state_roles.get(state), role)
 
@@ -195,8 +199,8 @@ def parse_group_paths(groups: Iterable[str] | None) -> GroupAccess:
     role_set: set[str] = set()
     if access.is_super_admin:
         role_set.add(ROLE_SUPER_ADMIN)
-    if access.is_bh_viewer:
-        role_set.add(ROLE_BH_VIEWER)
+    if access.is_global_viewer:
+        role_set.add(ROLE_GLOBAL_VIEWER)
     role_set.update(access.state_roles.values())
     access.roles = sorted(role_set, key=lambda r: (-_ROLE_RANK.get(r, 0), r))
     return access
@@ -220,7 +224,7 @@ def extract_groups_claim(claims: dict[str, Any]) -> list[str]:
 def role_for_instance(access: GroupAccess, instance: str | None) -> str | None:
     """Return the user's role for a state instance, or SUPER_ADMIN when global.
 
-    A ``bh_viewer`` has no per-state group, but reads every state — so any
+    A ``global_viewer`` reads every provider, so any
     instance resolves to STATE_VIEW unless a stronger state role is held.
     """
     if access.is_super_admin:
@@ -230,13 +234,13 @@ def role_for_instance(access: GroupAccess, instance: str | None) -> str | None:
     role = access.state_roles.get(normalize_state_code(instance))
     if role:
         return role
-    return ROLE_STATE_VIEW if access.is_bh_viewer else None
+    return ROLE_STATE_VIEW if access.is_global_viewer else None
 
 
 # Canonical role → Keycloak group leaf name.
 _ROLE_LEAF: dict[str, str] = {
     ROLE_SUPER_ADMIN: "super-admin",
-    ROLE_BH_VIEWER: "bh-viewer",
+    ROLE_GLOBAL_VIEWER: "global-viewer",
     ROLE_STATE_ADMIN: "admin",
     ROLE_STATE_APPROVER: "approver",
     ROLE_STATE_CONTRIBUTOR: "contributor",

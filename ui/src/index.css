@@ -366,13 +366,6 @@ h6 {
   font-family: var(--font-display);
 }
 
-button,
-input,
-select,
-textarea {
-  font: inherit;
-}
-
 button:disabled {
   opacity: 0.55;
   cursor: not-allowed;
@@ -380,6 +373,23 @@ button:disabled {
 
 a {
   color: inherit;
+}
+
+select:not([multiple]):is(:not([size]), [size="1"]) {
+  appearance: none;
+  padding-inline-end: 2.25rem;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2373817e' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.75rem center;
+}
+select:not([multiple]):is(:not([size]), [size="1"]):dir(rtl) {
+  background-position: left 0.75rem center;
+}
+@media (forced-colors: active) {
+  select:not([multiple]):is(:not([size]), [size="1"]) {
+    appearance: auto;
+    background-image: none;
+  }
 }
 
 ::selection { background: hsl(var(--primary) / 0.18); }
@@ -405,17 +415,43 @@ a {
   width: 100%;
   height: 100%;
   min-height: 0;
-  gap: 1rem;
-  padding: 0.75rem;
+  gap: 1.5rem;
+  padding: 1rem;
   /* Baseline for pages that are a simple stack. Inert on pages that give a
      child `page-scroll`, since that child absorbs the overflow instead. */
   overflow: auto;
 }
 
+.page-shell > :not(.page-scroll, .flex-1) {
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+/* Keep the result region usable when filters take most of a short viewport. */
+.page-shell > .page-scroll,
+.page-shell > .flex-1 {
+  min-block-size: 12rem;
+}
+
 @media (min-width: 640px) {
   .page-shell {
-    padding: 1rem;
+    padding: 1.5rem;
   }
+}
+
+.console-content {
+  container-type: inline-size;
+}
+
+@container (min-width: 62rem) {
+  .ingest-layout {
+    grid-template-columns: minmax(0, 1fr) minmax(18rem, 24rem);
+  }
+}
+
+.page-shell h1 + p {
+  margin-top: 0.375rem;
+  line-height: 1.5;
 }
 
 /* The scrolling region inside a .page-shell. min-h-0 is what actually lets a
@@ -470,6 +506,9 @@ a {
   background-color: hsl(var(--card));
   border: 1px solid hsl(var(--border));
   border-radius: var(--radius);
+}
+
+.panel:where(:not(.page-scroll)) {
   overflow: hidden;
 }
 
@@ -516,4 +555,33 @@ a {
 }
 .bg-info {
   background-color: hsl(var(--info));
+}
+
+.chunk-text > * + * {
+  margin-top: 0.6em;
+}
+
+.chunk-text :is(h1, h2, h3, h4, h5, h6) {
+  font-weight: 650;
+}
+
+.chunk-text :is(ol, ul) {
+  padding-inline-start: 1.4em;
+}
+
+.chunk-text ol {
+  list-style: decimal;
+}
+
+.chunk-text ul {
+  list-style: disc;
+}
+
+.chunk-text a {
+  text-decoration: underline;
+}
+
+.chunk-text pre {
+  overflow: auto;
+  max-width: 100%;
 }

@@ -10,6 +10,9 @@ from pypdf import PdfReader
 
 from .base import OcrConfig, OcrProvider, PageDict
 from .chandra_vllm import ChandraVllmOcrProvider
+from .configuration import read_profiles, resolve_profile
+from .extensions import ExtensionParserConfig, load_extension
+from .liteparse import LiteParseProvider
 from .mistral_ocr import MistralOcrProvider
 from .mock import MockOcrProvider
 from .text_layer import group_contiguous_ranges, split_pdf_range
@@ -22,13 +25,47 @@ PROVIDERS: dict[str, type[OcrProvider]] = {
     # Local dev: embedded PDF text only (no external OCR).
     "mock": MockOcrProvider,
     "pypdf": MockOcrProvider,
+    "liteparse": LiteParseProvider,
 }
 
 logger = logging.getLogger(__name__)
 
 
-def load_ocr_config() -> OcrConfig:
-    provider = os.environ.get("OCR_PROVIDER", "mistral").strip().lower()
+def default_ocr_profile() -> str:
+    profiles = read_profiles()
+    if profiles is not None:
+        return profiles.default
+    return load_ocr_config().provider
+
+
+def allowed_ocr_providers() -> tuple[str, ...]:
+    profiles = read_profiles()
+    if profiles is not None:
+        return tuple(profiles.profiles)
+    configured = os.environ.get("OCR_ALLOWED_PROVIDERS")
+    names = configured.split(",") if configured is not None else [load_ocr_config().provider]
+    providers = tuple(dict.fromkeys(name.strip().lower() for name in names if name.strip()))
+    if not providers or any(name not in PROVIDERS for name in providers):
+        raise ValueError("OCR_ALLOWED_PROVIDERS must name registered OCR providers")
+    return providers
+
+
+def load_ocr_config(provider: str | None = None) -> OcrConfig:
+    profiles = read_profiles()
+    if profiles is not None:
+        return resolve_profile(profiles, provider)
+    provider = (provider or os.environ.get("OCR_PROVIDER", "chandra")).strip().lower()
+    max_split_pages = int(os.environ.get("OCR_MAX_SPLIT_PAGES", "40"))
+    segment_pages = int(os.environ.get("OCR_SEGMENT_PAGES", "20"))
+    if provider == "liteparse":
+        return OcrConfig(
+            provider=provider,
+            max_split_pages=max_split_pages,
+            segment_pages=segment_pages,
+            request_timeout_seconds=float(os.environ.get("OCR_REQUEST_TIMEOUT_SECONDS", "300")),
+            executable=os.environ.get("LITEPARSE_EXECUTABLE", "lit").strip(),
+        )
+
     if provider in {"mistral", "mistral_ocr"}:
         model = (
             os.environ.get("OCR_MODEL")
@@ -54,8 +91,6 @@ def load_ocr_config() -> OcrConfig:
         image_dpi = int(os.environ.get("CHANDRA_IMAGE_DPI", "192"))
         request_timeout_seconds = float(os.environ.get("CHANDRA_REQUEST_TIMEOUT_SECONDS", "300"))
 
-    max_split_pages = int(os.environ.get("OCR_MAX_SPLIT_PAGES", "40"))
-    segment_pages = int(os.environ.get("OCR_SEGMENT_PAGES", "20"))
     return OcrConfig(
         provider=provider,
         model=model,
@@ -83,13 +118,19 @@ def _skip_ocr_for_text_layer() -> bool:
     return os.environ.get("OCR_SKIP_TEXT_LAYER", "true").strip().lower() not in {"0", "false", "no"}
 
 
+def _provider_type(name: str) -> type[OcrProvider]:
+    provider_cls = PROVIDERS.get(name)
+    if provider_cls is None:
+        supported = ", ".join(sorted(PROVIDERS))
+        raise ValueError(f"Unsupported OCR provider '{name}'. Supported: {supported}")
+    return provider_cls
+
+
 def get_ocr_provider(config: Optional[OcrConfig] = None) -> OcrProvider:
     config = config or load_ocr_config()
-    provider_cls = PROVIDERS.get(config.provider)
-    if not provider_cls:
-        supported = ", ".join(sorted(PROVIDERS))
-        raise ValueError(f"Unsupported OCR provider '{config.provider}'. Supported: {supported}")
-    return provider_cls(config)
+    if isinstance(config, ExtensionParserConfig):
+        return load_extension(config)
+    return _provider_type(config.provider)(config)
 
 
 def _activity_log(level: str, message: str, *args) -> None:
@@ -123,9 +164,21 @@ def _process_range(
     config: OcrConfig,
     provider_cache: dict[str, OcrProvider],
 ) -> list[PageDict]:
-    """OCR pages [start_idx, end_idx), skipping pages with a usable text layer."""
-    if not _skip_ocr_for_text_layer():
-        provider = provider_cache.setdefault("provider", get_ocr_provider(config))
+    """Extract pages [start_idx, end_idx), using embedded text where supported."""
+    skip_text_layer = config.skip_text_layer
+    if skip_text_layer is None:
+        skip_text_layer = _skip_ocr_for_text_layer()
+    if isinstance(config, ExtensionParserConfig):
+        if "provider" not in provider_cache:
+            provider_cache["provider"] = get_ocr_provider(config)
+        requires_all_pages = provider_cache["provider"].requires_all_pages
+    else:
+        requires_all_pages = _provider_type(config.provider).requires_all_pages
+    if requires_all_pages or not skip_text_layer:
+        provider = provider_cache.get("provider")
+        if provider is None:
+            provider = get_ocr_provider(config)
+            provider_cache["provider"] = provider
         return provider.process_pdf_range(local_pdf_path, start_idx, end_idx, log=_activity_log)
 
     split = split_pdf_range(local_pdf_path, start_idx, end_idx, log=_activity_log)
@@ -147,8 +200,13 @@ def _process_range(
     ]
 
 
-def ocr_pdf(local_pdf_path: str, clean_text: Callable[[str], str]) -> list[PageDict]:
-    config = load_ocr_config()
+def ocr_pdf(
+    local_pdf_path: str,
+    clean_text: Callable[[str], str],
+    *,
+    provider: str | None = None,
+) -> list[PageDict]:
+    config = load_ocr_config(provider)
     reader = PdfReader(local_pdf_path)
     pages = _process_range(local_pdf_path, 0, len(reader.pages), config, {})
     pages = _finalize_pages(pages, clean_text)
@@ -158,12 +216,14 @@ def ocr_pdf(local_pdf_path: str, clean_text: Callable[[str], str]) -> list[PageD
 
 def ocr_pdf_in_segments(
     local_pdf_path: str,
-    segment_pages: int,
+    segment_pages: int | None,
     clean_text: Callable[[str], str],
     on_segment_complete=None,
     completed_page_numbers: set[int] | None = None,
+    *,
+    provider: str | None = None,
 ) -> list[PageDict]:
-    config = load_ocr_config()
+    config = load_ocr_config(provider)
     provider_cache: dict[str, OcrProvider] = {}
     completed_page_numbers = completed_page_numbers or set()
     total_pages = len(PdfReader(local_pdf_path).pages)

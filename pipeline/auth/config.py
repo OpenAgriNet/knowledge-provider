@@ -16,11 +16,8 @@ def _env_bool(name: str, default: bool) -> bool:
 @dataclass(frozen=True)
 class AuthConfig:
     """
-    AUTH_DISABLED=true (default): accept a synthetic local admin user so
-    existing deploys and tests keep working until Keycloak is wired.
-
-    AUTH_DISABLED=false: require a valid Bearer JWT from Keycloak.
-    Do not flip this until the maintainer UI sends Authorization headers.
+    Production requires a Keycloak bearer token addressed to this API.
+    Local fixtures can opt into a synthetic admin explicitly.
     """
 
     disabled: bool
@@ -29,6 +26,8 @@ class AuthConfig:
     keycloak_jwks_url: str
     # Clock-skew tolerance when validating exp/nbf (seconds).
     jwt_leeway_seconds: int = 30
+    verify_live_groups: bool = False
+    runtime_profile: str = "production"
 
 
 def load_auth_config() -> AuthConfig:
@@ -43,27 +42,24 @@ def load_auth_config() -> AuthConfig:
     except ValueError:
         leeway = 30
 
-    # Empty KEYCLOAK_AUDIENCE disables audience checks (common for public SPA
-    # clients where `aud` is "account" or a multi-value claim). Only set it when
-    # tokens always include a stable audience you want to enforce.
-    raw_audience = os.environ.get("KEYCLOAK_AUDIENCE")
-    if raw_audience is None:
-        audience = ""
-    else:
-        audience = raw_audience.strip()
+    audience = os.environ.get("KEYCLOAK_AUDIENCE", "").strip()
 
     return AuthConfig(
-        disabled=_env_bool("AUTH_DISABLED", True),
+        disabled=_env_bool("AUTH_DISABLED", False),
         keycloak_issuer=issuer,
         keycloak_audience=audience,
         keycloak_jwks_url=jwks_url,
         jwt_leeway_seconds=leeway,
+        verify_live_groups=_env_bool("KEYCLOAK_VERIFY_LIVE_GROUPS", False),
+        runtime_profile=os.environ.get("KP_RUNTIME_PROFILE", "production").strip().lower(),
     )
 
 
 def validate_auth_config(config: AuthConfig) -> None:
     """Fail startup early when enabled auth cannot validate Keycloak tokens."""
     if config.disabled:
+        if config.runtime_profile != "local":
+            raise RuntimeError("AUTH_DISABLED=true requires KP_RUNTIME_PROFILE=local")
         return
 
     missing: list[str] = []
@@ -71,8 +67,15 @@ def validate_auth_config(config: AuthConfig) -> None:
         missing.append("KEYCLOAK_ISSUER")
     if not config.keycloak_jwks_url:
         missing.append("KEYCLOAK_JWKS_URL")
+    if not config.keycloak_audience:
+        missing.append("KEYCLOAK_AUDIENCE")
     if missing:
         raise RuntimeError(
             "AUTH_DISABLED=false requires Keycloak configuration: "
             + ", ".join(missing)
         )
+    if config.verify_live_groups:
+        from .keycloak_admin import load_keycloak_admin_config
+
+        if not load_keycloak_admin_config().configured:
+            raise RuntimeError("KEYCLOAK_VERIFY_LIVE_GROUPS=true requires Keycloak admin access")

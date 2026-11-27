@@ -21,7 +21,10 @@ import {
   Trash2,
 } from 'lucide-react'
 import { useAuth } from '../auth/AuthProvider'
+import DocumentChunk from '../components/DocumentChunk'
+import MetadataReview from '../components/MetadataReview'
 import DocumentHeaderSummary from '../components/DocumentHeaderSummary'
+import DocumentRevisionPanel from '../components/DocumentRevisionPanel'
 import PipelineStepper from '../components/PipelineStepper'
 import PagePager from '../components/PagePager'
 import SourcePdfPreview from '../components/SourcePdfPreview'
@@ -38,13 +41,10 @@ import {
 } from '../components/ui/alert-dialog'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
-import { Checkbox } from '../components/ui/checkbox'
 import { Input } from '../components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select'
 import { Skeleton } from '../components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { Textarea } from '../components/ui/textarea'
-import { DOCUMENT_VALIDITY_ENABLED } from '../config'
 import { displayNameError, filenameStem } from '../lib/displayName'
 import {
   fetchJson,
@@ -65,6 +65,12 @@ function getChunkEmptyMessage(doc) {
   if (stage === 'chunking') return 'Content sections are being prepared for this document.'
   if (stage === 'failed') return 'Content is blocked because processing failed.'
   return 'No content sections are available for this document yet.'
+}
+
+function hasPageTranslation(page) {
+  return Boolean(page.edited_translation || page.translated_markdown || Object.values(page.translations || {}).some(
+    translation => translation.edited_translation || translation.translated_markdown,
+  ))
 }
 
 function EmptyPanel({ icon: Icon, title, subtitle, compact = false }) {
@@ -95,75 +101,25 @@ function PanelNotice({ tone = 'error', title, message }) {
   )
 }
 
-// Client-side preview only — matches pipeline/scheme_catalog.py's
-// derive_scheme_code() closely enough for instant feedback, but the server
-// is the authoritative, collision-checked source of truth for the real code.
-const SCHEME_CODE_STOPWORDS = new Set(['a', 'an', 'the', 'of', 'on', 'for', 'and', 'or', 'to', 'in', 'at', 'by', 'with', '&'])
-
-function previewSchemeCode(title) {
-  const words = (title || '').match(/[A-Za-z0-9]+/g) || []
-  const letters = words
-    .filter(w => !SCHEME_CODE_STOPWORDS.has(w.toLowerCase()))
-    .map(w => w[0].toLowerCase())
-    .join('')
-  if (letters.length >= 2) return letters
-  const slug = (title || '').toLowerCase().replace(/[^a-z0-9]+/g, '')
-  return slug.slice(0, 8) || 'scheme'
+// The type is chosen at upload and fixed afterwards: it decides the catalog the
+// document lives in, so this panel only displays it.
+const DOCUMENT_KIND_LABELS = {
+  scheme: 'Scheme',
+  advisory: 'Advisory',
+  video: 'Video',
 }
-
-/**
- * Validity the document is searchable in. The start is prefilled from what the
- * server stamped at upload; the end is deliberately blank-able - an empty end
- * means the document never expires, which is the default every upload gets.
- * Mirrors pipeline/document_validity.py; the server revalidates whatever is sent.
- */
-function validateValidity(validFrom, validTo) {
-  if (!validFrom) return 'Set a start date.'
-  if (validTo && validTo < validFrom) return 'End date cannot be before the start date.'
-  return ''
-}
-
-const DOCUMENT_KIND_OPTIONS = [
-  { value: 'scheme', label: 'Scheme' },
-  { value: 'advisory', label: 'Advisory' },
-  { value: 'video', label: 'Video' },
-  { value: '__custom__', label: 'Custom…' },
-]
 
 export function DocumentClassificationPanel({ doc, workflowId, canClassify, onSaved }) {
-  const hasKind = doc.document_kind && doc.document_kind !== 'document'
-  // 'document' is the unclassified default, not a choice the panel offers, so
-  // it seeds the select as empty — otherwise the select renders blank while the
-  // save button reads "Saved", which tells a reviewer the opposite of the truth.
-  const [kind, setKind] = useState(
-    hasKind && !DOCUMENT_KIND_OPTIONS.some(o => o.value === doc.document_kind)
-      ? '__custom__'
-      : (hasKind ? doc.document_kind : '')
-  )
-  const [customKind, setCustomKind] = useState(hasKind && !DOCUMENT_KIND_OPTIONS.some(o => o.value === doc.document_kind) ? doc.document_kind : '')
-  const [schemeName, setSchemeName] = useState(doc.scheme_name || '')
-  const savedDisplayName = doc.display_name || filenameStem(doc.filename)
-  const [displayName, setDisplayName] = useState(savedDisplayName)
-  const displayNameChanged = displayName.trim() !== savedDisplayName
-  const displayNameLocked = !canClassify || Boolean(doc.ingested_at)
-  const [validFrom, setValidFrom] = useState(doc.valid_from || todayISODate())
-  // Blank when the document has no end date, which is the normal case - an
-  // empty field here reads as "never expires", not as "not filled in yet".
-  const [validTo, setValidTo] = useState(doc.valid_to || '')
+  // The display name is documents.name; main's lock rule still applies to it.
+  const savedName = doc.name || filenameStem(doc.filename)
+  const [name, setName] = useState(savedName)
+  const nameLocked = !canClassify || Boolean(doc.ingested_at)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
-  const effectiveKind = kind === '__custom__' ? customKind.trim().toLowerCase() : kind
-  const isScheme = effectiveKind === 'scheme'
-  const validityError = DOCUMENT_VALIDITY_ENABLED
-    ? validateValidity(validFrom, validTo)
-    : ''
-  const nameError = displayNameError(displayName)
-  const canSave =
-    Boolean(effectiveKind) &&
-    !nameError &&
-    (!isScheme || schemeName.trim().length > 0) &&
-    !validityError
+  const nameError = displayNameError(name)
+  const nameChanged = name.trim() !== savedName
+  const canSave = !nameError && !nameLocked
 
   async function save() {
     if (!canSave || saving) return
@@ -173,16 +129,7 @@ export function DocumentClassificationPanel({ doc, workflowId, canClassify, onSa
       await fetchJson(`/documents/${workflowId}/scheme-metadata`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          document_kind: effectiveKind,
-          ...(displayNameChanged ? { display_name: displayName.trim() } : {}),
-          ...(isScheme ? { scheme_name: schemeName.trim() } : {}),
-          // Omitted entirely when the feature is off, so classifying a
-          // document leaves whatever period the upload stamped untouched.
-          ...(DOCUMENT_VALIDITY_ENABLED
-            ? { valid_from: validFrom, valid_to: validTo }
-            : {}),
-        }),
+        body: JSON.stringify({ name: name.trim() }),
       })
       await onSaved()
     } catch (err) {
@@ -192,20 +139,11 @@ export function DocumentClassificationPanel({ doc, workflowId, canClassify, onSa
     }
   }
 
-  const alreadySaved =
-    doc.document_kind === effectiveKind
-    && !displayNameChanged
-    && (!isScheme || doc.scheme_name === schemeName.trim())
-    && (!DOCUMENT_VALIDITY_ENABLED
-      || (doc.valid_from === validFrom && (doc.valid_to || '') === validTo))
+  const alreadySaved = !nameChanged
 
   return (
     <div className="space-y-2 rounded-md border border-border bg-muted/30 p-3">
-      <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-        {DOCUMENT_VALIDITY_ENABLED
-          ? 'Document type and validity — used by the Master Catalog / AI layer'
-          : 'Document type — used by the Master Catalog / AI layer'}
-      </p>
+      <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Document identity</p>
       <div className="flex flex-wrap items-end gap-2">
         <div className="flex flex-col gap-1">
           <label htmlFor="classification-display-name" className="text-[10px] text-muted-foreground">
@@ -214,112 +152,49 @@ export function DocumentClassificationPanel({ doc, workflowId, canClassify, onSa
           <Input
             id="classification-display-name"
             className="h-8 w-[260px] text-xs"
-            value={displayName}
-            disabled={displayNameLocked}
+            value={name}
+            disabled={nameLocked}
             aria-invalid={Boolean(nameError)}
-            onChange={e => setDisplayName(e.target.value)}
+            onChange={e => setName(e.target.value)}
           />
         </div>
         <div className="flex flex-col gap-1">
           <span className="text-[10px] text-muted-foreground">Type</span>
-          <Select value={kind} onValueChange={setKind} disabled={!canClassify}>
-            <SelectTrigger className="h-8 w-[160px] text-xs">
-              <SelectValue placeholder="Select type" />
-            </SelectTrigger>
-            <SelectContent>
-              {DOCUMENT_KIND_OPTIONS.map(opt => (
-                <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <span className="flex h-8 w-[160px] items-center rounded-md border border-dashed border-input px-2 text-xs text-muted-foreground">
+            {DOCUMENT_KIND_LABELS[doc.kind] || doc.kind || '—'}
+          </span>
         </div>
-        {DOCUMENT_VALIDITY_ENABLED && (
-          <>
-            <div className="flex flex-col gap-1">
-              <span className="text-[10px] text-muted-foreground">Valid from</span>
-              <Input
-                type="date"
-                className="h-8 w-[150px] text-xs"
-                value={validFrom}
-                disabled={!canClassify}
-                onChange={e => setValidFrom(e.target.value)}
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <span className="text-[10px] text-muted-foreground">Valid until (optional)</span>
-              <Input
-                type="date"
-                className="h-8 w-[150px] text-xs"
-                value={validTo}
-                min={validFrom}
-                disabled={!canClassify}
-                onChange={e => setValidTo(e.target.value)}
-              />
-            </div>
-          </>
-        )}
-        {kind === '__custom__' && (
-          <div className="flex flex-col gap-1">
-            <span className="text-[10px] text-muted-foreground">Custom type</span>
-            <Input
-              className="h-8 w-[140px] text-xs"
-              value={customKind}
-              disabled={!canClassify}
-              onChange={e => setCustomKind(e.target.value)}
-              placeholder="e.g. faq"
-            />
-          </div>
-        )}
-        {isScheme && (
-          <>
-            <div className="flex flex-col gap-1">
-              <span className="text-[10px] text-muted-foreground">Scheme name</span>
-              <Input
-                className="h-8 w-[260px] text-xs"
-                value={schemeName}
-                disabled={!canClassify}
-                onChange={e => setSchemeName(e.target.value)}
-                placeholder="e.g. National Mission on Natural Farming"
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <span className="text-[10px] text-muted-foreground">Scheme code (auto)</span>
-              <span className="flex h-8 items-center rounded-md border border-dashed border-input px-2 text-xs text-muted-foreground">
-                {doc.scheme_code && doc.scheme_name === schemeName.trim() ? doc.scheme_code : (schemeName.trim() ? previewSchemeCode(schemeName) : '—')}
-              </span>
-            </div>
-          </>
-        )}
+        <div className="flex flex-col gap-1">
+          <span className="text-[10px] text-muted-foreground">Code</span>
+          <span className="flex h-8 items-center rounded-md border border-dashed border-input px-2 text-xs text-muted-foreground">
+            {doc.code || '—'}
+          </span>
+        </div>
         {canClassify && (
           <Button size="sm" className="h-8 text-xs" disabled={!canSave || saving || alreadySaved} onClick={save}>
             {saving ? 'Saving…' : alreadySaved ? 'Saved' : 'Save'}
           </Button>
         )}
       </div>
-      {DOCUMENT_VALIDITY_ENABLED && canClassify && validityError ? (
-        <p className="text-xs text-destructive">{validityError}</p>
-      ) : null}
-      {DOCUMENT_VALIDITY_ENABLED && canClassify && !validityError ? (
-        <p className="text-[11px] text-muted-foreground">
-          Search only answers from this document from the start date onwards. Leave
-          the end date blank and it never expires.
-        </p>
+      {doc.crop_subjects?.length ? (
+        <div className="space-y-1">
+          <p className="text-[10px] text-muted-foreground">Crop details</p>
+          <ul className="space-y-1 text-xs">
+            {doc.crop_subjects.map(({ subjectId, descriptor }, index) => (
+              <li key={index} className="break-all">
+                {[descriptor?.name, descriptor?.code, subjectId].filter(Boolean).join(' · ')}
+              </li>
+            ))}
+          </ul>
+        </div>
       ) : null}
       {canClassify && nameError ? <p className="text-xs text-destructive">{nameError}</p> : null}
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
-      {!canClassify && !hasKind ? (
-        <p className="text-xs text-muted-foreground">You don't have permission to set document type.</p>
+      {!canClassify ? (
+        <p className="text-xs text-muted-foreground">You don't have permission to change the document type.</p>
       ) : null}
     </div>
   )
-}
-
-/** Today in the `YYYY-MM-DD` form the API stores and <input type="date"> uses. */
-function todayISODate() {
-  const now = new Date()
-  const month = String(now.getMonth() + 1).padStart(2, '0')
-  const day = String(now.getDate()).padStart(2, '0')
-  return `${now.getFullYear()}-${month}-${day}`
 }
 
 // Which permission each mutating action requires. Approvals / edits are
@@ -373,7 +248,7 @@ const STAGE_POLL_INTERVAL_MS = 1500
 const STAGE_POLL_MAX_ATTEMPTS = 40 // ~60s safety net so a stuck workflow doesn't wedge the button forever
 
 function stageWantsPages(stage, pageCount = 0) {
-  // Skip empty registered docs; otherwise pages are local SQLite (fast) and power OCR/translation.
+  // Skip empty registered docs; otherwise pages come from the database (fast) and power OCR/translation.
   if ((stage === 'registered' || stage === 'ocr_processing') && !pageCount) return false
   return true
 }
@@ -399,20 +274,21 @@ function stageWantsRuntime(stage) {
 export default function DocumentOpsView() {
   const { workflowId } = useParams()
   const navigate = useNavigate()
-  const { hasPermission } = useAuth()
-  const canReview = hasPermission('review')
-  const canPipeline = hasPermission('pipeline')
-  const canAdmin = hasPermission('admin')
+  const { hasPermissionForInstance } = useAuth()
+  const [doc, setDoc] = useState(null)
+  const canReview = hasPermissionForInstance('review', doc?.instance)
+  const canPipeline = hasPermissionForInstance('pipeline', doc?.instance)
+  const canAdmin = hasPermissionForInstance('admin', doc?.instance)
   // State View has search only — no create/edit/delete/upload/approve.
   const canEdit = canReview
   const isViewOnly = !canEdit && !canPipeline && !canAdmin
   const canRunAction = (action) => {
+    if (action === 'retry_upload_start') return hasPermissionForInstance('upload', doc?.instance)
     if (isViewOnly) return false
     const needed = ACTION_PERMISSION[action]
-    return needed ? hasPermission(needed) : canReview
+    return needed ? hasPermissionForInstance(needed, doc?.instance) : canReview
   }
   const [searchParams] = useSearchParams()
-  const [doc, setDoc] = useState(null)
   const [pages, setPages] = useState([])
   const [chunks, setChunks] = useState([])
   const [indexChunks, setIndexChunks] = useState([])
@@ -423,13 +299,14 @@ export default function DocumentOpsView() {
   const [runtime, setRuntime] = useState(null)
   const [stageIo, setStageIo] = useState(null)
   const [panelErrors, setPanelErrors] = useState({})
-  const [activeTab, setActiveTab] = useState('ocr')
+  const [activeTab, setActiveTab] = useState(() => searchParams.get('tab') === 'chunks' ? 'chunks' : 'ocr')
   const [loading, setLoading] = useState(true)
   const [currentPage, setCurrentPage] = useState(1)
   const [message, setMessage] = useState('')
   const [pageEdits, setPageEdits] = useState({})
-  const [chunkEdits, setChunkEdits] = useState({})
   const [translationEdits, setTranslationEdits] = useState({})
+  const [requestedTranslation, setRequestedTranslation] = useState('')
+  const [translationSaving, setTranslationSaving] = useState(false)
   const [auditFilter, setAuditFilter] = useState('all')
   const [auditExpanded, setAuditExpanded] = useState(new Set())
   const [auditLogs, setAuditLogs] = useState([])
@@ -569,7 +446,7 @@ export default function DocumentOpsView() {
   /**
    * Progressive load:
    * 1) document shell (unblocks UI immediately)
-   * 2) SQLite pages/chunks needed for the active review surface
+   * 2) Database pages/chunks needed for the active review surface
    * 3) heavy panels (Qdrant / Temporal / audit) only when tab or stage needs them
    */
   const load = useCallback(async ({ soft = false, forcePanels = null } = {}) => {
@@ -590,7 +467,9 @@ export default function DocumentOpsView() {
       const force = forcePanels || {}
       const pageCount = Number(docData?.page_count || 0)
       const chunkCount = Number(docData?.chunk_count || 0)
-      const wantPages = force.pages || stageWantsPages(stage, pageCount) || tab === 'ocr' || tab === 'translation'
+      const structuredText = docData?.canonical_input_type === 'structured_text'
+      const wantPages = force.pages || (structuredText && pageCount > 0) || stageWantsPages(stage, pageCount) ||
+        tab === 'ocr' || tab === 'translation'
       const wantChunks = force.chunks || stageWantsChunks(stage, chunkCount) || tab === 'chunks'
       const wantRuntime = force.runtime || stageWantsRuntime(stage) || tab === 'debug'
       const wantIndex = force.index || tab === 'index'
@@ -606,7 +485,7 @@ export default function DocumentOpsView() {
         attemptedPanelsRef.current.chunks = true
         localTasks.push(loadChunks(wid))
       }
-      // Local SQLite panels in parallel; do not wait on remote index/Temporal for first paint.
+      // Database panels in parallel; do not wait on remote index/Temporal for first paint.
       await Promise.allSettled(localTasks)
       if (requestId !== requestIdRef.current) return
 
@@ -795,7 +674,9 @@ export default function DocumentOpsView() {
     setMessage('')
     const stageBeforeAction = doc?.stage
     try {
-      if (action === 'mark_reindex_required') {
+      if (action === 'retry_upload_start') {
+        await fetchJson(`/upload/${encodeURIComponent(workflowId)}/start`, { method: 'POST' })
+      } else if (action === 'mark_reindex_required') {
         await fetchJson(`/documents/${workflowId}/mark-reindex-required`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -844,20 +725,34 @@ export default function DocumentOpsView() {
     }
   }
 
-  async function saveTranslation(pageNumber, text) {
+  function discardTranslationDraft(key, savedText) {
+    setTranslationEdits(edits => {
+      if (savedText !== undefined && edits[key] !== savedText) return edits
+      const next = { ...edits }
+      delete next[key]
+      return next
+    })
+  }
+
+  async function saveTranslation(pageNumber, language, draftKey, text) {
+    setTranslationSaving(true)
     try {
       await fetchJson(`/documents/${workflowId}/pages/${pageNumber}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ edited_translation: text, translation_reviewed: true })
+        body: JSON.stringify({
+          ...(text !== undefined && { edited_translation: text }),
+          translation_reviewed: true,
+          ...(language && { translation_language: language }),
+        })
       })
       setMessage('Translation saved')
-      const next = { ...translationEdits }
-      delete next[pageNumber]
-      setTranslationEdits(next)
+      if (text !== undefined) discardTranslationDraft(draftKey, text)
       await reloadAfterMutation()
     } catch (err) {
       setMessage(err.message)
+    } finally {
+      setTranslationSaving(false)
     }
   }
 
@@ -869,18 +764,11 @@ export default function DocumentOpsView() {
       && canRunAction(action)
   )
   const canRemoveDocument = canAdmin && (doc?.available_actions || []).includes('disable_document')
-  // 'document' is never offered as a choice in the classification panel (only
-  // scheme/advisory/video/custom are) — seeing it here means the panel was
-  // never used. Mirrors the same check the reingest endpoint enforces server-side.
-  const isDocClassified = Boolean(
-    (doc?.document_kind && doc.document_kind !== 'document') || doc?.scheme_code || doc?.scheme_name
-  )
-  const ingestBlockedByClassification = doc?.stage === 'ready_for_ingestion' && !isDocClassified
   const sortedPages = useMemo(() => [...pages].sort((a, b) => a.page_number - b.page_number), [pages])
   const reviewedPages = useMemo(() => pages.filter(p => p.is_reviewed).length, [pages])
   const reviewedChunks = useMemo(() => chunks.filter(c => c.is_reviewed).length, [chunks])
   const translatedPages = useMemo(
-    () => pages.filter(p => p.translation_reviewed || p.translated_markdown || p.edited_translation).length,
+    () => pages.filter(hasPageTranslation).length,
     [pages]
   )
   const currentPageRecord = useMemo(
@@ -898,9 +786,18 @@ export default function DocumentOpsView() {
   const filteredAudit = auditFilter === 'all' ? auditLogs : auditLogs.filter(e => e.action_type === auditFilter)
   const auditOptions = getAuditActionOptions(auditLogs)
   const currentPageLanguage = currentPageRecord?.detected_language || currentPageRecord?.language_detected || ''
-  const translationEmptySubtitle = String(currentPageLanguage || '').toLowerCase().startsWith('en')
-    ? 'No sections detected to translate on this page'
-    : 'This page was not detected as needing translation'
+  const translations = currentPageRecord?.translations || {}
+  const translationLanguages = Object.keys(translations).sort()
+  const translationLanguage = Object.hasOwn(translations, requestedTranslation)
+    ? requestedTranslation
+    : currentPageRecord?.translation_target_language || translationLanguages[0] || ''
+  const currentTranslation = translations[translationLanguage] || {
+    edited_translation: currentPageRecord?.edited_translation,
+    translated_markdown: currentPageRecord?.translated_markdown,
+    provider: currentPageRecord?.translation_provider,
+    model: currentPageRecord?.translation_model,
+    is_reviewed: currentPageRecord?.translation_reviewed,
+  }
   const currentPageOcrText = currentPageRecord
     ? (currentPageRecord.ocr_markdown ?? currentPageRecord.original_markdown ?? '')
     : ''
@@ -913,7 +810,9 @@ export default function DocumentOpsView() {
   const currentPageTranslationSourceText = currentPageRecord
     ? (currentPageRecord.edited_markdown || currentPageOcrText)
     : ''
-  const translationText = currentPageRecord ? (translationEdits[currentPage] ?? (currentPageRecord.edited_translation || currentPageRecord.translated_markdown || '')) : ''
+  const translationDraftKey = `${workflowId}:${currentPage}:${translationLanguage}`
+  const translationDraft = translationEdits[translationDraftKey]
+  const translationText = translationDraft ?? (currentTranslation.edited_translation || currentTranslation.translated_markdown || '')
   const isOcrPending = !currentPageRecord && (doc?.stage === 'registered' || doc?.stage === 'ocr_processing')
   const canApproveTranslation = canReview && doc?.stage === 'translation_review'
   const canApproveChunks = canReview && doc?.stage === 'chunk_review'
@@ -1040,32 +939,21 @@ export default function DocumentOpsView() {
             hasPages={pages.length > 0 || Boolean(doc.page_count)}
             hasChunks={chunks.length > 0 || Boolean(doc.chunk_count)}
             networkPublish={doc.network_publish}
+            automaticRelease={Boolean(doc.current_job?.config?.release_network_id)}
           />
           <div className="flex shrink-0 flex-wrap items-center gap-1.5 xl:justify-end">
-            {visibleActions.slice(0, 4).map(action => {
-              const blockedByClassification = action === 'approve_ingestion' && ingestBlockedByClassification
-              return (
-                <Button
-                  key={action}
-                  size="sm"
-                  variant={action.includes('approve') ? 'success' : action.includes('reindex') ? 'warning' : 'outline'}
-                  className="h-8 text-xs"
-                  disabled={Boolean(actionPending) || blockedByClassification}
-                  title={
-                    blockedByClassification
-                      ? 'Set document type below before approving for dev'
-                      : undefined
-                  }
-                  onClick={() => runAction(action)}
-                >
-                  {actionPending === action
-                    ? 'Working…'
-                    : blockedByClassification
-                      ? 'Set document type first'
-                      : summarizeAvailableAction(action)}
-                </Button>
-              )
-            })}
+            {visibleActions.slice(0, 4).map(action => (
+              <Button
+                key={action}
+                size="sm"
+                variant={action.includes('approve') ? 'success' : action.includes('reindex') ? 'warning' : 'outline'}
+                className="h-8 text-xs"
+                disabled={Boolean(actionPending)}
+                onClick={() => runAction(action)}
+              >
+                {actionPending === action ? 'Working…' : summarizeAvailableAction(action)}
+              </Button>
+            ))}
             {canRemoveDocument && (
               <Button
                 size="sm"
@@ -1108,7 +996,9 @@ export default function DocumentOpsView() {
             )}
           </div>
           <div className="min-h-0 flex-1 overflow-hidden">
-            <SourcePdfPreview workflowId={workflowId} currentPage={currentPage} />
+            {doc.canonical_input_type === 'structured_text' || doc.source_type === 'webhook'
+              ? <p className="p-3 text-xs text-muted-foreground">Structured input. Open Content to inspect the text chunks.</p>
+              : <SourcePdfPreview workflowId={workflowId} currentPage={currentPage} />}
           </div>
         </aside>
 
@@ -1135,6 +1025,12 @@ export default function DocumentOpsView() {
                 >
                   <FileCode className="mr-1.5 h-3.5 w-3.5" />
                   Content
+                </TabsTrigger>
+                <TabsTrigger
+                  value="revisions"
+                  className="h-10 shrink-0 rounded-none border-b-2 border-transparent px-3 text-xs data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none"
+                >
+                  <FileText className="mr-1.5 h-3.5 w-3.5" />Revisions
                 </TabsTrigger>
                 <TabsTrigger
                   value="index"
@@ -1345,20 +1241,26 @@ export default function DocumentOpsView() {
                   </div>
                 </div>
 
-                {(currentPageLanguage || currentPageRecord?.translation_provider || translationEdits[currentPage] !== undefined) && (
+                {(currentPageLanguage || translationLanguage || currentTranslation.provider || translationDraft !== undefined) && (
                   <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2">
                     <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
                       {currentPageLanguage && (
-                        <span>Language: <strong className="text-foreground">{String(currentPageLanguage).toUpperCase()}</strong></span>
+                        <span>Source language <strong className="text-foreground">{currentPageLanguage}</strong></span>
                       )}
-                      {currentPageRecord?.translation_provider && (
-                        <>
-                          <span>·</span>
-                          <span>Provider: {currentPageRecord.translation_provider}</span>
-                          <span>·</span>
-                          <span>Model: {currentPageRecord.translation_model}</span>
-                        </>
+                      {translationLanguages.length > 0 && (
+                        <label className="flex items-center gap-2">
+                          Translation language
+                          <select
+                            className="h-8 rounded-md border border-input bg-background px-2 text-foreground"
+                            value={translationLanguage}
+                            onChange={event => setRequestedTranslation(event.target.value)}
+                          >
+                            {translationLanguages.map(language => <option key={language} value={language}>{language}</option>)}
+                          </select>
+                        </label>
                       )}
+                      {currentTranslation.provider && <span>Provider {currentTranslation.provider}</span>}
+                      {currentTranslation.model && <span>Model {currentTranslation.model}</span>}
                     </div>
                     {canEdit && (
                       <div className="flex items-center gap-2">
@@ -1366,23 +1268,23 @@ export default function DocumentOpsView() {
                           variant="ghost"
                           size="sm"
                           className="h-8"
-                          onClick={() => {
-                            const next = { ...translationEdits }
-                            delete next[currentPage]
-                            setTranslationEdits(next)
-                          }}
+                          disabled={translationSaving || translationDraft === undefined}
+                          onClick={() => discardTranslationDraft(translationDraftKey)}
                         >
                           <RotateCcw className="mr-1 h-3.5 w-3.5" />Reset
                         </Button>
-                        <Button size="sm" className="h-8" disabled={!canReview} onClick={() => saveTranslation(currentPage, translationText)}>
-                          <Save className="mr-1 h-3.5 w-3.5" />Save
+                        <Button size="sm" className="h-8"
+                          disabled={!canReview || translationSaving || !translationText.trim()
+                            || (translationDraft === undefined && currentTranslation.is_reviewed)}
+                          onClick={() => saveTranslation(currentPage, translationLanguage, translationDraftKey, translationDraft)}>
+                          <Save className="mr-1 h-3.5 w-3.5" />{translationSaving ? 'Saving…' : translationDraft === undefined ? 'Mark reviewed' : 'Save'}
                         </Button>
                       </div>
                     )}
                   </div>
                 )}
 
-                {canEdit && translationEdits[currentPage] !== undefined && (
+                {canEdit && translationDraft !== undefined && (
                   <div className="shrink-0 border-b border-border px-4 py-2">
                     <div className="reindex-banner text-xs">
                       <AlertTriangle className="h-3.5 w-3.5 text-warning" />
@@ -1392,7 +1294,7 @@ export default function DocumentOpsView() {
                 )}
 
                 <div className="px-3 py-3 sm:px-4">
-                  {currentPageRecord && (currentPageRecord.translated_markdown || currentPageRecord.edited_translation) ? (
+                  {(currentTranslation.translated_markdown || currentTranslation.edited_translation) ? (
                     <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
                       <div className="flex min-w-0 flex-col">
                         <div className="mb-1.5 flex items-center justify-between gap-2">
@@ -1403,7 +1305,7 @@ export default function DocumentOpsView() {
                             {currentPageRecord?.edited_markdown ? 'reviewed · read-only' : 'read-only'}
                           </span>
                         </div>
-                        <div className="min-h-[12rem] rounded-md border border-border bg-muted/30 p-3 font-mono text-sm leading-relaxed whitespace-pre-wrap text-muted-foreground">
+                        <div lang={currentPageLanguage || undefined} className="min-h-[12rem] rounded-md border border-border bg-muted/30 p-3 font-mono text-sm leading-relaxed whitespace-pre-wrap text-muted-foreground">
                           {currentPageTranslationSourceText || '(No text yet)'}
                         </div>
                       </div>
@@ -1418,11 +1320,14 @@ export default function DocumentOpsView() {
                         </div>
                         <div className={`rounded-md border border-input bg-background ${canEdit ? 'focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2' : 'bg-muted/20'}`}>
                           <Textarea
+                            aria-label="Translated text"
+                            lang={translationLanguage || undefined}
                             value={translationText}
                             readOnly={!canEdit}
                             onChange={e => {
                               if (!canEdit) return
-                              setTranslationEdits({ ...translationEdits, [currentPage]: e.target.value })
+                              const text = e.target.value
+                              setTranslationEdits(edits => ({ ...edits, [translationDraftKey]: text }))
                             }}
                             className="min-h-[12rem] resize-y border-0 bg-transparent font-mono text-sm leading-relaxed shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
                           />
@@ -1435,7 +1340,6 @@ export default function DocumentOpsView() {
                         compact
                         icon={Layers}
                         title={sortedPages.length ? `No translation for page ${currentPage}` : 'No translation yet'}
-                        subtitle={translationEmptySubtitle}
                       />
                     </div>
                   )}
@@ -1448,7 +1352,7 @@ export default function DocumentOpsView() {
                       currentPage={currentPage}
                       onChange={setCurrentPage}
                       getStatus={(p) => (
-                        (p.translation_reviewed || p.translated_markdown || p.edited_translation)
+                        hasPageTranslation(p)
                           ? 'accent'
                           : 'pending'
                       )}
@@ -1461,6 +1365,23 @@ export default function DocumentOpsView() {
               {/* Chunks Review */}
               <TabsContent value="chunks" className="m-0 mt-0 data-[state=inactive]:hidden">
                 <div className="space-y-3 px-3 py-3 sm:px-4">
+                  {doc.canonical_input_type === 'structured_text' && pages.length > 0 && (
+                    <details className="panel space-y-3 p-3">
+                      <summary className="cursor-pointer text-sm font-medium">Full document text</summary>
+                      <div className="space-y-3 whitespace-pre-wrap break-words text-sm">
+                        {pages.map(page => (
+                          <p key={page.page_number}>{page.edited_markdown ?? page.original_markdown}</p>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+                  <MetadataReview key={workflowId} workflowId={workflowId} canEdit={canEdit} onSaved={() => load({ soft: true })} />
+                  {doc.knowledge_metadata?.attributes && (
+                    <details className="panel space-y-3 p-3">
+                      <summary className="cursor-pointer text-sm font-medium">Document attributes</summary>
+                      <pre className="whitespace-pre-wrap break-words text-xs">{JSON.stringify(doc.knowledge_metadata.attributes, null, 2)}</pre>
+                    </details>
+                  )}
                   {doc.stage === 'chunking' && chunkingProgress && (
                     <div className="panel p-3 space-y-2">
                       <div className="flex items-center justify-between text-xs">
@@ -1479,11 +1400,11 @@ export default function DocumentOpsView() {
                     </div>
                   )}
 
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <span className="text-sm font-medium text-foreground">{chunks.length} chunks</span>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                      <span className="text-sm font-medium text-foreground">{chunks.length} {chunks.length === 1 ? 'chunk' : 'chunks'}</span>
                       <span className="text-xs text-muted-foreground">
-                        {reviewedChunks} reviewed · {chunks.filter(c => c.reindex_dirty).length} dirty
+                        {reviewedChunks} reviewed
                       </span>
                     </div>
                     {canEdit && (
@@ -1500,78 +1421,33 @@ export default function DocumentOpsView() {
                     )}
                   </div>
 
-                  {chunks.filter(c => c.reindex_dirty).length > 0 && (
+                  {doc.reindex_required && (
                     <div className="reindex-banner text-xs">
                       <RefreshCw className="h-3.5 w-3.5 text-warning shrink-0" />
-                      <span>{chunks.filter(c => c.reindex_dirty).length} section(s) have been edited — re-ingest required to sync search</span>
+                      <span>Re-ingest this document to sync saved changes with search.</span>
                     </div>
                   )}
 
                   {chunks.length > 0 ? (
                     <div className="space-y-2">
                       {chunks.map(chunk => (
-                        <div
-                          key={chunk.chunk_number}
-                          id={`chunk-card-${chunk.chunk_number}`}
-                          className={`panel scroll-mt-4 transition-shadow ${
-                            chunk.reindex_dirty ? 'border-warning/40' : ''
-                          } ${
-                            highlightedChunk === chunk.chunk_number
-                              ? 'ring-2 ring-primary/70 shadow-md bg-primary/5'
-                              : ''
-                          }`}
-                        >
-                          <div className="px-4 py-2.5 border-b border-border bg-surface-warm space-y-2">
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-3 flex-wrap">
-                                <span className="text-xs font-medium">Chunk {chunk.chunk_number}</span>
-                                <span className="text-xs text-muted-foreground">
-                                  Pages {chunk.page_start}–{chunk.page_end}
-                                </span>
-                                {chunk.is_reviewed && <Badge variant="success" className="text-[10px]">Reviewed</Badge>}
-                                {chunk.reindex_dirty && <Badge variant="warning" className="text-[10px]">Dirty</Badge>}
-                                {chunk.excluded && <Badge variant="destructive" className="text-[10px]">Excluded</Badge>}
-                              </div>
-                              <div className="flex items-center gap-1.5">
-                              {canEdit ? (
-                                <label className="flex items-center gap-1.5 text-[10px] text-muted-foreground cursor-pointer">
-                                  <Checkbox checked={!chunk.excluded} />
-                                  Include
-                                </label>
-                              ) : chunk.excluded ? (
-                                <span className="text-[10px] text-muted-foreground">Excluded</span>
-                              ) : null}
-                              <Button variant="ghost" size="sm" className="h-6 text-[10px]"
-                                onClick={() => setCurrentPage(chunk.page_start)}
-                              >
-                                Jump to source
-                              </Button>
-                              {canEdit && (
-                                <Button variant="ghost" size="sm" className="h-6 text-[10px]"
-                                  onClick={() => {
-                                    const next = { ...chunkEdits }
-                                    delete next[chunk.chunk_number]
-                                    setChunkEdits(next)
-                                  }}
-                                >
-                                  <RotateCcw className="h-3 w-3" />
-                                </Button>
-                              )}
-                            </div>
-                            </div>
-                          </div>
-                          <div className="p-3">
-                            <Textarea
-                              value={chunkEdits[chunk.chunk_number] ?? chunk.edited_text ?? chunk.text ?? chunk.original_text ?? ''}
-                              readOnly={!canEdit}
-                              onChange={e => {
-                                if (!canEdit) return
-                                setChunkEdits({ ...chunkEdits, [chunk.chunk_number]: e.target.value })
-                              }}
-                              className={`text-xs font-mono min-h-[60px] resize-y ${!canEdit ? 'bg-muted/20' : ''}`}
-                            />
-                          </div>
-                        </div>
+                        <DocumentChunk
+                          key={`${workflowId}:${highlightedChunk}:${chunk.chunk_number}`}
+                          chunk={chunk}
+                          workflowId={workflowId}
+                          documentTags={doc.knowledge_metadata?.tags ?? []}
+                          highlighted={highlightedChunk === chunk.chunk_number}
+                          defaultOpen={highlightedChunk === chunk.chunk_number || chunks.length === 1}
+                          canEdit={canEdit}
+                          onMetadataSaved={() => load({ soft: true })}
+                          onJump={chunk.page_start ? () => setCurrentPage(chunk.page_start) : undefined}
+                          onSaved={saved => {
+                            setChunks(current => current.map(item => (
+                              item.chunk_number === saved.chunk_number ? saved : item
+                            )))
+                            load({ soft: true })
+                          }}
+                        />
                       ))}
                     </div>
                   ) : (
@@ -1586,6 +1462,11 @@ export default function DocumentOpsView() {
                     />
                   )}
                 </div>
+              </TabsContent>
+
+              <TabsContent value="revisions" className="m-0 data-[state=inactive]:hidden">
+                <DocumentRevisionPanel key={workflowId} workflowId={workflowId} initialRevisionId={searchParams.get('revision')}
+                  canRelease={hasPermissionForInstance('approve_ingestion', doc.instance)} />
               </TabsContent>
 
               {/* Index State */}
@@ -1707,7 +1588,7 @@ export default function DocumentOpsView() {
                       <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Document State</h3>
                       <div className="space-y-2 text-sm">
                         <div className="flex justify-between">
-                          <span className="text-muted-foreground">SQLite Stage</span>
+                          <span className="text-muted-foreground">Database Stage</span>
                           <StageBadge stage={runtime?.sqlite_stage || doc.stage} compact />
                         </div>
                         <div className="flex justify-between">

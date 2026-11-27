@@ -12,16 +12,12 @@ _Avoid_: "publish" alone — ambiguous with Publish to Network.
 The pipeline stage that runs only after a document's PROD promotion succeeds, and POSTs a Beckn-shaped `publish` envelope to an external Discovery Service. Skipped entirely when PROD is disabled (`DISABLE_PROD_SETTING=true`) — a document never reaches the network without first promoting to PROD. The envelope it sends is kind-level (see Knowledge Kind), not document-level: it does not make any single document searchable, only re-announces that the document's provider (its Group Provider, or the Shared Provider) serves that kind at all.
 _Avoid_: "publish" alone — ambiguous with Publish to Dev.
 
-**Master Catalog**:
-The global, Postgres-backed registry of prompt/tool metadata (any content type: scheme, advisory, etc.), synced to Redis so the AI layer can pick up entries without a redeploy.
-_Avoid_: "catalog" alone — ambiguous with Scheme Catalog and the Network Catalog Envelope.
-
 **Scheme Catalog**:
-The SQLite-backed, scheme-only registry that aggregates one or more documents sharing a `scheme_code`. Backs the pull-based `GET /catalog/v1/*` API that other BAPs poll.
-_Avoid_: "catalog" alone — ambiguous with Master Catalog and the Network Catalog Envelope.
+The scheme-only registry (`catalog_entries` rows plus the computed `catalog` view) that aggregates one or more documents sharing a `scheme_code`. Backs the pull-based `GET /catalog/v1/*` API that other BAPs poll.
+_Avoid_: "catalog" alone — ambiguous with the Network Catalog Envelope.
 
 **Network Catalog Envelope**:
-The Beckn wire-protocol `message.catalogs` object sent by Publish to Network to the Discovery Service. Structurally and semantically unrelated to the Master Catalog and Scheme Catalog tables — do not conflate the three.
+The Beckn wire-protocol `message.catalogs` object sent by Publish to Network to the Discovery Service. Structurally and semantically unrelated to the Scheme Catalog tables — do not conflate the two.
 _Avoid_: "catalog" alone.
 
 **Group**:
@@ -45,7 +41,7 @@ What a document *is* to the network — `advisory`, `scheme`, `video`, or an ope
 _Avoid_: "document type" — collides with `source_type`/`canonical_input_type`, which describe the input *format* (pdf, spreadsheet). Also avoid saying an advisory is "uploaded": what is uploaded is a file, which only becomes an advisory when someone classifies it.
 
 **Document Validity**:
-The period a document's chunks answer searches in, held as `documents.valid_from` / `documents.valid_to` and stamped onto every chunk's vector payload as `start_date` / `end_date`. Defaulted on upload to start that day with no end, meaning it never expires; a reviewer can narrow either end in the same form that sets the Knowledge Kind, behind the `VITE_DOCUMENT_VALIDITY_ENABLED` flag. Both ends are inclusive, and search filters on it so an expired or not-yet-started document is never answered from. Chunks ingested before it existed carry neither date and stay searchable — see `docs/ADR/0005-document-validity-filters-search.md`.
+The inclusive search period is stored in `documents.metadata.valid_from` and `valid_to` and projected into each Qdrant point as `start_date` and `end_date`. Reviewers edit it under **Content → Document metadata**. A blank end date leaves the document open-ended. Structured intake can keep both dates unspecified.
 _Avoid_: "expiry" — there is a start as well as an end. Also avoid calling it the document's lifetime: the document stays in the console, editable and reingestable, once its period has passed; only its search answers stop.
 
 **Display Name**:

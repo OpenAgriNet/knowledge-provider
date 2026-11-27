@@ -1,0 +1,44 @@
+{
+  "advisory": {
+    "catalog_name": "Advisories from documents",
+    "domain": "agriculture",
+    "catalog_id": "cat-oan-knowledge-provider-advisories",
+    "resource_id": "res-oan-knowledge-provider-advisories",
+    "resource_name": "Agricultural advisory",
+    "resource_attributes": {
+      "@context": "https://openagrinet.github.io/network-specs/schema/KnowledgeAdvisory/v0.1/context.jsonld",
+      "@type": "openagrinet:KnowledgeAdvisory",
+      "informationMode": "OnDemand",
+      "subjectCategories": [
+        "Crop"
+      ],
+      "topics": [
+        "Crop production"
+      ],
+      "languages": [
+        "en"
+      ]
+    }
+  },
+  "scheme": {
+    "catalog_name": "Schemes from documents",
+    "domain": "agriculture",
+    "catalog_id": "cat-oan-knowledge-provider-schemes",
+    "resource_id": "res-oan-knowledge-provider-schemes",
+    "resource_name": "Government schemes",
+    "resource_attributes": {
+      "@context": "https://openagrinet.github.io/network-specs/schema/KnowledgeAdvisory/v0.1/context.jsonld",
+      "@type": "openagrinet:KnowledgeAdvisory",
+      "informationMode": "OnDemand",
+      "subjectCategories": [
+        "Scheme"
+      ],
+      "topics": [
+        "Government schemes"
+      ],
+      "languages": [
+        "en"
+      ]
+    }
+  }
+}

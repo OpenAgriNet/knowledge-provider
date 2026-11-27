@@ -8,11 +8,14 @@ import re
 from datetime import datetime
 from typing import Callable, Optional
 
+from pipeline.metadata.localization import normalize_language_tag
+
 from .base import TranslationConfig, TranslationProvider
 from .gemma_vllm import GemmaVllmTranslationProvider
 from .script_detect import analyze_script, detect_any, disambiguate
 
 PROVIDERS: dict[str, type[TranslationProvider]] = {
+    "openai_compatible": GemmaVllmTranslationProvider,
     "gemma_vllm": GemmaVllmTranslationProvider,
     "gemma4": GemmaVllmTranslationProvider,
     "gemma": GemmaVllmTranslationProvider,
@@ -35,27 +38,31 @@ LANG_MAP = {
     "zl": "gu",
 }
 
-def _gemma_endpoint() -> str:
-    """Resolve OpenAI-compatible Gemma base URL (AGRINET preferred)."""
+def configured_translation_endpoint() -> str:
     return (
-        os.environ.get("AGRINET_GEMMA_BASE_URL")
+        os.environ.get("TRANSLATION_BASE_URL")
+        or os.environ.get("AGRINET_GEMMA_BASE_URL")
         or os.environ.get("TRANSLATION_VLLM_BASE_URL")
-        or "http://localhost:8020/v1"
+        or ""
     ).strip()
+
+
+def configured_translation_type() -> str:
+    return os.environ.get("TRANSLATION_TYPE", os.environ.get("TRANSLATION_PROVIDER", "gemma_vllm")).strip().lower()
 
 
 def _gemma_model() -> str:
     return (
-        os.environ.get("AGRINET_GEMMA_MODEL_NAME")
-        or os.environ.get("TRANSLATION_MODEL")
+        os.environ.get("TRANSLATION_MODEL")
+        or os.environ.get("AGRINET_GEMMA_MODEL_NAME")
         or "google/gemma-4-31b-it"
     ).strip() or "google/gemma-4-31b-it"
 
 
 def load_translation_config(target_language: str = "en") -> TranslationConfig:
-    provider = os.environ.get("TRANSLATION_PROVIDER", "gemma_vllm").strip().lower()
+    provider = configured_translation_type()
     model = _gemma_model()
-    endpoint = _gemma_endpoint()
+    endpoint = configured_translation_endpoint() or "http://localhost:8020/v1"
     # Ensure OpenAI-compatible path: base may be .../gemma4 without trailing /v1
     if endpoint and not endpoint.rstrip("/").endswith("/v1"):
         endpoint = endpoint.rstrip("/") + "/v1"
@@ -143,23 +150,13 @@ def clean_translation(text: str) -> str:
     return result.strip()
 
 
-def _contains_gujarati_script(text: str) -> bool:
-    if not text:
-        return False
-    return any("\u0A80" <= ch <= "\u0AFF" for ch in text)
-
-
 def normalize_detected_language(detected_lang: str | None, page_text: str) -> str:
-    lowered = (detected_lang or "en").lower()
-    # Fall back to the raw code (already <=3 chars, ISO 639-3) rather than
-    # truncating to 2 — a blind [:2] slice can collide with a DIFFERENT
-    # real language's actual ISO 639-1 code for an unmapped input.
-    normalized = LANG_MAP.get(lowered, lowered[:3] if lowered else "en")
-    if normalized in {"unknown", "un", "und", "xx", "zl"}:
-        if _contains_gujarati_script(page_text):
-            return "gu"
-        return "en"
-    return normalized
+    lowered = (detected_lang or "und").strip().lower()
+    normalized = normalize_language_tag(LANG_MAP.get(lowered, lowered))
+    if normalized and normalized not in {"unknown", "un", "und", "xx", "zl"}:
+        return normalized
+    script = analyze_script(page_text, min_chars=1, min_ratio=0.3)
+    return script.language if script.is_non_english and not script.ambiguous else "und"
 
 
 async def detect_page_languages(
@@ -169,11 +166,8 @@ async def detect_page_languages(
 ) -> dict[int, str]:
     """Decide each page's language, gating on script regex before any model call.
 
-    With the gate on (default), a page is only considered for translation when
-    it actually contains non-Latin script. pyfranc is then consulted in-process
-    just for the scripts that map to more than one language (Devanagari,
-    Bengali), and its answer is accepted only if it names a language in that
-    script's family — a page of Devanagari cannot be French.
+    Use script as evidence where possible. Use language detection for Latin
+    and other scripts without a reliable script-derived language.
     """
     config = config or load_translation_config()
 
@@ -212,9 +206,10 @@ async def _detect_via_script_gate(
         )
 
         if not analysis.is_non_english:
-            detected_languages[i] = "en"
+            language = detect_any(text) if analysis.letter_chars >= 80 else None
+            detected_languages[i] = normalize_detected_language(language, text) if language else "und"
             if log:
-                log("Page %s: regex → %s → SKIP translation", page_no, analysis.summary())
+                log("Page %s: language=%s", page_no, detected_languages[i])
             continue
 
         detected_languages[i] = analysis.language
@@ -229,7 +224,7 @@ async def _detect_via_script_gate(
 
     if log:
         log(
-            "Script gate result: %s/%s page(s) need translation %s; %s skipped as English",
+            "Script gate result: %s/%s page(s) identified by script %s; %s evaluated separately",
             len(non_english),
             len(pages),
             non_english or "[]",
@@ -289,45 +284,15 @@ async def _detect_via_lang_detect(
     pages: list[dict],
     log: Optional[Callable[..., None]] = None,
 ) -> dict[int, str]:
-    """Legacy per-line detection, kept for TRANSLATION_SCRIPT_GATE_ENABLED=false.
-
-    Runs pyfranc unrestricted (no whitelist) across all 414 languages it
-    knows, which is the same trade-off the old franc-min-backed lang-detect
-    service made: short OCR lines can be misdetected as an unrelated Latin
-    language. That's exactly why the script gate above is the default path —
-    it never calls pyfranc without a script-derived whitelist.
-    """
+    """Detect the language of each page as a whole, leaving short pages unknown."""
     detected_languages: dict[int, str] = {}
 
     for i, page in enumerate(pages):
         text = page.get("edited_markdown") or page.get("original_markdown", "")
         if not text or len(text.strip()) < 20:
-            detected_languages[i] = "en"
+            detected_languages[i] = "und"
             continue
-
-        lines = [line.strip() for line in text.split("\n") if len(line.strip()) >= 10]
-        if not lines:
-            detected_languages[i] = "en"
-            continue
-
-        non_english_lang = None
-        for line in lines:
-            lang = detect_any(line)
-            if lang and lang not in {"en", "und"}:
-                non_english_lang = lang
-                if log:
-                    log(
-                        "Page %s: Found non-English content, detected language: %s",
-                        page.get("page_number"),
-                        lang,
-                    )
-                break
-
-        page_text = page.get("edited_markdown") or page.get("original_markdown", "")
-        detected_languages[i] = normalize_detected_language(
-            non_english_lang if non_english_lang else "en",
-            page_text,
-        )
+        detected_languages[i] = normalize_detected_language(detect_any(text), text)
 
     return detected_languages
 
@@ -340,7 +305,7 @@ async def translate_pages(
     log: Optional[Callable[..., None]] = None,
 ) -> list[dict]:
     config = config or load_translation_config(target_language=target_language)
-    provider = get_translation_provider(config)
+    provider = None if config.provider == "none" else get_translation_provider(config)
 
     if log:
         log("Processing %s pages for translation", len(pages))
@@ -353,7 +318,15 @@ async def translate_pages(
             config.target_language,
         )
 
-    detected_languages = await detect_page_languages(pages, log=log, config=config)
+    declared = {
+        i: language for i, page in enumerate(pages)
+        if (language := normalize_language_tag((page.get("metadata") or {}).get("declared_language")))
+    }
+    missing = [i for i in range(len(pages)) if i not in declared]
+    detected_languages = dict(declared)
+    if missing:
+        detected = await detect_page_languages([pages[i] for i in missing], log=log, config=config)
+        detected_languages.update({missing[i]: language for i, language in detected.items()})
 
     pages_to_translate: list[tuple[int, dict, str]] = []
     for i, page in enumerate(pages):
@@ -361,7 +334,11 @@ async def translate_pages(
             continue
         detected_lang = detected_languages[i]
         page["detected_language"] = detected_lang
-        if detected_lang != "en":
+        target = config.target_language
+        variant = (page.get("translations") or {}).get(target) or {}
+        already_available = bool(variant.get("edited_translation") or variant.get("translated_markdown"))
+        if (provider and not already_available and detected_lang not in {"und", "mul", target}
+                and not detected_lang.startswith(f"{target}-")):
             pages_to_translate.append((i, page, detected_lang))
 
     if log:
@@ -429,6 +406,14 @@ async def translate_pages(
             pages[idx]["translation_model"] = config.model
             pages[idx]["translation_target_language"] = config.target_language
             pages[idx]["translated_at"] = translated_at
+            variants = dict(pages[idx].get("translations") or {})
+            variants[config.target_language] = {
+                "translated_markdown": translation,
+                "provider": config.provider,
+                "model": config.model,
+                "translated_at": translated_at,
+            }
+            pages[idx]["translations"] = variants
             translated_count += 1
         elif error:
             page_no = pages[idx].get("page_number", idx)

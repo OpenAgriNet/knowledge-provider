@@ -32,6 +32,7 @@ ui/.vite/
 data/
 books/
 qdrant_storage/
+local-dpg/
 *.db
 *.sqlite
 
@@ -67,6 +68,7 @@ test_ocr_output*/
 
 # Scripts (not needed at runtime inside the container)
 scripts/
+!scripts/install_schema_pack.py
 
 # Claude / AI tooling
 .claude/

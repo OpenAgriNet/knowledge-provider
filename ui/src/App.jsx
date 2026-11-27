@@ -16,7 +16,6 @@ import ChunkExplorerView from './views/ChunkExplorerView'
 import GlobalAuditView from './views/GlobalAuditView'
 import UsersAdminView from './views/UsersAdminView'
 import LoginView from './views/LoginView'
-import SsoCallbackView from './views/SsoCallbackView'
 
 function ProtectedLayout() {
   return (
@@ -32,7 +31,6 @@ export default function App() {
   return (
     <Routes>
       <Route path={ROUTES.LOGIN} element={<LoginView />} />
-      <Route path={ROUTES.AUTH_SSO_CALLBACK} element={<SsoCallbackView />} />
 
       <Route element={<ProtectedLayout />}>
         <Route index element={<DashboardView />} />

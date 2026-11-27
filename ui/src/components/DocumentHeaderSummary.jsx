@@ -124,7 +124,7 @@ export function DocumentHeaderSummary({
             <DetailRow label="Uploaded by">
               {uploader || '—'}
             </DetailRow>
-            <DetailRow label="State">
+            <DetailRow label="Instance">
               {stateLabel ? (
                 <span title={instanceBadgeTitle(doc?.instance)}>{stateLabel}</span>
               ) : (
@@ -156,16 +156,11 @@ export function DocumentHeaderSummary({
             ) : null}
           </dl>
 
-          {doc?.authoritative != null || doc?.stage || stateLabel ? (
+          {doc?.stage || stateLabel ? (
             <div className="mt-4 flex flex-wrap gap-1.5">
               {stateLabel ? (
                 <Badge variant="outline" className="text-[10px] font-semibold tracking-wide">
                   {stateLabel}
-                </Badge>
-              ) : null}
-              {doc?.authoritative != null ? (
-                <Badge variant={doc.authoritative ? 'default' : 'secondary'} className="text-[10px]">
-                  {doc.authoritative ? 'Authoritative' : 'Legacy'}
                 </Badge>
               ) : null}
               {doc?.stage ? (

@@ -2,6 +2,7 @@ import pytest
 
 from pipeline import vector_store
 from pipeline.api import api
+from pipeline.api.routers import document_lifecycle
 from pipeline.vector_store import qdrant_store
 
 
@@ -46,22 +47,22 @@ def test_document_delete_failure_logs_doc(dev_store_down, caplog):
     assert _only(caplog, "vector document delete failed").doc_id == "doc-1"
 
 
-def test_prod_document_delete_failure_logs_doc_and_collection(prod_store_down, monkeypatch, caplog):
+def test_prod_document_delete_failure_logs_docs_and_collection(prod_store_down, monkeypatch, caplog):
     monkeypatch.setenv("PROD_VECTOR_DB_COLLECTION_NAME", "prod-docs")
 
-    result = api._delete_document_points_from_prod({"document_id": "doc-1"})
+    result = document_lifecycle._delete_document_points_from_prod({"document_id": "doc-1"})
 
     assert result == {"deleted": False, "error": "prod qdrant down", "collection": "prod-docs"}
     record = _only(caplog, "prod vector delete failed")
-    assert (record.doc_id, record.collection) == ("doc-1", "prod-docs")
+    assert (record.doc_ids, record.collection) == (["doc-1"], "prod-docs")
 
 
-def test_prod_scheme_delete_failure_logs_doc_and_collection(prod_store_down, monkeypatch, caplog):
+def test_prod_scheme_delete_failure_logs_docs_and_collection(prod_store_down, monkeypatch, caplog):
     monkeypatch.delenv("PROD_SCHEME_VECTOR_DB_URL", raising=False)
     monkeypatch.delenv("PROD_SCHEME_VECTOR_DB_COLLECTION_NAME", raising=False)
 
-    result = api._delete_scheme_points_from_prod({"document_id": "doc-1"})
+    result = document_lifecycle._delete_scheme_points_from_prod({"document_id": "doc-1"})
 
     assert result == {"deleted": False, "error": "prod qdrant down", "collection": "schemes-index"}
     record = _only(caplog, "prod vector delete failed")
-    assert (record.doc_id, record.collection) == ("doc-1", "schemes-index")
+    assert (record.doc_ids, record.collection) == (["doc-1"], "schemes-index")

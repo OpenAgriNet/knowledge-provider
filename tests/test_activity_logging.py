@@ -10,7 +10,7 @@ from temporalio.exceptions import ApplicationError
 from temporalio.testing import ActivityEnvironment, WorkflowEnvironment
 from temporalio.worker import Worker
 
-from pipeline import activity_logging
+from pipeline.temporal.activities import logging as activity_logging
 
 LOGGER = "pipeline.activity_logging"
 

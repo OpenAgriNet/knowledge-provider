@@ -137,7 +137,7 @@ export const PIPELINE_STAGES = [
 
 /**
  * Simplified steps shown to institute operators.
- * Backend may still be on `chunking` while the UI highlights "Approve content".
+ * Content is reviewed at "Ready to ingest"; there is no separate content approval step.
  */
 export const USER_PIPELINE_STAGES = [
   { id: 'registered', label: 'Uploaded' },
@@ -145,8 +145,9 @@ export const USER_PIPELINE_STAGES = [
   { id: 'ocr_review', label: 'Review text' },
   { id: 'translation_processing', label: 'Translating' },
   { id: 'translation_review', label: 'Review translation' },
-  // `chunking` is folded into this step so users never see "Chunking"
-  { id: 'chunk_review', label: 'Approve content' },
+  // Content is checked at "Ready to ingest"; documents waiting in the retired
+  // chunk_review stage show here too and keep their Approve content action.
+  { id: 'chunking', label: 'Preparing content' },
   { id: 'ready_for_ingestion', label: 'Ready to ingest' },
   { id: 'ingesting', label: 'Publishing to dev' },
   { id: 'approval_for_prod', label: 'Approve for production' },
@@ -163,8 +164,8 @@ export function mapStageToUserStep(stage) {
     ocr_review: 'ocr_review',
     translation_processing: 'translation_processing',
     translation_review: 'translation_review',
-    chunking: 'chunk_review',
-    chunk_review: 'chunk_review',
+    chunking: 'chunking',
+    chunk_review: 'chunking',
     ready_for_ingestion: 'ready_for_ingestion',
     ingesting: 'ingesting',
     publishing_to_network: 'publishing_to_network',
@@ -199,14 +200,14 @@ export const DEFAULT_SEARCH_SETTINGS = {
   maxChunksPerDoc: 2,
   useE5Prefix: true,
   excludeReference: true,
-  queryExpansionProfile: 'gu-v1',
+  queryExpansionProfile: 'none',
   rerankMode: 'none',
   hybridRrfK: 60
 }
 
 export function getDocumentListLabel(doc) {
   return (
-    doc?.display_name ||
+    doc?.name ||
     doc?.name_en ||
     doc?.name ||
     doc?.filename ||
@@ -254,12 +255,11 @@ export function isUTC(value) {
 }
 
 /**
- * Convert any timestamp value to IST (Asia/Kolkata), formatted as
- * "dd-mm-yyyy hh:mm" (24-hour). Values that `isUTC` identifies as UTC are
+ * Format timestamps in the browser's timezone. Values that `isUTC` identifies as UTC are
  * corrected before parsing so `new Date()` can't misread them as local
  * time; values with an explicit non-UTC offset are respected as-is.
  */
-export function toIST(value) {
+export function formatTimestamp(value) {
   if (!value) return null
   let date
   if (value instanceof Date) {
@@ -271,8 +271,7 @@ export function toIST(value) {
   }
   if (Number.isNaN(date.getTime())) return null
 
-  const parts = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Asia/Kolkata',
+  const parts = new Intl.DateTimeFormat(undefined, {
     day: '2-digit',
     month: '2-digit',
     year: 'numeric',
@@ -289,12 +288,12 @@ export function toIST(value) {
 
 export function formatDateTime(value) {
   if (!value) return 'Unknown'
-  return toIST(value) || 'Unknown'
+  return formatTimestamp(value) || 'Unknown'
 }
 
 export function formatCompactDateTime(value) {
   if (!value) return 'Not available'
-  return toIST(value) || 'Not available'
+  return formatTimestamp(value) || 'Not available'
 }
 
 export function formatCount(value) {
@@ -313,6 +312,7 @@ export function summarizeAvailableAction(action) {
     mark_reindex_required: 'Mark re-ingest',
     clear_reindex_required: 'Clear re-ingest',
     inspect_runtime: 'Inspect runtime',
+    retry_upload_start: 'Retry start',
     reconcile_document: 'Reconcile',
     disable_document: 'Remove',
     restore_document: 'Restore',
@@ -444,7 +444,7 @@ function stripMarkdown(value) {
 }
 
 export function getSearchResultTitle(result) {
-  return result?.name_en || result?.name || result?.filename || result?.document || 'Search Result'
+  return result?.name || result?.name_en || result?.filename || result?.document || 'Search Result'
 }
 
 export function getSearchResultSnippet(result) {

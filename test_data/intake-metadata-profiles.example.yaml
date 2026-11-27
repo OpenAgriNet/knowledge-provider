@@ -1,0 +1,44 @@
+profiles:
+  - id: crop-advisory
+    version: "1"
+    kind: advisory
+    subject_category: Crop
+    schema:
+      type: object
+      properties:
+        sowing_days:
+          type: integer
+          minimum: 0
+          title: Days after sowing
+        variety:
+          type: string
+          maxLength: 128
+          title: Variety
+      additionalProperties: true
+  - id: livestock-advisory
+    version: "1"
+    kind: advisory
+    subject_category: Livestock
+    schema:
+      type: object
+      properties:
+        species:
+          type: string
+          maxLength: 128
+          title: Species
+        age_weeks:
+          type: integer
+          minimum: 0
+          title: Age in weeks
+      additionalProperties: true
+  - id: scheme-eligibility
+    version: "1"
+    kind: scheme
+    schema:
+      type: object
+      properties:
+        application_channel:
+          type: string
+          enum: [Online, In person, Both]
+          title: Application channel
+      additionalProperties: true

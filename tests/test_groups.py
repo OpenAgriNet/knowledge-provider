@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+
 from pipeline.auth.groups import (
+    ROLE_GLOBAL_VIEWER,
     ROLE_STATE_ADMIN,
     ROLE_STATE_APPROVER,
     ROLE_STATE_CONTRIBUTOR,
@@ -12,6 +15,7 @@ from pipeline.auth.groups import (
     role_for_instance,
 )
 from pipeline.auth.jwt import claims_to_user
+from pipeline.auth.keycloak_admin import _access_summary_from_groups, ensure_access_group
 from pipeline.auth.permissions import Permission, UserRole, permissions_for_roles
 from pipeline.auth.tenancy import allowed_instances, user_can_access_instance
 
@@ -103,9 +107,11 @@ def test_only_state_admin_and_super_admin_hold_delete_own():
     )
 
 
-def test_bh_viewer_reads_every_state_without_write():
-    access = parse_group_paths(["/global/bh-viewer"])
-    assert access.is_bh_viewer is True
+@pytest.mark.parametrize("path", ["/global/global-viewer", "/global/bh-viewer"])
+def test_global_viewer_reads_every_provider_without_write(path):
+    access = parse_group_paths([path])
+    assert access.is_global_viewer is True
+    assert access.roles == [ROLE_GLOBAL_VIEWER]
     assert access.is_super_admin is False
     assert access.state_roles == {}
     # No per-state group, but any state resolves to view.
@@ -113,10 +119,96 @@ def test_bh_viewer_reads_every_state_without_write():
     assert role_for_instance(access, "wb") == ROLE_STATE_VIEW
 
 
-def test_bh_viewer_keeps_stronger_state_role():
-    access = parse_group_paths(["/global/bh-viewer", "/states/MH/admin"])
-    assert role_for_instance(access, "mh") == ROLE_STATE_ADMIN
-    assert role_for_instance(access, "up") == ROLE_STATE_VIEW
+@pytest.mark.parametrize("path", ["/global/global-viewer", "/global/bh-viewer"])
+def test_global_viewer_keeps_stronger_provider_role(path):
+    groups = [path, "/states/MH/admin"]
+    user = claims_to_user({"sub": "mixed-viewer", "groups": groups}, authoritative_groups=True)
+    assert allowed_instances(user) is None
+    assert user.has_permission_for_instance(Permission.SEARCH, "up")
+    assert user.has_permission_for_instance(Permission.UPLOAD, "mh")
+    assert not user.has_permission_for_instance(Permission.UPLOAD, "up")
+    summary = _access_summary_from_groups(groups)
+    assert summary["access_type"] == ROLE_GLOBAL_VIEWER
+    assert summary["access_label"] == "Viewer"
+    assert summary["provider_roles"] == {"mh": ROLE_STATE_ADMIN}
+
+
+@pytest.mark.parametrize("role", ["global_viewer", "bh_viewer"])
+def test_global_viewer_with_legacy_scoped_claim_keeps_provider_write_boundary(role):
+    user = claims_to_user({
+        "sub": "mixed-viewer",
+        "realm_access": {"roles": [role, ROLE_STATE_ADMIN]},
+        "instances": ["mh"],
+    })
+    assert ROLE_GLOBAL_VIEWER in user.roles
+    assert allowed_instances(user) is None
+    assert user.has_permission_for_instance(Permission.SEARCH, "up")
+    assert user.has_permission_for_instance(Permission.UPLOAD, "mh")
+    assert not user.has_permission_for_instance(Permission.UPLOAD, "up")
+
+
+@pytest.mark.parametrize("role", ["global_viewer", "bh_viewer"])
+def test_provisioning_global_viewer_always_uses_new_keycloak_group(role, monkeypatch):
+    from pipeline.auth import keycloak_admin
+
+    group_calls = []
+    role_calls = []
+    monkeypatch.setattr(keycloak_admin, "_admin_token", lambda _cfg: "fake-token")
+    monkeypatch.setattr(keycloak_admin, "_admin_root", lambda _cfg: "https://id.example.invalid")
+    monkeypatch.setattr(keycloak_admin, "_get_group", lambda _admin, _token, group: {"id": group})
+    monkeypatch.setattr(keycloak_admin, "_map_role_on_group", lambda *_args: None)
+
+    def ensure_child_group(_admin, _token, parent, name):
+        group_calls.append((parent, name))
+        return {"id": name}
+
+    def ensure_realm_role(_admin, _token, name, _description):
+        role_calls.append(name)
+        return {"name": name}
+
+    monkeypatch.setattr(keycloak_admin, "_ensure_child_group", ensure_child_group)
+    monkeypatch.setattr(keycloak_admin, "_ensure_realm_role", ensure_realm_role)
+    path, group = ensure_access_group(None, access_type=role, state=None, role=None)
+    assert path == "/global/global-viewer"
+    assert group == {"id": "global-viewer"}
+    assert group_calls == [(None, "global"), ("global", "global-viewer")]
+    assert role_calls == [ROLE_GLOBAL_VIEWER]
+
+
+def test_reassigning_legacy_viewer_keeps_provider_group(monkeypatch):
+    from pipeline.auth import keycloak_admin
+
+    groups = {
+        "previous": "/global/bh-viewer",
+        "provider": "/states/ALPHA/admin",
+    }
+    monkeypatch.setattr(keycloak_admin, "require_admin_config", lambda: None)
+    monkeypatch.setattr(keycloak_admin, "_admin_token", lambda _cfg: "fake-token")
+    monkeypatch.setattr(keycloak_admin, "_admin_root", lambda _cfg: "https://id.example.invalid")
+    monkeypatch.setattr(
+        keycloak_admin, "ensure_access_group",
+        lambda *_args, **_kwargs: ("/global/global-viewer", {"id": "replacement"}),
+    )
+    monkeypatch.setattr(
+        keycloak_admin, "_list_keycloak",
+        lambda *_args: [{"id": key, "path": path} for key, path in groups.items()],
+    )
+
+    def request(method, url, **_kwargs):
+        if method == "PUT":
+            groups[url.split("/")[-1]] = "/global/global-viewer"
+        elif method == "DELETE":
+            del groups[url.split("/")[-1]]
+        if url.endswith("/role-mappings/realm"):
+            return 200, []
+        return 200, {"id": "reader", "email": "reader@example.invalid"}
+
+    monkeypatch.setattr(keycloak_admin, "_req", request)
+
+    outcome = keycloak_admin.set_user_access(user_id="reader", access_type="global_viewer")
+    assert outcome["removed_groups"] == ["/global/bh-viewer"]
+    assert outcome["groups"] == ["/states/ALPHA/admin", "/global/global-viewer"]
+    assert outcome["provider_roles"] == {"alpha": ROLE_STATE_ADMIN}
 
 
 def test_higher_role_wins_same_state():

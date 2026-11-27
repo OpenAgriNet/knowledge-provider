@@ -7,12 +7,11 @@
 #
 # Host port defaults (override in .env):
 #   API_HOST_PORT=8011   UI_HOST_PORT=3011
-#   KEYCLOAK_HOST_PORT=8081   TEMPORAL_UI_PORT=8090
+#   TEMPORAL_UI_PORT=8090
 #
 # Required nginx snippet locations (see deploy/):
-#   /docs-pipeline-api/ → 127.0.0.1:8011
-#   /docs-pipeline/     → 127.0.0.1:3011
-#   /auth/              → 127.0.0.1:8081   (Keycloak)
+#   /knowledge-provider-api/ → 127.0.0.1:8011
+#   /knowledge-provider/     → 127.0.0.1:3011
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -26,12 +25,7 @@ if [[ ! -f "$ENV_FILE" ]]; then
   exit 1
 fi
 
-# Load env so we can read port values for health checks below
-set -a; source "$ENV_FILE"; set +a
-
-API_PORT="${API_HOST_PORT:-8011}"
-UI_PORT="${UI_HOST_PORT:-3011}"
-KC_PORT="${KEYCLOAK_HOST_PORT:-8081}"
+export KP_ENV_FILE="$(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"
 
 BUILD_FLAG=(--build)
 if [[ "${NO_BUILD:-}" == "1" ]]; then
@@ -46,7 +40,7 @@ echo ""
 # ── 1. Pull images that are not built locally ─────────────────────────────────
 echo "===> Pulling base images..."
 docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" pull \
-  temporal temporal-db temporal-ui minio minio-init qdrant keycloak-db 2>/dev/null || true
+  postgres temporal-schema temporal temporal-namespace keycloak minio qdrant
 
 # ── 2. Build or pull application images ───────────────────────────────────────
 if [[ ${#BUILD_FLAG[@]} -gt 0 ]]; then
@@ -60,11 +54,11 @@ if [[ ${#BUILD_FLAG[@]} -gt 0 ]]; then
     NO_CACHE_FLAG=(--no-cache)
   fi
   docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" build \
-    "${NO_CACHE_FLAG[@]}" keycloak api worker ui
+    "${NO_CACHE_FLAG[@]}" api worker ui
 else
   echo "===> Pulling application images (IMAGE_TAG=${IMAGE_TAG:-latest})..."
   docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" pull \
-    keycloak api worker ui
+    api worker ui
 fi
 
 # ── 3. Bring the stack up ─────────────────────────────────────────────────────
@@ -77,13 +71,25 @@ echo "===> Container status:"
 docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" ps
 
 # ── 5. Health checks ─────────────────────────────────────────────────────────
+published_port() {
+  local binding
+  binding="$(docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" port "$1" "$2")"
+  printf '%s\n' "${binding##*:}"
+}
+
+API_PORT="$(published_port api 8001)"
+UI_PORT="$(published_port ui 8080)"
+
 echo ""
 echo "===> Waiting 10s for services to initialise..."
 sleep 10
 
 echo -n "  API     : "; curl -sf "http://127.0.0.1:${API_PORT}/health" && echo "OK" || echo "FAIL (may still be starting)"
 echo -n "  UI      : "; curl -sf --max-time 3 "http://127.0.0.1:${UI_PORT}/" -o /dev/null && echo "OK" || echo "FAIL (may still be starting)"
-echo -n "  Keycloak: "; curl -sf --max-time 5 "http://127.0.0.1:${KC_PORT}/health/ready" && echo "OK" || echo "FAIL (may still be starting — takes ~60s on first boot)"
+echo -n "  Keycloak: "
+docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" exec -T api \
+  python -c 'import os; from urllib.request import urlopen; urlopen(os.environ["KEYCLOAK_ISSUER"].rstrip("/") + "/.well-known/openid-configuration", timeout=5).close()' \
+  && echo "OK (private)" || echo "FAIL (check API startup and internal KEYCLOAK_ISSUER)"
 
 # ── 6. Summary ────────────────────────────────────────────────────────────────
 cat <<EOF
@@ -93,14 +99,12 @@ cat <<EOF
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  API       http://127.0.0.1:${API_PORT}/health
  UI        http://127.0.0.1:${UI_PORT}/
- Keycloak  http://127.0.0.1:${KC_PORT}/
-           http://127.0.0.1:${KC_PORT}/admin/knowledge-engine/console/
+ Keycloak  private to the Compose network
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  Public URLs (after nginx — see deploy/ snippets)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- https://<your-domain>/docs-pipeline-api/health
- https://<your-domain>/docs-pipeline/
- https://<your-domain>/auth/realms/knowledge-engine/.well-known/openid-configuration
+ https://<your-domain>/knowledge-provider-api/health
+ https://<your-domain>/knowledge-provider/
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  Logs
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

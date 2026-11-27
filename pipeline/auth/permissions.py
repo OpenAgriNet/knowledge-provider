@@ -2,10 +2,10 @@
 
 Product roles (Keycloak groups / realm roles):
 
-Global (Bharat Vistaar platform level):
+Global platform roles:
 
 - ``super_admin``       — all states, full access incl. settings / users / PROD
-- ``bh_viewer``         — all states, view-only
+- ``global_viewer``         — all states, view-only
 
 Per state / centre (a centre is just another tenant code):
 
@@ -22,6 +22,8 @@ approve": no product role holds one without the other, so they are not split.
 from __future__ import annotations
 
 from enum import Enum
+
+from .groups import GLOBAL_VIEWER_ROLE_ALIASES, ROLE_GLOBAL_VIEWER
 
 
 class Permission(str, Enum):
@@ -49,7 +51,7 @@ class UserRole(str, Enum):
     """Canonical product roles (mirror Keycloak group leaves / realm roles)."""
 
     SUPER_ADMIN = "super_admin"
-    BH_VIEWER = "bh_viewer"
+    GLOBAL_VIEWER = ROLE_GLOBAL_VIEWER
     STATE_ADMIN = "state_admin"
     STATE_APPROVER = "state_approver"
     STATE_CONTRIBUTOR = "state_contributor"
@@ -90,14 +92,14 @@ STATE_ADMIN_PERMISSIONS: frozenset[Permission] = STATE_APPROVER_PERMISSIONS | {
     Permission.DELETE_OWN,
 }
 
-# Bharat Vistaar viewer: read-only, but across every state (see models.py for scope).
-BH_VIEWER_PERMISSIONS: frozenset[Permission] = frozenset(
+# Global viewer: read-only across every provider.
+GLOBAL_VIEWER_PERMISSIONS: frozenset[Permission] = frozenset(
     {
         Permission.SEARCH,
     }
 )
 
-# Platform super admin (Bharat Vistaar): full console + settings + users + prod.
+# Platform super admin: full console + settings + users + prod.
 SUPERADMIN_PERMISSIONS: frozenset[Permission] = frozenset(Permission)
 
 # Keycloak / realm role names → permissions.
@@ -105,7 +107,7 @@ SUPERADMIN_PERMISSIONS: frozenset[Permission] = frozenset(Permission)
 ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
     # Product roles
     UserRole.SUPER_ADMIN.value: SUPERADMIN_PERMISSIONS,
-    UserRole.BH_VIEWER.value: BH_VIEWER_PERMISSIONS,
+    **dict.fromkeys(GLOBAL_VIEWER_ROLE_ALIASES, GLOBAL_VIEWER_PERMISSIONS),
     UserRole.STATE_ADMIN.value: STATE_ADMIN_PERMISSIONS,
     UserRole.STATE_APPROVER.value: STATE_APPROVER_PERMISSIONS,
     UserRole.STATE_CONTRIBUTOR.value: STATE_CONTRIBUTOR_PERMISSIONS,
@@ -114,9 +116,6 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
     # and stays mapped until every holder is in /global/super-admin.
     "superadmin": SUPERADMIN_PERMISSIONS,
     "super-admin": SUPERADMIN_PERMISSIONS,
-    # Bharat Vistaar viewer spellings
-    "bh-viewer": BH_VIEWER_PERMISSIONS,
-    "bh_view": BH_VIEWER_PERMISSIONS,
     # Group-leaf spellings for the state roles
     "admin": STATE_ADMIN_PERMISSIONS,
     "state-admin": STATE_ADMIN_PERMISSIONS,
@@ -143,7 +142,7 @@ def permissions_for_roles(roles: list[str] | set[str] | tuple[str, ...]) -> set[
     """Union permissions from known roles.
 
     - ``super_admin`` → all permissions
-    - ``bh_viewer`` → search only (across all states — see models.py)
+    - ``global_viewer`` → search only (across all states — see models.py)
     - ``state_admin`` → search, upload, pipeline, review, approve_ingestion, delete_own
     - ``state_approver`` → search, upload, pipeline, review, approve_ingestion
     - ``state_contributor`` → search, upload, pipeline, review (no DEV publish)

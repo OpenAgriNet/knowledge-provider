@@ -1,27 +1,22 @@
 [project]
 name = "knowledge-provider"
 version = "0.1.0"
-description = "Bharat Vistaar Docs Pipeline: review-driven document ingestion pipeline"
+description = "OpenAgriNet Knowledge Provider for document ingestion, retrieval, and network publishing"
 requires-python = ">=3.10"
 dependencies = [
     # Temporal workflow engine
     "temporalio>=1.0.0",
-
     # FastAPI for REST API
     "fastapi>=0.100.0",
     "uvicorn>=0.20.0",
-
     # Chandra OCR 2 (remote vLLM/HF client; no local GPU/torch required in worker image)
     "chandra-ocr>=0.2.0",
-
     # pdf-inspector: fast local PDF classification + Markdown extraction for
     # text-based PDFs, so we can skip the OCR provider entirely for those pages.
     "pdf-inspector>=1.14.0",
-
     # Text processing
     "tiktoken>=0.5.0",
     "langchain-text-splitters>=0.0.1",
-
     # Vector search
     "qdrant-client>=1.12.0",
     # Local embeddings (default EMBEDDING_PROVIDER=sentence_transformers).
@@ -31,21 +26,14 @@ dependencies = [
     "transformers==4.56.1",
     "huggingface-hub==0.35.3",
     "torch",
-
     # Object storage
     "minio>=7.0.0",
-
-    # Master Scheme Catalog: Postgres store + Redis push to AI layer
-    "psycopg2-binary>=2.9.0",
-    "redis>=5.0.0",
-
+    "google-cloud-storage>=3,<4",
     # HTTP client
     "httpx>=0.24.0",
-
     # In-process language detection (replaces the lang-detect HTTP service for
     # shared-script disambiguation, e.g. Devanagari -> hi/mr)
     "pyfranc>=0.2.3",
-
     # Utilities
     "pydantic>=2.0.0",
     "python-multipart>=0.0.6",
@@ -53,16 +41,20 @@ dependencies = [
     "openpyxl>=3.1.0",
     "pypdf>=5.0.0",
     "PyMuPDF>=1.27.0",
-
+    # Postgres driver (sync) + connection pool
+    "psycopg[binary,pool]>=3.2",
     # Rate limiting
     "slowapi>=0.1.9",
-
     # Auth (Keycloak JWT validation)
     "PyJWT[crypto]>=2.8.0",
-
     "opentelemetry-sdk>=1.44.0",
     "opentelemetry-exporter-otlp-proto-http>=1.44.0",
     "opentelemetry-instrumentation-logging>=0.65b0",
+    "jsonschema>=4.23,<5",
+    "pyyaml>=6,<7",
+    "referencing>=0.35,<1",
+    "jsonata-python==0.7.0",
+    "google-re2==1.1.20251105",
 ]
 
 [dependency-groups]
@@ -71,6 +63,7 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",
     "ruff>=0.6.0",
+    "testcontainers[postgres]>=4.0.0",
 ]
 
 # sentence-transformers depends on torch; resolve it from the CPU-only wheel

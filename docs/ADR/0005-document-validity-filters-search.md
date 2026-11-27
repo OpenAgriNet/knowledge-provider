@@ -36,4 +36,4 @@ Consequences worth naming:
 - `add_years` and `DEFAULT_VALIDITY_YEARS` existed only to derive the old default end. Nothing derives one any more, so they were removed rather than left as dead code.
 - Clearing an end date is how a reviewer returns a document to never-expiring: a blank end is a real answer, not a missing one.
 
-The reviewer-facing date fields sit behind `VITE_DOCUMENT_VALIDITY_ENABLED` (default off), following the `VITE_AUTH_ENABLED` pattern. The flag gates **only the entry fields** — the backend stamps a period on every upload and search filters on it regardless — so enabling it exposes an existing capability rather than switching one on. With it off, classifying a document sends no dates at all and leaves the stored period untouched.
+The document metadata editor shows the start and end dates alongside other applicability fields. It saves the same document validity fields as the original classification form. Chunks inherit the saved period. Structured intake can leave both dates unspecified.

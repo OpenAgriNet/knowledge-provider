@@ -8,7 +8,7 @@ from datetime import datetime
 
 import pytest
 
-from pipeline.document_validity import (
+from pipeline.documents.document_validity import (
     DocumentValidityError,
     ValidityPeriod,
     day_of,

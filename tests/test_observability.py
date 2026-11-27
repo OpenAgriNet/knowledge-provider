@@ -4,7 +4,7 @@ import pytest
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter, SimpleLogRecordProcessor
 
-from pipeline import observability
+from pipeline.telemetry import logs as observability
 
 
 @pytest.fixture
@@ -50,7 +50,7 @@ def test_an_endpoint_attaches_one_handler(monkeypatch):
 
 def test_info_lines_from_root_and_module_loggers_are_exported(exported):
     logging.info("search request query=%r", "cotton pest")
-    logging.getLogger("pipeline.activities").warning("ocr retry")
+    logging.getLogger("pipeline.temporal.activities.processing").warning("ocr retry")
 
     assert _bodies(exported) == ["search request query='cotton pest'", "ocr retry"]
 
@@ -90,14 +90,14 @@ def test_console_prints_extras_as_key_value():
 
 
 def test_exported_line_keeps_its_level(exported):
-    logging.getLogger("pipeline.activities").error("ingest failed")
+    logging.getLogger("pipeline.temporal.activities.processing").error("ingest failed")
 
     [item] = exported.get_finished_logs()
     assert item.log_record.severity_text == "ERROR"
 
 
 def test_debug_lines_are_not_exported(exported):
-    logging.getLogger("pipeline.activities").debug("page text")
+    logging.getLogger("pipeline.temporal.activities.processing").debug("page text")
 
     assert _bodies(exported) == []
 

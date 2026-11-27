@@ -1,13 +1,15 @@
 import { useMemo, useState } from 'react'
 import { ChevronLeft, ChevronRight, Minus, Plus } from 'lucide-react'
 import { Document, Page, pdfjs } from 'react-pdf'
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { API_BASE } from '../config'
 import { authHeaders, getCurrentToken } from '../auth/keycloak'
 import { NoticeCard } from './NoticeCard'
 import { Button } from './ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 
-pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`
+pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
+const PDF_OPTIONS = { isEvalSupported: false }
 
 export default function PdfViewer({ workflowId, currentPage, onPageChange, numPages, setNumPages }) {
   const [scale, setScale] = useState(1.0)
@@ -68,6 +70,7 @@ export default function PdfViewer({ workflowId, currentPage, onPageChange, numPa
         <div className="flex justify-center">
           <Document
             file={pdfFile}
+            options={PDF_OPTIONS}
             onLoadSuccess={onDocumentLoadSuccess}
             loading={
               <div className="w-full max-w-md py-12">

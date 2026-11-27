@@ -1,6 +1,6 @@
 import pytest
 
-from pipeline.network_provider import Group, InvalidProviderIdError, ProviderNaming
+from pipeline.network.network_provider import Group, InvalidProviderIdError, ProviderNaming
 
 MAHARASHTRA = Group(code="mh", name="Maharashtra")
 

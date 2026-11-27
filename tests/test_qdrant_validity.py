@@ -5,13 +5,13 @@ store builds (no server needed), and the fake-client tests pin that search
 actually applies them and honours the injected clock.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 from pydantic import ValidationError
 from qdrant_client.http import models as qmodels
 
-from pipeline.document_validity import parse_day
+from pipeline.documents.document_validity import parse_day
 from pipeline.vector_store.qdrant_store import (
     PAYLOAD_FIELDS,
     QdrantVectorStore,
@@ -193,7 +193,7 @@ class TestSearchAppliesValidity:
     def test_defaults_to_the_real_clock(self):
         store = QdrantVectorStore(client=FakeClient())
 
-        assert store.today() == datetime.now().date().isoformat()
+        assert store.today() == datetime.now(timezone.utc).date().isoformat()
 
 
 class TestPayload:
@@ -296,3 +296,21 @@ class TestValidOnMustBeCanonical:
 
         assert result["valid_on"] == "2026-01-02"
         assert ("start_date", "lte", "2026-01-02") in dates_in(client.scroll_filter)
+
+
+@pytest.mark.unit
+def test_region_exclusion_applies_before_qdrant_returns_points():
+    from qdrant_client import QdrantClient
+
+    client = QdrantClient(":memory:")
+    client.create_collection("geography", vectors_config=qmodels.VectorParams(size=2, distance=qmodels.Distance.COSINE))
+    client.upsert("geography", [
+        qmodels.PointStruct(id=1, vector=[1.0, 0.0], payload={"coverage_area_keys": ["fixture:north"]}),
+        qmodels.PointStruct(id=2, vector=[1.0, 0.0], payload={"excluded_coverage_area_keys": ["fixture:north"]}),
+        qmodels.PointStruct(id=3, vector=[1.0, 0.0], payload={"coverage_area_keys": ["fixture:south"]}),
+        qmodels.PointStruct(id=4, vector=[1.0, 0.0], payload={}),
+    ])
+    points, _ = client.scroll("geography", scroll_filter=_build_filter(
+        applicability={"coverage_area_keys": ["fixture:north"]},
+    ))
+    assert {point.id for point in points} == {1, 4}

@@ -1,0 +1,62 @@
+{
+  "manifest": {
+    "capability": "openagrinet:AgricultureAdvisory",
+    "version": "v0.2",
+    "entrypoint": "https://openagrinet.github.io/network-specs/previews/bv-features/schema/AgricultureAdvisory/v0.2/attributes.yaml",
+    "component": "AgricultureAdvisory",
+    "files": {
+      "https://openagrinet.github.io/network-specs/previews/bv-features/schema/AgricultureAdvisory/v0.2/attributes.yaml": "AgricultureAdvisory.yaml",
+      "https://openagrinet.github.io/network-specs/previews/bv-features/schema/AgricultureResource/v0.2/attributes.yaml": "AgricultureResource.yaml",
+      "https://schema.beckn.io/Descriptor/v2.1/attributes.yaml": "Descriptor.yaml",
+      "https://schema.beckn.io/GeoJSONGeometry/v2.0/attributes.yaml": "GeoJSONGeometry.yaml",
+      "https://schema.beckn.io/Address/v2.0/attributes.yaml": "Address.yaml",
+      "https://schema.beckn.io/Location/v2.0/attributes.yaml": "Location.yaml",
+      "https://schema.nfh.global/Document/v2.0/attributes.yaml": "nfh-Document.yaml",
+      "https://schema.nfh.global/MediaFile/v2.0/attributes.yaml": "nfh-MediaFile.yaml",
+      "https://schema.nfh.global/GeoJSONGeometry/v2.0/attributes.yaml": "nfh-GeoJSONGeometry.yaml",
+      "https://schema.nfh.global/Address/v2.0/attributes.yaml": "nfh-Address.yaml"
+    }
+  },
+  "sources": {
+    "AgricultureAdvisory.yaml": {
+      "url": "https://raw.githubusercontent.com/OpenAgriNet/network-specs/8d3562d31ede46d76287d395f684ab603726eafa/schema/AgricultureAdvisory/v0.2/attributes.yaml",
+      "sha256": "72b04dbc7ad5a76625fb145d705fa977911b2e58196bde17a44923e1d4700ab2"
+    },
+    "AgricultureResource.yaml": {
+      "url": "https://raw.githubusercontent.com/OpenAgriNet/network-specs/8d3562d31ede46d76287d395f684ab603726eafa/schema/AgricultureResource/v0.2/attributes.yaml",
+      "sha256": "88256e5ab07f3df5e19d0497cbca22dd37b5efb8ef91b2656165649f29d2b651"
+    },
+    "Descriptor.yaml": {
+      "url": "https://schema.beckn.io/Descriptor/v2.1/attributes.yaml",
+      "sha256": "db7ee33ad720f59c8053623cb77ff91073b0550db435d654a074545d8b1df4fd"
+    },
+    "GeoJSONGeometry.yaml": {
+      "url": "https://schema.beckn.io/GeoJSONGeometry/v2.0/attributes.yaml",
+      "sha256": "c3e4ce4c9924c794b7b4b34ececeab445b97c8d1b24f4c44d94a981a9af55d36"
+    },
+    "Address.yaml": {
+      "url": "https://schema.beckn.io/Address/v2.0/attributes.yaml",
+      "sha256": "6a255d31818b700f82bebd8bb58896f8437b4bce95aa50d3c818d002f8b6b89d"
+    },
+    "Location.yaml": {
+      "url": "https://schema.beckn.io/Location/v2.0/attributes.yaml",
+      "sha256": "87c930b2fa95b26779920bf0e598b5bf9c5839e16751c6a8a4f02d2d8055817b"
+    },
+    "nfh-Document.yaml": {
+      "url": "https://schema.nfh.global/Document/v2.0/attributes.yaml",
+      "sha256": "f116b71b45737c8576df7d95baa49be06b0786ff7a54da54d465d8fca932d9ea"
+    },
+    "nfh-MediaFile.yaml": {
+      "url": "https://schema.nfh.global/MediaFile/v2.0/attributes.yaml",
+      "sha256": "cf2270897b4fe90cf04125afd508279fd947c29775e8e094f8a2b3a1bda53305"
+    },
+    "nfh-GeoJSONGeometry.yaml": {
+      "url": "https://schema.nfh.global/GeoJSONGeometry/v2.0/attributes.yaml",
+      "sha256": "c3e4ce4c9924c794b7b4b34ececeab445b97c8d1b24f4c44d94a981a9af55d36"
+    },
+    "nfh-Address.yaml": {
+      "url": "https://schema.nfh.global/Address/v2.0/attributes.yaml",
+      "sha256": "6a255d31818b700f82bebd8bb58896f8437b4bce95aa50d3c818d002f8b6b89d"
+    }
+  }
+}

@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Document, Page, pdfjs } from 'react-pdf'
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { API_BASE } from '../config'
 import { authHeaders, getCurrentToken } from '../auth/keycloak'
 
-pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`
+pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
+const PDF_OPTIONS = { isEvalSupported: false }
 
 function buildAuthedPdfFile(workflowId) {
   if (!workflowId) return null
@@ -49,6 +51,7 @@ export default function SourcePdfPreview({ workflowId, currentPage }) {
       <div className="flex min-h-0 flex-1 justify-center overflow-auto p-2">
         <Document
           file={file}
+          options={PDF_OPTIONS}
           loading={
             <div className="flex h-40 w-full items-center justify-center">
               <p className="text-xs text-muted-foreground">Loading PDF…</p>

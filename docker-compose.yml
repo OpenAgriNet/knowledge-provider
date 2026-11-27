@@ -1,29 +1,19 @@
-# Unified docker-compose — dev and prod use the same file. Every app
-# service (api/worker/ui/keycloak) declares both build: and image: — pick
-# which one wins with the command you run:
-#
-#   Dev (build from source):
-#     cp .env.example .env    # fill all secrets
-#     docker compose --env-file .env up -d --build
-#
-#   Deploy (pull pre-built GHCR images, no source checkout needed):
-#     cp .env.example .env    # fill all secrets, set IMAGE_TAG
-#     docker compose --env-file .env pull
-#     docker compose --env-file .env up -d
+# Self-hosted Compose stack with one PostgreSQL server.
+# See ENV.md for configuration and migration.
 #
 # Profiles:
 #   (default) — all core services
-#   ops       — also starts temporal-ui and keycloak-ui (already included in keycloak)
+#   ops       — also starts Temporal UI
 #   observability — also starts otel-collector and clickhouse; set
 #                   OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318 in .env
 #
 # Host ports (all bound to 127.0.0.1 for nginx reverse-proxy; override in .env):
 #   API          127.0.0.1:${API_HOST_PORT:-8011}:8001
-#   UI           127.0.0.1:${UI_HOST_PORT:-3011}:80
-#   Keycloak     127.0.0.1:${KEYCLOAK_HOST_PORT:-8081}:8080
-#   Temporal     127.0.0.1:7233:7233
-#   MinIO API    127.0.0.1:9000:9000
-#   MinIO UI     127.0.0.1:9001:9001
+#   UI           127.0.0.1:${UI_HOST_PORT:-3011}:8080
+#   Postgres     127.0.0.1:${DB_HOST_PORT:-5433}:5432
+#   Temporal     127.0.0.1:${TEMPORAL_HOST_PORT:-7233}:7233
+#   MinIO API    127.0.0.1:${MINIO_API_PORT:-9000}:9000
+#   MinIO UI     127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001
 #   Temporal UI  127.0.0.1:${TEMPORAL_UI_PORT:-8090}:8080  (profile: ops)
 #   ClickHouse   127.0.0.1:${CLICKHOUSE_HTTP_PORT:-18123}:8123  (profile: observability)
 
@@ -32,205 +22,167 @@ services:
   # ---------------------------------------------------------------------------
   # Temporal infrastructure
   # ---------------------------------------------------------------------------
-  temporal-db:
-    image: postgres:15-alpine
-    platform: linux/amd64
+  temporal-schema:
+    image: ${KP_TEMPORAL_TOOLS_IMAGE:-dhi.io/temporalio-admin-tools:1.32.2}
+    user: "1000:1000"
+    depends_on:
+      postgres-init:
+        condition: service_completed_successfully
     environment:
-      POSTGRES_USER: temporal
-      POSTGRES_PASSWORD: temporal
-    volumes:
-      - temporal-db-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U temporal"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    restart: unless-stopped
+      SQL_PLUGIN: postgres12
+      SQL_HOST: postgres
+      SQL_PORT: "5432"
+      SQL_USER: temporal
+      SQL_PASSWORD: ${TEMPORAL_DB_PASSWORD:?Set TEMPORAL_DB_PASSWORD in .env}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        temporal-sql-tool --db temporal setup-schema -v 0.0
+        temporal-sql-tool --db temporal update-schema -d /etc/temporal/schema/postgresql/v12/temporal/versioned
+        temporal-sql-tool --db temporal_visibility setup-schema -v 0.0
+        temporal-sql-tool --db temporal_visibility update-schema -d /etc/temporal/schema/postgresql/v12/visibility/versioned
 
   temporal:
-    image: temporalio/auto-setup:latest
-    platform: linux/amd64
+    image: ${KP_TEMPORAL_IMAGE:-dhi.io/temporalio-server:1.32.2}
+    entrypoint: ["/bin/bash", "/opt/knowledge-provider/start-temporal.sh"]
+    volumes:
+      - ./deploy/start-temporal.sh:/opt/knowledge-provider/start-temporal.sh:ro
     depends_on:
-      temporal-db:
-        condition: service_healthy
+      temporal-schema:
+        condition: service_completed_successfully
     environment:
-      - DB=postgres12
-      - DB_PORT=5432
-      - POSTGRES_USER=temporal
-      - POSTGRES_PWD=temporal
-      - POSTGRES_SEEDS=temporal-db
-    ports:
-      - "127.0.0.1:7233:7233"
-    healthcheck:
-      test: ["CMD", "tctl", "--address", "temporal:7233", "cluster", "health"]
-      interval: 20s
-      timeout: 10s
-      retries: 10
-      start_period: 60s
+      DB: postgres12
+      DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/config/dynamicconfig/docker.yaml
+      DB_PORT: "5432"
+      POSTGRES_SEEDS: postgres
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: ${TEMPORAL_DB_PASSWORD:?Set TEMPORAL_DB_PASSWORD in .env}
+      NUM_HISTORY_SHARDS: ${TEMPORAL_HISTORY_SHARDS:-4}
+    ports: ["127.0.0.1:${TEMPORAL_HOST_PORT:-7233}:7233"]
     restart: unless-stopped
+    configs:
+      - source: temporal-dynamic-config
+        target: /etc/temporal/config/dynamicconfig/docker.yaml
+
+  temporal-namespace:
+    image: ${KP_TEMPORAL_TOOLS_IMAGE:-dhi.io/temporalio-admin-tools:1.32.2}
+    user: "1000:1000"
+    depends_on:
+      temporal:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        for attempt in $$(seq 1 60); do
+          if temporal operator cluster health --address temporal:7233; then
+            temporal operator namespace describe --namespace default --address temporal:7233 >/dev/null 2>&1 ||
+              temporal operator namespace create --namespace default --address temporal:7233
+            exit 0
+          fi
+          sleep 2
+        done
+        exit 1
 
   temporal-ui:
-    image: temporalio/ui:latest
-    platform: linux/amd64
+    image: ${KP_TEMPORAL_UI_IMAGE:-dhi.io/temporalio-ui:2.58.1}
     depends_on:
-      - temporal
+      temporal-namespace:
+        condition: service_completed_successfully
     environment:
-      - TEMPORAL_ADDRESS=temporal:7233
-    ports:
-      - "127.0.0.1:${TEMPORAL_UI_PORT:-8090}:8080"
-    restart: unless-stopped
-    profiles:
-      - ops
+      TEMPORAL_ADDRESS: temporal:7233
+    ports: ["127.0.0.1:${TEMPORAL_UI_PORT:-8090}:8080"]
+    profiles: [ops]
 
   # ---------------------------------------------------------------------------
   # MinIO object storage
   # ---------------------------------------------------------------------------
   minio:
-    image: minio/minio:latest
-    platform: linux/amd64
-    command: server /data --console-address ":9001"
+    image: ${KP_MINIO_IMAGE:-dhi.io/minio:0.20251015.172955}
+    command: ["server", "/data", "--console-address", ":9001"]
     environment:
-      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
-      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
     ports:
-      - "127.0.0.1:9000:9000"
-      - "127.0.0.1:9001:9001"
+      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
-      - minio-data:/data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 20s
-      timeout: 10s
-      retries: 5
+      - minio-dhi-data:/data
     restart: unless-stopped
 
-  # Creates the default bucket on first boot then exits.
-  minio-init:
-    image: minio/mc:latest
-    platform: linux/amd64
-    depends_on:
-      minio:
-        condition: service_healthy
-    entrypoint: >
-      /bin/sh -c "
-      mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD};
-      mc mb -p local/$${MINIO_BUCKET:-documents} || true;
-      exit 0;
-      "
+  # ---------------------------------------------------------------------------
+  # One PostgreSQL server with a separate role for each service.
+  # The new volume leaves earlier database volumes available for a logical restore.
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: ${KP_POSTGRES_IMAGE:-dhi.io/postgres:18.7}
     environment:
-      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
-      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
-      MINIO_BUCKET: ${MINIO_BUCKET:-documents}
-    restart: "no"
+      POSTGRES_USER: ${POSTGRES_USER:-kp_db_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-${POSTGRES_SHARED_BOOTSTRAP_PASSWORD:?Set POSTGRES_PASSWORD in .env}}
+      POSTGRES_DB: postgres
+      POSTGRES_INITDB_ARGS: --auth-local=peer --auth-host=scram-sha-256
+    ports: ["127.0.0.1:${DB_HOST_PORT:-5433}:5432"]
+    restart: unless-stopped
+    volumes:
+      - shared-postgres-dhi:/var/lib/postgresql/18/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d postgres"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  postgres-init:
+    image: ${KP_POSTGRES_IMAGE:-dhi.io/postgres:18.7}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/opt/knowledge-provider/init-shared-postgres.sh"]
+    environment:
+      PGHOST: postgres
+      POSTGRES_USER: ${POSTGRES_USER:-kp_db_admin}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-${POSTGRES_SHARED_BOOTSTRAP_PASSWORD:?Set POSTGRES_PASSWORD in .env}}
+      KP_DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      TEMPORAL_DB_PASSWORD: ${TEMPORAL_DB_PASSWORD:?Set TEMPORAL_DB_PASSWORD in .env}
+      KEYCLOAK_DB_PASSWORD: ${KC_DB_PASSWORD:?Set KC_DB_PASSWORD in .env}
+    volumes:
+      - ./deploy/init-shared-postgres.sh:/opt/knowledge-provider/init-shared-postgres.sh:ro
 
   # ---------------------------------------------------------------------------
-  # Qdrant — DEV vector index (see docs/SYSTEM_DESIGN.md's DEV vs PROD dual
-  # indexing). api/worker's VECTOR_DB_URL is always pointed at this bundled
-  # instance below (same as TEMPORAL_HOST/MINIO_ENDPOINT) — there's no
-  # external-DEV-Qdrant override inside Docker; run the app outside Docker
-  # entirely if you need VECTOR_DB_URL to mean something else.
-  # PROD_VECTOR_DB_URL is never bundled — promotion to PROD always targets a
-  # real, separately-managed deployment, on purpose.
+  # Qdrant search index. The PostgreSQL data remains the source for a rebuild.
   # ---------------------------------------------------------------------------
   qdrant:
-    image: qdrant/qdrant:latest
-    platform: linux/amd64
-    volumes:
-      - qdrant-data:/qdrant/storage
-    ports:
-      - "127.0.0.1:6333:6333"
-    healthcheck:
-      # No curl/wget in this image — bash's /dev/tcp is a builtin, works without one.
-      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333' 2>/dev/null"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-    restart: unless-stopped
-
-  # ---------------------------------------------------------------------------
-  # Keycloak's database — bundled by default so the stack works out of the
-  # box with no external infra required. A deployment that wants to point at
-  # its own/shared Postgres instead (e.g. OAN prod, which shares one Postgres
-  # host with oan-notification-service) can still do so: just set KC_DB_HOST
-  # (and KC_DB_SSLMODE=require) in .env to override this service entirely —
-  # nothing here forces you onto the bundled one, it's only the default.
-  # ---------------------------------------------------------------------------
-  keycloak-db:
-    image: postgres:15-alpine
-    platform: linux/amd64
+    image: ${KP_QDRANT_IMAGE:-dhi.io/qdrant:1.20.1}
     environment:
-      POSTGRES_USER: ${KC_DB_USERNAME:-keycloak}
-      POSTGRES_PASSWORD: ${KC_DB_PASSWORD:-keycloak}
-      POSTGRES_DB: ${KC_DB_NAME:-keycloak}
+      QDRANT__SERVICE__API_KEY: ${VECTOR_DB_API_KEY:?Set VECTOR_DB_API_KEY in .env}
     volumes:
-      - keycloak-db-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${KC_DB_USERNAME:-keycloak}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
+      - qdrant-dhi-data:/qdrant/storage
+    ports:
+      - "127.0.0.1:${QDRANT_HTTP_PORT:-6333}:6333"
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # Keycloak (auth) — built from keycloak/Dockerfile which pre-installs the
-  # email-OTP 2FA plugin (mesutpiskin/keycloak-2fa-email-authenticator).
-  #
-  # SMTP details come exclusively from .env (KC_SMTP_* vars) — nothing is
-  # hard-coded in the image or in this file.
-  #
-  # First-boot: --import-realm loads keycloak/import/*.json automatically.
-  # Subsequent boots: the flag is a no-op when the realm already exists.
+  # Keycloak realms and browser flows are managed by the deployment operator.
   # ---------------------------------------------------------------------------
   keycloak:
-    image: ghcr.io/openagrinet/knowledge-provider-keycloak:${IMAGE_TAG:-latest}
-    platform: linux/amd64
-    build:
-      context: ./keycloak
-      dockerfile: Dockerfile
-      # No ARGs that reference secrets — JAR URL is a public GitHub URL.
+    image: ${KP_KEYCLOAK_IMAGE:-dhi.io/keycloak:26.8.2}
     depends_on:
-      keycloak-db:
-        condition: service_healthy
-    env_file:
-      - .env
+      postgres-init:
+        condition: service_completed_successfully
     environment:
-      # DB connection — defaults to the bundled keycloak-db above.
-      # KC_DB_HOST/PORT/NAME/SSLMODE in .env override to point elsewhere
-      # (e.g. an external shared Postgres in production).
       KC_DB: postgres
-      KC_DB_URL: jdbc:postgresql://${KC_DB_HOST:-keycloak-db}:${KC_DB_PORT:-5432}/${KC_DB_NAME:-keycloak}?sslmode=${KC_DB_SSLMODE:-disable}
+      KC_DB_URL: jdbc:postgresql://${KC_DB_HOST:-postgres}:${KC_DB_PORT:-5432}/${KC_DB_NAME:-keycloak}?sslmode=${KC_DB_SSLMODE:-disable}
       KC_DB_USERNAME: ${KC_DB_USERNAME:-keycloak}
-      KC_DB_PASSWORD: ${KC_DB_PASSWORD:-keycloak}
+      KC_DB_PASSWORD: ${KC_DB_PASSWORD:?Set KC_DB_PASSWORD in .env}
       # Admin account bootstrap (Keycloak 26.x var names).
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_ADMIN:-admin}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD}
-      # Hostname — update KC_HOSTNAME in .env to your public URL in prod.
-      KC_HOSTNAME: ${KC_HOSTNAME:-localhost}
-      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME: ${KC_HOSTNAME:-http://keycloak:8080/auth}
       KC_HTTP_ENABLED: "true"
-      KC_PROXY_HEADERS: xforwarded
-      # When nginx proxies /auth/ → container, tell Keycloak the path prefix.
-      # This makes issuer URLs, JWKS URLs, and redirect URIs all include /auth.
-      # For direct container access (dev, no nginx) leave empty or omit.
       KC_HTTP_RELATIVE_PATH: ${KC_HTTP_RELATIVE_PATH:-/auth}
-      # SMTP (email-OTP plugin reads the realm's SMTP settings; Keycloak
-      # picks these up and writes them into the realm on first import, or
-      # you can configure them in the Admin UI → Realm settings → Email).
-      KC_SPI_EMAIL_SENDER_HOST: ${KC_SMTP_HOST}
-      KC_SPI_EMAIL_SENDER_PORT: ${KC_SMTP_PORT:-587}
-      KC_SPI_EMAIL_SENDER_FROM: ${KC_SMTP_FROM}
-      KC_SPI_EMAIL_SENDER_FROM_DISPLAY_NAME: ${KC_SMTP_FROM_DISPLAY_NAME:-BharatVistaar}
-      KC_SPI_EMAIL_SENDER_AUTH: ${KC_SMTP_AUTH:-true}
-      KC_SPI_EMAIL_SENDER_STARTTLS: ${KC_SMTP_STARTTLS:-true}
-      KC_SPI_EMAIL_SENDER_SSL: ${KC_SMTP_SSL:-false}
-      KC_SPI_EMAIL_SENDER_USER: ${KC_SMTP_USERNAME}
-      KC_SPI_EMAIL_SENDER_PASSWORD: ${KC_SMTP_PASSWORD}
-    ports:
-      - "127.0.0.1:${KEYCLOAK_HOST_PORT:-8081}:8080"
-    # --import-realm is a no-op if the realm already exists, so safe to leave on.
-    command: start --import-realm
+      JAVA_OPTS_APPEND: ${JAVA_OPTS_APPEND:-}
+    command: start
     volumes:
-      - keycloak-data:/opt/keycloak/data
+      - keycloak-dhi-data:/opt/keycloak/data
+      - ${KEYCLOAK_EMAIL_OTP_JAR:?Set the reviewed Keycloak email OTP JAR path}:/opt/keycloak/providers/email-otp-authenticator.jar:ro
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -241,40 +193,50 @@ services:
   # ---------------------------------------------------------------------------
   api:
     image: ghcr.io/openagrinet/knowledge-provider:${IMAGE_TAG:-latest}
-    platform: linux/amd64
     build:
       context: .
       dockerfile: Dockerfile
     env_file:
-      - .env
+      - ${KP_ENV_FILE:-.env}
     environment:
       # Docker-network overrides — these replace the localhost values in .env
       TEMPORAL_HOST: temporal:7233
-      MINIO_ENDPOINT: minio:9000
+      OBJECT_STORE_CREATE_BUCKET: ${OBJECT_STORE_CREATE_BUCKET:-true}
       VECTOR_DB_URL: http://qdrant:6333
-      DOCUMENT_DB_PATH: /data/documents.db
-      ALLOWED_FILE_PATHS: /app/books,/data/documents
+      DATABASE_URL: ${DATABASE_URL:-postgresql://knowledge_provider@postgres:5432/knowledge_provider}
+      PGPASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      POSTGRES_SHARED_BOOTSTRAP_PASSWORD: ""
+      POSTGRES_PASSWORD: ""
+      MINIO_ROOT_USER: ""
+      MINIO_ROOT_PASSWORD: ""
+      TEMPORAL_DB_PASSWORD: ""
+      KC_DB_PASSWORD: ""
+      KC_ADMIN_PASSWORD: ""
       # HF cache path propagated into the container
       HF_HOME: ${HF_HOME:-/opt/hf-cache}
-      HF_HUB_CACHE: ${HF_HOME:-/opt/hf-cache}
+      HF_HUB_CACHE: ${HF_HUB_CACHE:-${HF_HOME:-/opt/hf-cache}}
       OTEL_SERVICE_NAME: knowledge-provider-api
     ports:
       - "127.0.0.1:${API_HOST_PORT:-8011}:8001"
     depends_on:
-      temporal:
-        condition: service_healthy
+      postgres-init:
+        condition: service_completed_successfully
+      temporal-namespace:
+        condition: service_completed_successfully
       minio:
-        condition: service_healthy
+        condition: service_started
       qdrant:
-        condition: service_healthy
+        condition: service_started
       keycloak:
         condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://localhost:8001/health', timeout=2).close()"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
     command: uvicorn pipeline.api:app --host 0.0.0.0 --port 8001
     volumes:
-      - ./books:/app/books:ro
-      - sqlite-data:/data
-      - documents-data:/data/documents
-      - ${HF_HOME:-/opt/hf-cache}:${HF_HOME:-/opt/hf-cache}
+      - ${MODEL_CACHE_MOUNT:-model-cache}:${HF_HOME:-/opt/hf-cache}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
@@ -284,37 +246,42 @@ services:
   # ---------------------------------------------------------------------------
   worker:
     image: ghcr.io/openagrinet/knowledge-provider:${IMAGE_TAG:-latest}
-    platform: linux/amd64
     build:
       context: .
       dockerfile: Dockerfile
     env_file:
-      - .env
+      - ${KP_ENV_FILE:-.env}
     environment:
       PYTHONUNBUFFERED: "1"
       TEMPORAL_HOST: temporal:7233
-      MINIO_ENDPOINT: minio:9000
+      OBJECT_STORE_CREATE_BUCKET: ${OBJECT_STORE_CREATE_BUCKET:-true}
       VECTOR_DB_URL: http://qdrant:6333
-      DOCUMENT_DB_PATH: /data/documents.db
-      ALLOWED_FILE_PATHS: /app/books,/data/documents
+      DATABASE_URL: ${DATABASE_URL:-postgresql://knowledge_provider@postgres:5432/knowledge_provider}
+      PGPASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      POSTGRES_SHARED_BOOTSTRAP_PASSWORD: ""
+      POSTGRES_PASSWORD: ""
+      MINIO_ROOT_USER: ""
+      MINIO_ROOT_PASSWORD: ""
+      TEMPORAL_DB_PASSWORD: ""
+      KC_DB_PASSWORD: ""
+      KC_ADMIN_PASSWORD: ""
       HF_HOME: ${HF_HOME:-/opt/hf-cache}
-      HF_HUB_CACHE: ${HF_HOME:-/opt/hf-cache}
+      HF_HUB_CACHE: ${HF_HUB_CACHE:-${HF_HOME:-/opt/hf-cache}}
       OTEL_SERVICE_NAME: knowledge-provider-worker
     depends_on:
-      temporal:
-        condition: service_healthy
+      postgres-init:
+        condition: service_completed_successfully
+      temporal-namespace:
+        condition: service_completed_successfully
       minio:
-        condition: service_healthy
-      qdrant:
-        condition: service_healthy
-      api:
         condition: service_started
+      qdrant:
+        condition: service_started
+      api:
+        condition: service_healthy
     command: python -m pipeline.worker
     volumes:
-      - ./books:/app/books:ro
-      - sqlite-data:/data
-      - documents-data:/data/documents
-      - ${HF_HOME:-/opt/hf-cache}:${HF_HOME:-/opt/hf-cache}
+      - ${MODEL_CACHE_MOUNT:-model-cache}:${HF_HOME:-/opt/hf-cache}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
@@ -325,31 +292,21 @@ services:
   # ---------------------------------------------------------------------------
   ui:
     image: ghcr.io/openagrinet/knowledge-provider-ui:${IMAGE_TAG:-latest}
-    platform: linux/amd64
     build:
       context: ./ui
       dockerfile: Dockerfile.prod
-      # Measured on the sandbox host: default bridge networking adds ~30x
-      # latency per request (3.18s vs 0.07s with host networking), which
-      # compounds across npm ci's hundreds of per-package requests into a
-      # multi-minute+ hang. Host networking during build avoids that.
-      network: host
       args:
-        VITE_API_BASE: ${VITE_API_BASE:-/docs-pipeline-api}
-        VITE_BASE: ${VITE_BASE:-/docs-pipeline/}
-        VITE_KEYCLOAK_URL: ${VITE_KEYCLOAK_URL:-}
-        VITE_KEYCLOAK_REALM: ${VITE_KEYCLOAK_REALM:-}
-        VITE_KEYCLOAK_CLIENT_ID: ${VITE_KEYCLOAK_CLIENT_ID:-}
-        VITE_KEYCLOAK_IDP_HINT: ${VITE_KEYCLOAK_IDP_HINT:-}
-        VITE_AUTH_ENABLED: ${VITE_AUTH_ENABLED:-false}
+        VITE_API_BASE: ${VITE_API_BASE:-/knowledge-provider-api}
+        VITE_BASE: ${VITE_BASE:-/knowledge-provider/}
+        VITE_AUTH_ENABLED: ${VITE_AUTH_ENABLED:-true}
     ports:
-      - "127.0.0.1:${UI_HOST_PORT:-3011}:80"
+      - "127.0.0.1:${UI_HOST_PORT:-3011}:8080"
     depends_on:
       - api
     restart: unless-stopped
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:${OTEL_COLLECTOR_TAG:-0.161.0}
+    image: ${KP_OTEL_COLLECTOR_IMAGE:-dhi.io/opentelemetry-collector:0.165.0-contrib}
     profiles: [observability]
     command:
       - --config=/etc/otel/collector.yaml
@@ -364,29 +321,32 @@ services:
     restart: unless-stopped
 
   clickhouse:
-    image: clickhouse/clickhouse-server:${CLICKHOUSE_TAG:-25.12}
+    image: ${KP_CLICKHOUSE_IMAGE:-dhi.io/clickhouse-server:26.10.2}
     profiles: [observability]
     environment:
       CLICKHOUSE_DB: otel
       CLICKHOUSE_USER: knowledge
       CLICKHOUSE_PASSWORD: knowledge
     volumes:
-      - clickhouse-data:/var/lib/clickhouse
+      - clickhouse-dhi-data:/var/lib/clickhouse
     ports:
       - "127.0.0.1:${CLICKHOUSE_HTTP_PORT:-18123}:8123"
     healthcheck:
-      test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
       interval: 5s
       timeout: 5s
       retries: 10
     restart: unless-stopped
 
+configs:
+  temporal-dynamic-config:
+    content: |
+      {}
+
 volumes:
-  temporal-db-data:
-  qdrant-data:
-  keycloak-db-data:
-  keycloak-data:
-  minio-data:
-  sqlite-data:
-  documents-data:
-  clickhouse-data:
+  shared-postgres-dhi:
+  qdrant-dhi-data:
+  keycloak-dhi-data:
+  minio-dhi-data:
+  model-cache:
+  clickhouse-dhi-data:

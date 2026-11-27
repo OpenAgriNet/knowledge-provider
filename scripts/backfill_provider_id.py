@@ -13,8 +13,12 @@ from qdrant_client.http import models as qmodels  # noqa: E402
 
 from pipeline import db  # noqa: E402
 from pipeline.auth.tenancy import group_for_instance  # noqa: E402
-from pipeline.network_group import load_provider_naming, named_group, provider_for  # noqa: E402
-from pipeline.network_provider import InvalidProviderIdError, ProviderNaming  # noqa: E402
+from pipeline.network.network_group import (  # noqa: E402
+    load_provider_naming,
+    named_group,
+    provider_for,
+)
+from pipeline.network.network_provider import InvalidProviderIdError, ProviderNaming  # noqa: E402
 from pipeline.vector_store import get_default_index_name  # noqa: E402
 from pipeline.vector_store.qdrant_store import get_qdrant_client  # noqa: E402
 
@@ -41,7 +45,7 @@ def _env(name: str) -> str:
 
 
 def dev_collections() -> list[str]:
-    indexed = (row["index_name"] for row in db.list_index_summaries(include_demo=True, include_disabled=True))
+    indexed = (row["index_name"] for row in db.list_index_summaries(include_disabled=True))
     return list(dict.fromkeys(name for name in (get_default_index_name(), *indexed) if name))
 
 
@@ -64,7 +68,7 @@ def targets_from_env() -> list[Target]:
 def all_documents() -> Iterable[dict]:
     offset = 0
     while True:
-        page = db.list_documents(limit=PAGE_SIZE, offset=offset, include_demo=True, include_disabled=True)
+        page = db.list_documents(limit=PAGE_SIZE, offset=offset, include_disabled=True)
         yield from page
         if len(page) < PAGE_SIZE:
             return
@@ -74,9 +78,13 @@ def all_documents() -> Iterable[dict]:
 def plan(documents: Iterable[dict], naming: ProviderNaming) -> list[PlannedDocument]:
     planned = []
     for doc in documents:
+        kind = doc.get("kind")
+        if not kind:
+            planned.append(PlannedDocument(doc["workflow_id"], None, "Document kind is missing"))
+            continue
         group = named_group(group_for_instance(doc.get("instance")))
         try:
-            provider = provider_for(naming, doc.get("document_kind"), group)
+            provider = provider_for(naming, kind, group)
         except InvalidProviderIdError as exc:
             planned.append(PlannedDocument(doc["workflow_id"], None, str(exc)))
             continue
@@ -86,7 +94,11 @@ def plan(documents: Iterable[dict], naming: ProviderNaming) -> list[PlannedDocum
 
 def _workflow_filter(workflow_id: str) -> qmodels.Filter:
     return qmodels.Filter(
-        must=[qmodels.FieldCondition(key="workflow_id", match=qmodels.MatchValue(value=workflow_id))]
+        must=[
+            qmodels.FieldCondition(key="workflow_id", match=qmodels.MatchValue(value=workflow_id)),
+            qmodels.IsEmptyCondition(is_empty=qmodels.PayloadField(key="revision_id")),
+            qmodels.IsEmptyCondition(is_empty=qmodels.PayloadField(key="release_network_id")),
+        ],
     )
 
 

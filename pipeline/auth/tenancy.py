@@ -1,9 +1,11 @@
-"""Instance (tenant / state) access helpers — Plan 2 (Keycloak + document.instance).
+"""Instance (tenant / state) access helpers — Keycloak groups + document instances.
 
-Access who-sees-what-state comes from the JWT (Keycloak groups). The database
-only stores which state a *document* belongs to (``documents.instance``).
+Who-sees-what-state comes from the JWT (Keycloak groups). The database only
+stores which provider owns a document through
+``documents.provider_id -> instances.id``; the document dict carries its
+tenant code as ``instance``.
 
-Plan 2 conventions:
+Conventions:
   - State codes: lowercase (``mh``, ``up``, …) matching Keycloak ``/states/MH/...``
   - Portal / BV platform docs: ``bv`` (Bharat Vistaar)
   - Super admin (``/global/super-admin``): unrestricted instances
@@ -17,20 +19,22 @@ from fastapi import HTTPException
 
 from .models import AuthUser
 
-# Bharat Vistaar portal / platform-wide documents (not a state).
-PORTAL_INSTANCE = "bv"
-
 
 def default_instance() -> str:
-    """Fallback instance id for new docs and legacy rows without a value."""
+    """Fallback instance code for new docs and legacy rows without a value."""
     return (os.environ.get("DEFAULT_INSTANCE") or "default").strip().lower() or "default"
 
 
 def portal_instance() -> str:
-    return (os.environ.get("PORTAL_INSTANCE") or PORTAL_INSTANCE).strip().lower() or PORTAL_INSTANCE
+    return configured_portal_instance() or default_instance()
+
+
+def configured_portal_instance() -> str | None:
+    return os.environ.get("PORTAL_INSTANCE", "").strip().lower() or None
 
 
 def group_for_instance(instance: str | None) -> str | None:
+    """The named network instance of a tenant code, or None for the portal / default tenant."""
     code = (instance or "").strip().lower()
     if not code or code in {portal_instance(), default_instance()}:
         return None
@@ -49,7 +53,7 @@ def unrestricted(user: AuthUser) -> bool:
 
 def allowed_instances(user: AuthUser) -> set[str] | None:
     """
-    Return the set of instance ids the user may access, or None if unrestricted.
+    Return the set of instance codes the user may access, or None if unrestricted.
     """
     if unrestricted(user):
         return None
@@ -66,7 +70,7 @@ def user_can_access_instance(user: AuthUser, instance: str | None) -> bool:
 
 
 def assert_instance_access(user: AuthUser, instance: str | None) -> str:
-    """Raise 403 if user cannot access instance; return normalized instance id."""
+    """Raise 403 if user cannot access instance; return normalized instance code."""
     normalized = normalize_instance(instance)
     if not user_can_access_instance(user, normalized):
         raise HTTPException(403, f"No access to instance: {normalized}")
@@ -74,7 +78,7 @@ def assert_instance_access(user: AuthUser, instance: str | None) -> str:
 
 
 def resolve_create_instance(user: AuthUser, requested: str | None = None) -> str:
-    """Pick document ``instance`` at create/upload time (Plan 2).
+    """Pick the document's ``instance`` at create/upload time.
 
     - Super admin / bypass: use requested, else portal ``bv``, else DEFAULT_INSTANCE.
     - Single-state user: that state (requested must match if provided).
@@ -93,7 +97,7 @@ def resolve_create_instance(user: AuthUser, requested: str | None = None) -> str
     if not allowed:
         raise HTTPException(
             403,
-            "No state assigned. Join a Keycloak group such as /states/MH/admin or /states/MH/view.",
+            "No provider access is assigned. Ask an administrator to grant access in Keycloak.",
         )
 
     if requested_norm:
@@ -106,7 +110,7 @@ def resolve_create_instance(user: AuthUser, requested: str | None = None) -> str
 
     raise HTTPException(
         400,
-        "instance is required when you have multiple states; "
+        "instance is required when you have access to multiple providers; "
         f"choose one of: {', '.join(sorted(allowed))}",
     )
 

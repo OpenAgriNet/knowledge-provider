@@ -76,7 +76,7 @@ export default function IndexesView() {
 
   if (loading) {
     return (
-      <div className="page-shell space-y-4">
+      <div className="page-shell">
         <Skeleton className="h-8 w-32" />
         <Skeleton className="h-4 w-48 mt-1" />
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
@@ -90,7 +90,7 @@ export default function IndexesView() {
 
   if (!error && indexRows.length === 0) {
     return (
-      <div className="page-shell space-y-4">
+      <div className="page-shell">
         <div>
           <h1 className="text-2xl font-serif font-semibold text-foreground">Indexes</h1>
           <p className="text-sm text-muted-foreground mt-1">Search index health and status</p>
@@ -105,7 +105,7 @@ export default function IndexesView() {
   }
 
   return (
-    <div className="page-shell space-y-4">
+    <div className="page-shell">
       <div>
         <h1 className="text-2xl font-serif font-semibold text-foreground">Indexes</h1>
         <p className="text-sm text-muted-foreground mt-1">Search index health and status</p>

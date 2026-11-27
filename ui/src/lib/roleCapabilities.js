@@ -3,9 +3,9 @@
  * Keep in sync with Keycloak roles + pipeline/auth/permissions.py.
  *
  * Model:
- *   Bharat Vistaar (global)
- *     - super_admin       — full platform access, all states
- *     - bh_viewer         — view-only, all states
+ *   Global platform roles
+ *     - super_admin       — full platform access, all instances
+ *     - global_viewer     — read-only, all instances
  *   State / centre (a centre is just another tenant code)
  *     - state_admin       — everything in the state
  *     - state_approver    — everything except delete
@@ -15,7 +15,7 @@
 
 export const UserRole = {
   SUPER_ADMIN: 'super_admin',
-  BH_VIEWER: 'bh_viewer',
+  GLOBAL_VIEWER: 'global_viewer',
   STATE_ADMIN: 'state_admin',
   STATE_APPROVER: 'state_approver',
   STATE_CONTRIBUTOR: 'state_contributor',
@@ -37,7 +37,7 @@ export const ROLE_PERMISSIONS = {
     'admin',
     'manage_users',
   ],
-  [UserRole.BH_VIEWER]: ['search'],
+  [UserRole.GLOBAL_VIEWER]: ['search'],
   [UserRole.STATE_ADMIN]: [
     'search',
     'upload',
@@ -55,7 +55,7 @@ export const ROLE_PERMISSIONS = {
 
 /** Does a canonical role grant a permission id? */
 export function roleGrants(roleId, permission) {
-  return (ROLE_PERMISSIONS[roleId] || []).includes(permission)
+  return (ROLE_PERMISSIONS[normalizeProductRole(roleId)] || []).includes(permission)
 }
 
 /** Full catalog — order used when super admin views all roles. */
@@ -63,12 +63,12 @@ export const ROLE_CATALOG = [
   {
     id: UserRole.SUPER_ADMIN,
     label: 'Super Admin',
-    shortLabel: 'Bharat Vistaar · Platform',
-    scope: 'All states / tenants',
+    shortLabel: 'Platform administrator',
+    scope: 'All instances',
     summary:
-      'Full platform access across every state. Manage users, settings, PROD approval, and all documents.',
+      'Full platform access across every instance. Manage users, settings, PROD approval, and all documents.',
     capabilities: [
-      { id: 'all_states', label: 'Access all states', allowed: true },
+      { id: 'all_states', label: 'Access all instances', allowed: true },
       { id: 'view', label: 'View all documents', allowed: true },
       { id: 'upload', label: 'Upload documents', allowed: true },
       { id: 'edit', label: 'Edit any document', allowed: true },
@@ -81,14 +81,14 @@ export const ROLE_CATALOG = [
     ],
   },
   {
-    id: UserRole.BH_VIEWER,
-    label: 'BH Viewer',
-    shortLabel: 'Bharat Vistaar · view only',
-    scope: 'All states / tenants',
+    id: UserRole.GLOBAL_VIEWER,
+    label: 'Viewer',
+    shortLabel: 'Read-only access to all instances',
+    scope: 'All instances',
     summary:
-      'Read-only access across every state. Can browse and search all documents; cannot upload, edit, approve, or run the pipeline.',
+      'Read-only access across all instances. Can browse and search all documents; cannot upload, edit, approve, or run the pipeline.',
     capabilities: [
-      { id: 'all_states', label: 'Access all states', allowed: true },
+      { id: 'all_states', label: 'Access all instances', allowed: true },
       { id: 'view', label: 'View all documents', allowed: true },
       { id: 'upload', label: 'Upload documents', allowed: false },
       { id: 'edit', label: 'Edit documents', allowed: false },
@@ -101,17 +101,17 @@ export const ROLE_CATALOG = [
   },
   {
     id: UserRole.STATE_ADMIN,
-    label: 'State Admin',
-    shortLabel: 'State · full access',
-    scope: 'Assigned state(s) only',
+    label: 'Instance Admin',
+    shortLabel: 'Instance · full access',
+    scope: 'Assigned instances',
     summary:
-      'Full operational access in assigned states: upload, edit, approve every stage, run the pipeline, and delete own documents. Cannot manage platform users or approve PROD.',
+      'Full operational access in assigned instances: upload, edit, approve every stage, run the pipeline, and delete own documents. Cannot manage platform users or approve PROD.',
     capabilities: [
-      { id: 'all_states', label: 'Access all states', allowed: false },
-      { id: 'view', label: 'View all documents in state', allowed: true },
+      { id: 'all_states', label: 'Access all instances', allowed: false },
+      { id: 'view', label: 'View all documents in this instance', allowed: true },
       { id: 'upload', label: 'Upload documents', allowed: true },
-      { id: 'edit', label: 'Edit documents in state', allowed: true },
-      { id: 'review', label: 'Review & approve in state', allowed: true },
+      { id: 'edit', label: 'Edit documents in this instance', allowed: true },
+      { id: 'review', label: 'Review & approve in this instance', allowed: true },
       { id: 'approve_ingestion', label: 'Approve publish to DEV', allowed: true },
       { id: 'delete_own', label: 'Delete own documents', allowed: true },
       { id: 'pipeline', label: 'Run pipeline / reprocess', allowed: true },
@@ -122,17 +122,17 @@ export const ROLE_CATALOG = [
   },
   {
     id: UserRole.STATE_APPROVER,
-    label: 'State Approver',
-    shortLabel: 'State · no delete',
-    scope: 'Assigned state(s) only',
+    label: 'Instance Approver',
+    shortLabel: 'Instance · no delete',
+    scope: 'Assigned instances',
     summary:
-      'Same as State Admin but cannot delete documents. Uploads, edits, approves every stage including publish to DEV, and runs the pipeline.',
+      'Same as Instance Admin but cannot delete documents. Uploads, edits, approves every stage including publish to DEV, and runs the pipeline.',
     capabilities: [
-      { id: 'all_states', label: 'Access all states', allowed: false },
-      { id: 'view', label: 'View all documents in state', allowed: true },
+      { id: 'all_states', label: 'Access all instances', allowed: false },
+      { id: 'view', label: 'View all documents in this instance', allowed: true },
       { id: 'upload', label: 'Upload documents', allowed: true },
-      { id: 'edit', label: 'Edit documents in state', allowed: true },
-      { id: 'review', label: 'Review & approve in state', allowed: true },
+      { id: 'edit', label: 'Edit documents in this instance', allowed: true },
+      { id: 'review', label: 'Review & approve in this instance', allowed: true },
       { id: 'approve_ingestion', label: 'Approve publish to DEV', allowed: true },
       { id: 'delete', label: 'Delete documents', allowed: false },
       { id: 'pipeline', label: 'Run pipeline / reprocess', allowed: true },
@@ -143,16 +143,16 @@ export const ROLE_CATALOG = [
   },
   {
     id: UserRole.STATE_CONTRIBUTOR,
-    label: 'State Contributor',
-    shortLabel: 'State · no delete, no DEV publish',
-    scope: 'Assigned state(s) only',
+    label: 'Instance Contributor',
+    shortLabel: 'Instance · no delete, no DEV publish',
+    scope: 'Assigned instances',
     summary:
       'Uploads, edits, runs the pipeline, and approves the OCR, translation, and chunking gates. Cannot delete documents or approve publish to DEV.',
     capabilities: [
-      { id: 'all_states', label: 'Access all states', allowed: false },
-      { id: 'view', label: 'View all documents in state', allowed: true },
+      { id: 'all_states', label: 'Access all instances', allowed: false },
+      { id: 'view', label: 'View all documents in this instance', allowed: true },
       { id: 'upload', label: 'Upload documents', allowed: true },
-      { id: 'edit', label: 'Edit documents in state', allowed: true },
+      { id: 'edit', label: 'Edit documents in this instance', allowed: true },
       { id: 'review', label: 'Approve OCR, translation & chunking', allowed: true },
       { id: 'approve_ingestion', label: 'Approve publish to DEV', allowed: false },
       { id: 'delete', label: 'Delete documents', allowed: false },
@@ -164,15 +164,15 @@ export const ROLE_CATALOG = [
   },
   {
     id: UserRole.STATE_VIEW,
-    label: 'State View',
-    shortLabel: 'State · view only',
-    scope: 'Assigned state(s) only',
+    label: 'Instance Viewer',
+    shortLabel: 'Instance · view only',
+    scope: 'Assigned instances',
     summary:
-      'View-only access in assigned states. Can browse and search documents; cannot upload, edit, or run pipeline.',
+      'View-only access in assigned instances. Can browse and search documents; cannot upload, edit, or run pipeline.',
     capabilities: [
-      { id: 'all_states', label: 'Access all states', allowed: false },
-      { id: 'view', label: 'View documents in state', allowed: true },
-      { id: 'search', label: 'Search in state', allowed: true },
+      { id: 'all_states', label: 'Access all instances', allowed: false },
+      { id: 'view', label: 'View documents in this instance', allowed: true },
+      { id: 'search', label: 'Search in this instance', allowed: true },
       { id: 'upload', label: 'Upload documents', allowed: false },
       { id: 'edit', label: 'Edit documents', allowed: false },
       { id: 'review', label: 'Review & approve', allowed: false },
@@ -194,9 +194,11 @@ const ROLE_ALIASES = {
   super_admin: UserRole.SUPER_ADMIN,
   'super-admin': UserRole.SUPER_ADMIN,
   superadmin: UserRole.SUPER_ADMIN,
-  bh_viewer: UserRole.BH_VIEWER,
-  'bh-viewer': UserRole.BH_VIEWER,
-  bh_view: UserRole.BH_VIEWER,
+  global_viewer: UserRole.GLOBAL_VIEWER,
+  bh_viewer: UserRole.GLOBAL_VIEWER,
+  'bh-viewer': UserRole.GLOBAL_VIEWER,
+  bh_view: UserRole.GLOBAL_VIEWER,
+  'bh-view': UserRole.GLOBAL_VIEWER,
   state_admin: UserRole.STATE_ADMIN,
   'state-admin': UserRole.STATE_ADMIN,
   admin: UserRole.STATE_ADMIN,

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { ChevronDown, ChevronUp, Code, RotateCcw, Search as SearchIcon, Sliders, AlertCircle } from 'lucide-react'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
@@ -29,6 +30,8 @@ const EXAMPLE_QUERIES = [
 export default function SearchWorkbenchView() {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
+  const [schemeChoices, setSchemeChoices] = useState([])
+  const [resultQuery, setResultQuery] = useState('')
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [showCandidates, setShowCandidates] = useState(false)
   const [settings, setSettings] = useState(DEFAULT_SEARCH_SETTINGS)
@@ -36,6 +39,14 @@ export default function SearchWorkbenchView() {
   const [searching, setSearching] = useState(false)
   const [searchError, setSearchError] = useState(null)
   const [candidates, setCandidates] = useState([])
+  const [collections, setCollections] = useState([])
+  const [language, setLanguage] = useState('')
+  const [strictLanguage, setStrictLanguage] = useState(false)
+  const [areaScheme, setAreaScheme] = useState('')
+  const [areaCode, setAreaCode] = useState('')
+  const [season, setSeason] = useState('')
+  const selectedCollection = collections.find(item => item.name === settings.indexName)
+  const networkSearch = Boolean(selectedCollection?.network_id)
 
   useEffect(() => {
     fetchSettings()
@@ -43,18 +54,30 @@ export default function SearchWorkbenchView() {
 
   async function fetchSettings() {
     try {
-      const data = await fetchJson('/settings/search')
-      setSettings(data)
+      const [data, available] = await Promise.all([
+        fetchJson('/settings/search'), fetchJson('/search/collections'),
+      ])
+      setCollections(available)
+      setSettings({ ...data, indexName: available.some(({ name }) => name === data.indexName)
+        ? data.indexName : available[0]?.name || data.indexName })
     } catch (settingsError) {
       setSearchError(settingsError.message)
     }
   }
 
-  async function handleSearch(overrideQuery) {
+  async function handleSearch(overrideQuery, schemeWorkflowId) {
     // Example-query chips pass the text directly: setQuery is async, so reading
     // state here would search the previous value.
     const effectiveQuery = typeof overrideQuery === 'string' ? overrideQuery : query
     if (!effectiveQuery.trim()) return
+    if (Boolean(areaScheme.trim()) !== Boolean(areaCode.trim())) {
+      setSearchError('Enter both a location code system and a location code.')
+      return
+    }
+    const applicability = {
+      ...(areaCode.trim() && { coverage_areas: [{ codeScheme: areaScheme.trim(), areaCode: areaCode.trim() }] }),
+      ...(season.trim() && { seasons: [season.trim()] }),
+    }
     try {
       setSearching(true)
       setSearchError(null)
@@ -63,7 +86,12 @@ export default function SearchWorkbenchView() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           query: effectiveQuery,
+          ...(schemeWorkflowId && { document_workflow_id: schemeWorkflowId }),
           index_name: settings.indexName,
+          ...(networkSearch && {
+            network_id: selectedCollection.network_id,
+            document_kind: selectedCollection.document_kind,
+          }),
           search_mode: settings.searchMethod,
           top_k: settings.limit,
           candidate_cap: settings.candidateCap,
@@ -77,10 +105,14 @@ export default function SearchWorkbenchView() {
           query_expansion_profile: settings.queryExpansionProfile,
           rerank_mode: settings.rerankMode,
           hybrid_rrf_k: settings.hybridRrfK,
-          include_raw_hits: true,
+          ...(language.trim() && { language: language.trim(), strict_language: strictLanguage }),
+          ...(Object.keys(applicability).length > 0 && { applicability }),
+          include_raw_hits: !networkSearch,
         })
       })
       setResults(data.hits || [])
+      setSchemeChoices(data.scheme_choices || [])
+      setResultQuery(effectiveQuery)
       setCandidates(data.raw_hits || data.candidates || [])
       setSearched(true)
     } catch (err) {
@@ -91,7 +123,12 @@ export default function SearchWorkbenchView() {
   }
 
   function handleReset() {
-    setSettings(DEFAULT_SEARCH_SETTINGS)
+    setSettings({ ...DEFAULT_SEARCH_SETTINGS, indexName: collections[0]?.name || DEFAULT_SEARCH_SETTINGS.indexName })
+    setLanguage('')
+    setStrictLanguage(false)
+    setAreaScheme('')
+    setAreaCode('')
+    setSeason('')
   }
 
   function update(key, value) {
@@ -101,7 +138,7 @@ export default function SearchWorkbenchView() {
   const changedSettings = Object.entries(settings).filter(([key, value]) => DEFAULT_SEARCH_SETTINGS[key] !== value)
 
   return (
-    <div className="page-shell space-y-4">
+    <div className="page-shell">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-serif font-semibold text-foreground">Search Workbench</h1>
@@ -118,11 +155,12 @@ export default function SearchWorkbenchView() {
       </div>
 
       <div className="panel p-4 space-y-3">
-        <div className="flex gap-2">
-          <div className="relative flex-1">
+        <div className="flex flex-col gap-3 sm:flex-row">
+          <div className="relative min-w-0 flex-1">
             <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
               placeholder="Enter your search query..."
+              aria-label="Search query"
               value={query}
               onChange={e => setQuery(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleSearch()}
@@ -134,7 +172,40 @@ export default function SearchWorkbenchView() {
           </Button>
         </div>
 
-        <div className="flex items-center justify-between">
+        <div className="grid gap-2 sm:grid-cols-3">
+          {collections.length > 0 && (
+            <label className="space-y-1 text-xs text-muted-foreground">
+              <span>Collection</span>
+              <select className="w-full rounded-md border border-input bg-background px-2 py-2 text-sm text-foreground"
+                value={settings.indexName} onChange={(event) => update('indexName', event.target.value)}>
+                {!collections.some(({ name }) => name === settings.indexName) && <option>{settings.indexName}</option>}
+                {collections.map(({ name, label }) => <option value={name} key={name}>{label}</option>)}
+              </select>
+            </label>
+          )}
+          <label className="space-y-1 text-xs text-muted-foreground">
+            <span>Response language</span>
+            <Input value={language} placeholder="For example, hi or gu-IN" onChange={(event) => setLanguage(event.target.value)} />
+          </label>
+          <label className="space-y-1 text-xs text-muted-foreground">
+            <span>Location code system</span>
+            <Input value={areaScheme} onChange={(event) => setAreaScheme(event.target.value)} />
+          </label>
+          <label className="space-y-1 text-xs text-muted-foreground">
+            <span>Location code</span>
+            <Input value={areaCode} onChange={(event) => setAreaCode(event.target.value)} />
+          </label>
+          <label className="space-y-1 text-xs text-muted-foreground">
+            <span>Season</span>
+            <Input value={season} onChange={(event) => setSeason(event.target.value)} />
+          </label>
+        </div>
+        {language.trim() && <label className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <input type="checkbox" checked={strictLanguage} onChange={(event) => setStrictLanguage(event.target.checked)} />
+          Require an exact language match
+        </label>}
+
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <button
             className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
             onClick={() => setShowAdvanced(!showAdvanced)}
@@ -208,21 +279,19 @@ export default function SearchWorkbenchView() {
                   onChange={e => update('rerankMode', e.target.value)}
                 >
                   <option value="none">None</option>
-                  <option value="cross-encoder">Cross-encoder</option>
-                  <option value="colbert">ColBERT</option>
+                  <option value="bm25lite">Keyword ranking</option>
+                  <option value="rrf-lite">Rank fusion</option>
+                  <option value="heuristic">Text and metadata ranking</option>
                 </select>
               </div>
               <div>
                 <label className="text-xs text-muted-foreground block mb-1">Query Expansion</label>
-                <select
-                  className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-sm"
+                <Input
+                  className="h-8"
                   value={settings.queryExpansionProfile}
                   onChange={e => update('queryExpansionProfile', e.target.value)}
-                >
-                  <option value="none">None</option>
-                  <option value="basic">Basic</option>
-                  <option value="advanced">Advanced</option>
-                </select>
+                  placeholder="none"
+                />
               </div>
               <div>
                 <label className="text-xs text-muted-foreground block mb-1">Hybrid RRF K</label>
@@ -270,36 +339,57 @@ export default function SearchWorkbenchView() {
         </div>
       )}
 
+      {!searching && schemeChoices.length > 1 && (
+        <div className="panel space-y-2 p-4">
+          <p className="text-sm font-medium">Which scheme do you mean?</p>
+          <div className="flex flex-wrap gap-2">
+            {schemeChoices.map(({ workflow_id, name, code, provider }) => (
+              <Button key={workflow_id} type="button" variant="outline" size="sm" className="h-auto max-w-full whitespace-normal break-words text-left"
+                onClick={() => handleSearch(resultQuery, workflow_id)}>
+                {name} ({code}{provider ? ` · ${provider}` : ''})
+              </Button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {searched && !searching && (
         <div className="space-y-3">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="text-sm text-muted-foreground">
               {results.length} results · {settings.searchMethod} · α={settings.alpha}
             </span>
-            <button
+            {!networkSearch && <button
               className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
               onClick={() => setShowCandidates(!showCandidates)}
             >
               <Code className="h-3.5 w-3.5" />
               {showCandidates ? 'Hide' : 'Show'} candidate hits
-            </button>
+            </button>}
           </div>
 
           {results.length > 0 ? (
             results.map((result, i) => (
               <div key={i} className="panel p-4 space-y-2">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
                     <span className="text-lg font-semibold font-serif text-foreground">{Number(result._score || 0).toFixed(2)}</span>
-                    <span className="text-sm font-medium text-primary cursor-pointer hover:underline">{getSearchResultTitle(result)}</span>
+                    {result.workflow_id ? (
+                      <Link className="min-w-0 break-words text-sm font-medium text-primary hover:underline"
+                        to={`/documents/${encodeURIComponent(result.workflow_id)}${result.revision_id
+                          ? `?tab=revisions&revision=${encodeURIComponent(result.revision_id)}` : `?tab=chunks&chunk=${result.chunk_num || ''}`}`}>
+                        {getSearchResultTitle(result)}
+                      </Link>
+                    ) : <span className="text-sm font-medium">{getSearchResultTitle(result)}</span>}
                   </div>
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                    {result.text_language && <span>{result.text_language}{result.language_fallback ? ' · source fallback' : ''}</span>}
                     <span>Chunk {result.chunk_num}</span>
                     <span>·</span>
                     <span>Pages {result.page_start}–{result.page_end}</span>
                   </div>
                 </div>
-                <p className="text-sm text-foreground/80 leading-relaxed">
+                <p className="break-words text-sm leading-relaxed text-foreground/80">
                   {highlightSearchSnippet(getSearchResultSnippet(result), getSearchHighlights(result)).map((part, index) => (
                     part.highlighted
                       ? <mark key={`${part.text}-${index}`} className="bg-warning/20 text-foreground px-0.5 rounded">{part.text}</mark>
@@ -323,7 +413,7 @@ export default function SearchWorkbenchView() {
             </div>
           )}
 
-          {showCandidates && (
+          {!networkSearch && showCandidates && (
             <div className="panel">
               <div className="panel-header">
                 <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Candidate Hits</span>
@@ -367,7 +457,7 @@ export default function SearchWorkbenchView() {
             </div>
             <p className="mt-3 text-sm font-medium text-foreground">Search the pipeline index</p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Results come from reviewed, ingested chunks — not the raw source files.
+              Search passages and open the source revision to inspect the evidence.
             </p>
 
             <div className="mt-5 w-full">

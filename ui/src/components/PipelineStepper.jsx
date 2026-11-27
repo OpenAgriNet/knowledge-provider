@@ -16,9 +16,28 @@ import { cn } from '../lib/utils'
 // would leave every finished document looking stuck.
 const PROD_ONLY_STEPS = new Set(['approval_for_prod', 'ingesting_prod', 'publishing_to_network'])
 
-function resolveEffectiveIndex(stages, currentStage, hasPages, hasChunks) {
+const AUTOMATIC_STAGES = [
+  { id: 'registered', label: 'Uploaded' },
+  { id: 'ocr_processing', label: 'Extracting text' },
+  { id: 'translation_processing', label: 'Resolving language' },
+  { id: 'chunking', label: 'Preparing passages' },
+  { id: 'ingesting', label: 'Indexing passages' },
+  { id: 'publishing_to_network', label: 'Publishing to network' },
+  { id: 'completed', label: 'Completed' },
+]
+
+const AUTOMATIC_STAGE_ALIASES = {
+  ocr_review: 'ocr_processing',
+  translation_review: 'translation_processing',
+  chunk_review: 'chunking',
+  ready_for_ingestion: 'chunking',
+}
+
+function resolveEffectiveIndex(stages, currentStage, hasPages, hasChunks, automaticRelease) {
   const isFailed = currentStage === 'failed'
-  const userStepId = mapStageToUserStep(currentStage)
+  const userStepId = automaticRelease
+    ? AUTOMATIC_STAGE_ALIASES[currentStage] || currentStage
+    : mapStageToUserStep(currentStage)
   let effectiveIndex = stages.findIndex(stage => stage.id === userStepId)
 
   if (isFailed) {
@@ -26,7 +45,7 @@ function resolveEffectiveIndex(stages, currentStage, hasPages, hasChunks) {
     if (hasChunks) {
       effectiveIndex = stages.findIndex(stage => stage.id === 'ingesting')
     } else if (hasPages) {
-      effectiveIndex = stages.findIndex(stage => stage.id === 'chunk_review')
+      effectiveIndex = stages.findIndex(stage => stage.id === 'chunking')
     } else {
       effectiveIndex = stages.findIndex(stage => stage.id === 'ocr_processing')
     }
@@ -50,13 +69,15 @@ function stageStatus(index, effectiveIndex, isFailed) {
 const publishSkipped = (stageId, status, networkPublish) =>
   stageId === 'publishing_to_network' && status === 'completed' && networkPublish?.status === 'skipped'
 
-export default function PipelineStepper({ currentStage, hasPages = false, hasChunks = false, networkPublish = null, className }) {
+export default function PipelineStepper({
+  currentStage, hasPages = false, hasChunks = false, networkPublish = null, automaticRelease = false, className,
+}) {
   const { prodEnabled } = usePipelineConfig()
-  const stages = React.useMemo(
-    () => (prodEnabled ? USER_PIPELINE_STAGES : USER_PIPELINE_STAGES.filter(s => !PROD_ONLY_STEPS.has(s.id))),
-    [prodEnabled],
-  )
-  const { isFailed, effectiveIndex } = resolveEffectiveIndex(stages, currentStage, hasPages, hasChunks)
+  const stages = React.useMemo(() => {
+    if (automaticRelease) return AUTOMATIC_STAGES
+    return prodEnabled ? USER_PIPELINE_STAGES : USER_PIPELINE_STAGES.filter(s => !PROD_ONLY_STEPS.has(s.id))
+  }, [automaticRelease, prodEnabled])
+  const { isFailed, effectiveIndex } = resolveEffectiveIndex(stages, currentStage, hasPages, hasChunks, automaticRelease)
   const total = stages.length
   const progressPct = total <= 1 ? 0 : Math.min(100, Math.max(0, (effectiveIndex / (total - 1)) * 100))
   const showSpinner = RUNNING_BACKEND_STAGES.has(currentStage)
@@ -80,7 +101,7 @@ export default function PipelineStepper({ currentStage, hasPages = false, hasChu
             const meta = stageMeta[stage.id] || {}
             const title = status === 'skipped'
               ? `Skipped: ${networkPublish.reason || 'not published to the network'}`
-              : meta.description || stage.label
+              : automaticRelease ? stage.label : meta.description || stage.label
             const label = stage.label
             const spinning = status === 'active' && showSpinner
 

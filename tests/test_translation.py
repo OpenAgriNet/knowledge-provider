@@ -118,6 +118,7 @@ class TestTranslationService:
         assert result[0].get("translated_markdown") is None
         assert result[0]["detected_language"] == "en"
         assert result[1]["translated_markdown"] == "Gujarati content translated."
+        assert result[1]["translations"]["en"]["translated_markdown"] == "Gujarati content translated."
         assert result[1]["detected_language"] == "gu"
         mock_provider.translate.assert_called_once()
 
@@ -209,11 +210,8 @@ class TestScriptGate:
 
     @pytest.mark.unit
     @pytest.mark.asyncio
-    async def test_gate_skips_pyfranc_for_english_pages(self, monkeypatch):
-        """No disambiguation call at all when every page is Latin script.
-
-        pyfranc lives in script_detect now, not service — patch it there.
-        """
+    async def test_gate_leaves_short_latin_text_unclassified(self, monkeypatch):
+        """Short Latin-script headings carry too little evidence for a language label."""
         from pipeline.translation import script_detect, service
         from pipeline.translation.base import TranslationConfig
 
@@ -223,14 +221,14 @@ class TestScriptGate:
         ]
 
         def explode(*args, **kwargs):
-            raise AssertionError("pyfranc must not be called for Latin-script pages")
+            raise AssertionError("pyfranc must not be called for short headings")
 
         monkeypatch.setattr(script_detect.franc, "lang_detect", explode)
 
         config = TranslationConfig(provider="gemma_vllm", model="gemma-4")
         detected = await service.detect_page_languages(pages, config=config)
 
-        assert detected == {0: "en", 1: "en"}
+        assert detected == {0: "und", 1: "und"}
 
     @pytest.mark.unit
     @pytest.mark.asyncio
@@ -250,11 +248,11 @@ class TestScriptGate:
         config = TranslationConfig(provider="gemma_vllm", model="gemma-4")
         detected = await service.detect_page_languages(pages, log=log, config=config)
 
-        assert detected == {0: "en", 1: "gu"}
+        assert detected == {0: "und", 1: "gu"}
         joined = "\n".join(messages)
-        assert "Page 1: regex" in joined and "SKIP translation" in joined
+        assert "Page 1: language=und" in joined
         assert "Page 2: regex" in joined and "TRANSLATE" in joined
-        assert "1/2 page(s) need translation" in joined
+        assert "1/2 page(s) identified by script" in joined
 
 
 class TestScriptDetectDisambiguation:

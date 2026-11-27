@@ -202,7 +202,7 @@ export default function RunsView() {
 
   if (loading) {
     return (
-      <div className="flex h-full w-full flex-col gap-4 p-4 sm:p-5">
+      <div className="page-shell">
         <div>
           <Skeleton className="h-7 w-28" />
           <Skeleton className="mt-2 h-4 w-52" />
@@ -214,7 +214,7 @@ export default function RunsView() {
   }
 
   return (
-    <div className="flex h-full min-h-0 w-full flex-col gap-4 p-3 sm:p-4">
+    <div className="page-shell">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="font-serif text-xl font-semibold tracking-tight text-foreground sm:text-2xl">

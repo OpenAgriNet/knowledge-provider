@@ -2,107 +2,116 @@
 
 from __future__ import annotations
 
-import json
-import os
-
 import pytest
 
 
 @pytest.fixture
-def catalog_db(temp_db_path):
-    from pipeline import db, scheme_catalog
+def catalog_db(db_connection):
+    from pipeline.network.catalog import scheme_catalog
 
-    db.DB_PATH = temp_db_path
-    db.init_db()
-    scheme_catalog.ensure_catalog_schema()
-    yield db, scheme_catalog
-    db.DB_PATH = os.environ.get("DOCUMENT_DB_PATH", "/data/documents.db")
+    yield db_connection, scheme_catalog
 
 
-def test_bootstrap_seeds_13_vector_schemes(catalog_db):
-    db, scheme_catalog = catalog_db
-    result = scheme_catalog.bootstrap_catalog_if_empty()
-    assert result["bootstrapped"] is True
-    assert result["vector_count"] == 13
+def _doc(db, workflow_id, *, code, kind="scheme", name=None, stage="completed",
+         instance="default", filename=None, **extra):
+    """Register a document the v2 way: it needs a kind (catalog) and a code."""
+    return db.upsert_document(
+        workflow_id=workflow_id,
+        document_id=f"doc-{workflow_id}",
+        filename=filename or f"{workflow_id}.pdf",
+        filepath=f"/tmp/{workflow_id}.pdf",
+        stage=stage,
+        instance=instance,
+        kind=kind,
+        code=code,
+        name=name,
+        **extra,
+    )
+
+
+def test_catalog_has_no_bootstrap_entries(catalog_db, monkeypatch):
+    monkeypatch.delenv("LEGACY_SCHEME_PROFILE_PATH", raising=False)
+    _, scheme_catalog = catalog_db
+    assert not hasattr(scheme_catalog, "bootstrap_catalog_if_empty")
     snap = scheme_catalog.build_snapshot()
-    codes = {s["scheme_code"] for s in snap["vector_schemes"]}
-    assert len(codes) == 13
-    assert "nbm" not in codes  # legacy-only
-    assert "pkvy" in codes
-    assert "pm-ddky" in codes
-    assert snap["catalog_version"] >= 1
+    assert snap["vector_schemes"] == []
+    assert snap["catalog_version"] == 0
+    assert snap["legacy_schemes"] == []
     assert "search_schemes_doc" in snap["tool_prompts"]
-    assert "vector_schemes_bullets_en" in snap["tool_prompts"]
-    assert snap["routing_exceptions"]["pkvy"] == "search_schemes"
-    assert snap["routing_exceptions"]["nbm"] == "get_scheme_info"
-    # second call is no-op
-    again = scheme_catalog.bootstrap_catalog_if_empty()
-    assert again["bootstrapped"] is False
+    assert snap["routing_exceptions"] == {}
+
+
+def test_deployment_profile_preserves_legacy_tool_routing(catalog_db, monkeypatch, tmp_path):
+    _, scheme_catalog = catalog_db
+    before = scheme_catalog.build_snapshot()
+    profile = tmp_path / "scheme-profile.json"
+    profile.write_text(
+        '{"legacy_schemes":[{"scheme_code":"example","scheme_name":"Example scheme",'
+        '"tool":"legacy_lookup","tool_routing":"legacy"}],"routing_exceptions":{"example":"legacy_lookup"}}'
+    )
+    monkeypatch.setenv("LEGACY_SCHEME_PROFILE_PATH", str(profile))
+    after = scheme_catalog.build_snapshot()
+
+    assert after["legacy_schemes"][0]["scheme_code"] == "example"
+    assert after["routing_exceptions"] == {"example": "legacy_lookup"}
+    assert after["tool_prompts"]["legacy_scheme_count"] == "1"
+    assert before["etag"] != after["etag"]
+
+
+def test_snapshot_has_one_entry_per_live_scheme_document(catalog_db):
+    db, scheme_catalog = catalog_db
+    _doc(db, "wf-a", code="pkvy", name="Paramparagat Krishi Vikas Yojana", instance="mh")
+    _doc(db, "wf-b", code="mif", name="Micro Irrigation Fund", instance="gj")
+    _doc(db, "wf-adv", code="rain-advice", kind="advisory", name="Rain advisory")
+    _doc(db, "wf-draft", code="draft", stage="chunk_review")
+    snap = scheme_catalog.build_snapshot()
+    by_code = {s["scheme_code"]: s for s in snap["vector_schemes"]}
+    assert set(by_code) == {"pkvy", "mif"}  # advisory kind and non-live docs stay out
+    assert by_code["pkvy"]["instances"] == ["mh"]
+    assert by_code["mif"]["instances"] == ["gj"]
+    assert by_code["pkvy"]["workflow_ids"] == ["wf-a"]
+    assert by_code["pkvy"]["source"] == "pipeline"
+
+    only_mh = scheme_catalog.build_snapshot(instance="mh")
+    assert [s["scheme_code"] for s in only_mh["vector_schemes"]] == ["pkvy"]
 
 
 def test_scheme_metadata_and_promote_rebuild(catalog_db):
     db, scheme_catalog = catalog_db
-    scheme_catalog.bootstrap_catalog_if_empty()
     v0 = db.get_catalog_meta()["version"]
-
-    db.upsert_document(
-        workflow_id="wf-pkvy-1",
-        document_id="doc-pkvy-1",
-        filename="pkvy.pdf",
-        filepath="/tmp/pkvy.pdf",
-        stage="completed",
-        page_count=10,
-        chunk_count=5,
-        instance="default",
-    )
+    _doc(db, "wf-pkvy-1", code="pkvy", stage="registered")
     result = scheme_catalog.apply_scheme_metadata(
         "wf-pkvy-1",
-        document_kind="scheme",
-        scheme_code="pkvy",
-        scheme_name="Paramparagat Krishi Vikas Yojana",
-        scheme_aliases=["PKVY", "organic"],
+        code="pkvy",
+        name="Paramparagat Krishi Vikas Yojana",
+        aliases=["PKVY", "organic"],
         network_visible=True,
         catalog_visible=True,
     )
-    assert result["document"]["scheme_code"] == "pkvy"
+    assert result["document"]["code"] == "pkvy"
     assert result["catalog_version"] is not None
     assert result["catalog_version"] > v0
 
+    db.update_document_fields("wf-pkvy-1", stage="completed")
     entry = db.get_catalog_entry("pkvy")
     assert entry is not None
     assert entry["status"] == "live"
     assert entry["source"] == "pipeline"
-    aliases = json.loads(entry["scheme_aliases_json"])
-    assert "organic" in aliases or "PKVY" in aliases
+    assert entry["name"] == "Paramparagat Krishi Vikas Yojana"
+    assert "organic" in entry["aliases"] and "PKVY" in entry["aliases"]
 
 
 def test_code_rename_pending_reindex(catalog_db):
     db, scheme_catalog = catalog_db
-    scheme_catalog.bootstrap_catalog_if_empty()
-    db.upsert_document(
-        workflow_id="wf-rename",
-        document_id="doc-rename",
-        filename="x.pdf",
-        filepath="/tmp/x.pdf",
-        stage="completed",
-        chunk_count=3,
-        instance="default",
-    )
-    scheme_catalog.apply_scheme_metadata(
-        "wf-rename",
-        document_kind="scheme",
-        scheme_code="old-code",
-        scheme_name="Old",
-    )
+    _doc(db, "wf-rename", code="old-code", name="Old")
     result = scheme_catalog.apply_scheme_metadata(
         "wf-rename",
-        scheme_code="new-code",
-        scheme_name="New",
+        code="new-code",
     )
     assert result["pending_reindex"] is True
     doc = db.get_document("wf-rename")
-    assert doc["scheme_code"] == "new-code"
-    assert int(doc["reindex_required"]) == 1
+    assert doc["code"] == "new-code"
+    assert doc["reindex_required"] is True
     # New code must not appear in live vector_schemes
     snap = scheme_catalog.build_snapshot()
     live_codes = {s["scheme_code"] for s in snap["vector_schemes"]}
@@ -110,6 +119,7 @@ def test_code_rename_pending_reindex(catalog_db):
     entry = db.get_catalog_entry("new-code")
     assert entry is not None
     assert entry["status"] == "pending_reindex"
+    assert db.get_catalog_entry("old-code") is None  # the document holds one code
 
 
 def test_derive_scheme_code_acronym(catalog_db):
@@ -121,63 +131,51 @@ def test_derive_scheme_code_acronym(catalog_db):
 
 def test_derive_scheme_code_collision_appends_suffix(catalog_db):
     db, scheme_catalog = catalog_db
-    db.upsert_document(
-        workflow_id="wf-nmnf-1",
-        document_id="doc-nmnf-1",
-        filename="a.pdf",
-        filepath="/tmp/a.pdf",
-        stage="completed",
-        instance="default",
-    )
-    scheme_catalog.apply_scheme_metadata(
-        "wf-nmnf-1", document_kind="scheme", scheme_code="nmnf", scheme_name="National Mission on Natural Farming",
-    )
+    _doc(db, "wf-nmnf-1", code="nmnf", name="National Mission on Natural Farming")
     # A second, unrelated document whose title happens to acronym to the same code.
     assert scheme_catalog.derive_scheme_code("New Model National Farming") == "nmnf-2"
+    # The collision domain is the kind: an advisory may reuse the code.
+    assert scheme_catalog.derive_scheme_code("New Model National Farming", kind="advisory") == "nmnf"
+    # A document's own code does not collide with itself.
+    assert scheme_catalog.derive_scheme_code(
+        "National Mission on Natural Farming", exclude_workflow_id="wf-nmnf-1"
+    ) == "nmnf"
 
 
-def test_apply_scheme_metadata_auto_derives_code_from_name(catalog_db):
+def test_collision_domain_spans_tenants(catalog_db):
+    """Codes are unique per catalog in SQL, but derivation avoids every tenant's codes."""
     db, scheme_catalog = catalog_db
-    db.upsert_document(
-        workflow_id="wf-auto-code",
-        document_id="doc-auto-code",
-        filename="Guideline_of_NMNF_V2_Revised.pdf",
-        filepath="/tmp/x.pdf",
-        stage="ready_for_ingestion",
-        instance="default",
-    )
+    _doc(db, "wf-mh", code="nmnf", instance="mh")
+    assert scheme_catalog.derive_scheme_code("National Mission on Natural Farming") == "nmnf-2"
+    # The same explicit code in another tenant's catalog is still allowed by the schema.
+    _doc(db, "wf-gj", code="nmnf", instance="gj")
+
+
+def test_apply_scheme_metadata_keeps_the_code_when_only_the_name_changes(catalog_db):
+    """Every document has a code from upload, so a name edit never re-derives it."""
+    db, scheme_catalog = catalog_db
+    _doc(db, "wf-name-only", code="gn", stage="ready_for_ingestion")
     result = scheme_catalog.apply_scheme_metadata(
-        "wf-auto-code",
-        document_kind="scheme",
-        scheme_name="National Mission on Natural Farming",
+        "wf-name-only",
+        name="National Mission on Natural Farming",
     )
-    # scheme_code was never passed explicitly -> derived from the title, not left blank/hash-based.
-    assert result["document"]["scheme_code"] == "nmnf"
-    assert result["document"]["scheme_name"] == "National Mission on Natural Farming"
+    assert result["document"]["code"] == "gn"
+    assert result["document"]["name"] == "National Mission on Natural Farming"
+    assert result["code_renamed"] is False
 
 
-def test_document_kind_widened_to_advisory_and_custom(catalog_db):
+def test_kind_is_fixed_after_upload(catalog_db):
     db, scheme_catalog = catalog_db
-    db.upsert_document(
-        workflow_id="wf-kind",
-        document_id="doc-kind",
-        filename="advisory.pdf",
-        filepath="/tmp/advisory.pdf",
-        stage="ready_for_ingestion",
-        instance="default",
-    )
-    result = scheme_catalog.apply_scheme_metadata("wf-kind", document_kind="advisory")
-    assert result["document"]["document_kind"] == "advisory"
-
-    result = scheme_catalog.apply_scheme_metadata("wf-kind", document_kind="how_to_faq")
-    assert result["document"]["document_kind"] == "how_to_faq"
-
-    with pytest.raises(ValueError):
-        scheme_catalog.apply_scheme_metadata("wf-kind", document_kind="Not Valid!!")
+    _doc(db, "wf-kind", code="kind-doc", stage="ready_for_ingestion")
+    result = scheme_catalog.apply_scheme_metadata("wf-kind", name="Renamed")
+    assert result["document"]["kind"] == "scheme"
+    assert db.get_document("wf-kind")["kind"] == "scheme"
+    with pytest.raises(TypeError):
+        scheme_catalog.apply_scheme_metadata("wf-kind", kind="advisory")
 
 
 def test_prepare_records_scheme_payload():
-    from pipeline.activities import _prepare_records
+    from pipeline.search.passage_projection import _prepare_records
 
     chunks = [
         {
@@ -195,28 +193,28 @@ def test_prepare_records_scheme_payload():
         chunks,
         workflow_id="wf1",
         instance="default",
-        document_kind="scheme",
-        scheme_code="pkvy",
-        scheme_name="Paramparagat Krishi Vikas Yojana",
-        scheme_aliases=["PKVY"],
+        kind="scheme",
+        code="pkvy",
+        name="Paramparagat Krishi Vikas Yojana",
+        aliases=["PKVY"],
     )
     assert len(records) == 1
     r = records[0]
     assert r["type"] == "scheme"
-    assert r["scheme_code"] == "pkvy"
-    assert r["scheme_name"].startswith("Paramparagat")
+    assert r["document_identity"]["code"] == "pkvy"
+    assert r["document_identity"]["name"].startswith("Paramparagat")
     # The curator alias leads; bootstrap and derived aliases are merged in so
     # the scheme is not searchable by its exact name alone.
-    assert r["scheme_aliases"][0] == "PKVY"
-    assert len(r["scheme_aliases"]) > 1
-    assert "paramparagat krishi vikas yojana" in {a.lower() for a in r["scheme_aliases"]}
-    assert r["instance_name"] == "Default"
+    assert r["document_identity"]["aliases"][0] == "PKVY"
+    assert len(r["document_identity"]["aliases"]) > 1
+    assert "paramparagat krishi vikas yojana" in {a.lower() for a in r["document_identity"]["aliases"]}
+    assert r["instance"] == "default"
     assert r["chunk_id"] == r["_id"]
     assert r["chunk_index"] == 1
 
 
 def test_prepare_records_document_unchanged():
-    from pipeline.activities import _prepare_records
+    from pipeline.search.passage_projection import _prepare_records
 
     chunks = [
         {
@@ -230,27 +228,37 @@ def test_prepare_records_document_unchanged():
         "doc2",
         "notes.pdf",
         chunks,
-        document_kind="document",
+        kind="document",
     )
     assert records[0]["type"] == "document"
+    assert "document_kind" not in records[0]
     assert "scheme_code" not in records[0]
 
 
+@pytest.mark.parametrize(
+    "kind,expected",
+    [("advisory", "advisory"), ("video", "video"), (" Advisory ", "advisory")],
+)
+def test_prepare_records_type_equals_kind(kind, expected):
+    from pipeline.search.passage_projection import _prepare_records
+
+    chunks = [{"chunk_number": 0, "original_text": "Some text.", "token_count": 3, "is_excluded": False}]
+    records = _prepare_records("doc3", "x.pdf", chunks, kind=kind)
+    assert records[0]["type"] == expected
+    assert "document_kind" not in records[0]
+
+
 @pytest.fixture
-def asgi_client(temp_db_path, mock_temporal_client, mock_minio_client):
+def asgi_client(db_connection, mock_temporal_client, mock_object_store):
     """HTTP client that does not run real Temporal/MinIO lifespan."""
     from contextlib import asynccontextmanager
 
     from fastapi.testclient import TestClient
 
-    from pipeline import db, scheme_catalog
     from pipeline.api import api
 
-    db.DB_PATH = temp_db_path
-    db.init_db()
     api.temporal_client = mock_temporal_client
-    api.minio_client = mock_minio_client
-    scheme_catalog.ensure_catalog_schema()
+    api.object_store = mock_object_store
 
     @asynccontextmanager
     async def _noop_lifespan(_app):
@@ -263,13 +271,15 @@ def asgi_client(temp_db_path, mock_temporal_client, mock_minio_client):
             yield client
     finally:
         api.app.router.lifespan_context = original
-        db.DB_PATH = os.environ.get("DOCUMENT_DB_PATH", "/data/documents.db")
 
 
 def test_catalog_api_snapshot(asgi_client):
-    from pipeline import scheme_catalog
+    from pipeline import db
+    from pipeline.network.catalog import scheme_catalog
 
-    scheme_catalog.bootstrap_catalog_if_empty()
+    _doc(db, "wf-snap-1", code="pkvy", name="Paramparagat Krishi Vikas Yojana")
+    _doc(db, "wf-snap-2", code="pm-ddky", name="Deen Dayal Upadhyaya Krishi Kalyan Yojana")
+    scheme_catalog.rebuild_catalog_from_documents(reason="test")
 
     r = asgi_client.get("/catalog/v1/version")
     assert r.status_code == 200
@@ -280,10 +290,10 @@ def test_catalog_api_snapshot(asgi_client):
     assert r.status_code == 200
     body = r.json()
     assert body["api_version"] == "1"
-    assert len(body["vector_schemes"]) == 13
+    assert {s["scheme_code"] for s in body["vector_schemes"]} == {"pkvy", "pm-ddky"}
     assert "tool_prompts" in body
     assert "legacy_schemes" in body
-    assert body["collections"]["scheme_qdrant"]["name"] == "schemes-index"
+    assert body["collections"]["scheme_qdrant"]["name"] == "documents-index"
 
     r = asgi_client.get("/catalog/v1/tool-prompt")
     assert r.status_code == 200
@@ -291,13 +301,32 @@ def test_catalog_api_snapshot(asgi_client):
 
     r = asgi_client.get("/catalog/v1/schemes")
     assert r.status_code == 200
-    assert len(r.json()["vector_schemes"]) == 13
+    assert len(r.json()["vector_schemes"]) == 2
+
+
+def test_catalog_bootstrap_endpoint_is_gone(asgi_client):
+    assert asgi_client.post("/catalog/v1/bootstrap").status_code in (404, 405)
+
+
+def test_catalog_reads_follow_provider_access(asgi_client, monkeypatch):
+    from pipeline import db
+    from pipeline.api import api
+    from pipeline.auth.deps import get_current_user
+    from pipeline.auth.jwt import claims_to_user
+
+    _doc(db, "wf-provider-a", code="scheme-a", instance="provider-a")
+    _doc(db, "wf-provider-b", code="scheme-b", instance="provider-b")
+    reader = claims_to_user({"sub": "reader", "groups": ["/states/PROVIDER-A/view"]})
+    monkeypatch.setitem(api.app.dependency_overrides, get_current_user, lambda: reader)
+    for endpoint in ("schemes", "snapshot"):
+        result = asgi_client.get(f"/catalog/v1/{endpoint}").raise_for_status().json()
+        assert [entry["scheme_code"] for entry in result["vector_schemes"]] == ["scheme-a"]
+        assert asgi_client.get(f"/catalog/v1/{endpoint}", params={"instance": "provider-b"}).status_code == 403
+    prompt = asgi_client.get("/catalog/v1/tool-prompt").raise_for_status().json()
+    assert prompt["vector_scheme_codes"] == ["scheme-a"]
 
 
 def test_catalog_service_key_auth(asgi_client, monkeypatch):
-    from pipeline import scheme_catalog
-
-    scheme_catalog.bootstrap_catalog_if_empty()
     monkeypatch.setenv("CATALOG_SERVICE_API_KEYS", "test-secret-key")
 
     r = asgi_client.get(
@@ -313,70 +342,47 @@ def test_catalog_service_key_auth(asgi_client, monkeypatch):
 def test_scheme_metadata_api(asgi_client):
     from pipeline import db
 
-    db.upsert_document(
-        workflow_id="wf-meta",
-        document_id="doc-meta",
-        filename="scheme.pdf",
-        filepath="/tmp/scheme.pdf",
-        stage="chunk_review",
-        instance="default",
-    )
+    _doc(db, "wf-meta", code="meta-draft", stage="chunk_review", filename="scheme.pdf")
     r = asgi_client.patch(
         "/documents/wf-meta/scheme-metadata",
         json={
-            "document_kind": "scheme",
-            "scheme_code": "mif",
-            "scheme_name": "Micro Irrigation Fund",
-            "scheme_aliases": ["MIF"],
+            "kind": "scheme",
+            "code": "mif",
+            "name": "Micro Irrigation Fund",
+            "aliases": ["MIF"],
             "network_visible": True,
         },
     )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["scheme_code"] == "mif"
-    assert body["document_kind"] == "scheme"
-    assert "MIF" in body["scheme_aliases"]
+    assert body["code"] == "mif"
+    assert body["kind"] == "scheme"
+    assert "MIF" in body["aliases"]
 
 
-def test_reingest_blocked_when_never_classified(asgi_client, mock_temporal_client):
+def test_scheme_metadata_api_ignores_a_kind_in_the_body(asgi_client):
     from pipeline import db
 
-    db.upsert_document(
-        workflow_id="wf-unclassified",
-        document_id="doc-unclassified",
-        filename="x.pdf",
-        filepath="/tmp/x.pdf",
-        stage="completed",
-        instance="default",
+    _doc(db, "wf-meta-kind", code="meta-kind", stage="chunk_review")
+    r = asgi_client.patch(
+        "/documents/wf-meta-kind/scheme-metadata", json={"kind": "advisory", "name": "Still a scheme"}
     )
-    db.save_chunks("wf-unclassified", [
+    assert r.status_code == 200
+    assert r.json()["kind"] == "scheme"
+    assert r.json()["name"] == "Still a scheme"
+
+
+@pytest.mark.parametrize("kind", ["scheme", "advisory", "video"])
+def test_reingest_is_allowed_for_every_kind(asgi_client, mock_temporal_client, kind):
+    """No 'never classified' guard any more: a document always has a kind and a code."""
+    from pipeline import db
+
+    _doc(db, "wf-reingest", code="testcode", kind=kind)
+    db.save_chunks("wf-reingest", [
         {"chunk_number": 1, "original_text": "some content", "token_count": 5},
     ])
 
-    r = asgi_client.post("/documents/wf-unclassified/reingest")
-    assert r.status_code == 400
-    assert "never been classified" in r.json()["detail"]
-
-
-def test_reingest_allowed_once_classified(asgi_client, mock_temporal_client):
-    from pipeline import db, scheme_catalog
-
-    db.upsert_document(
-        workflow_id="wf-classified",
-        document_id="doc-classified",
-        filename="x.pdf",
-        filepath="/tmp/x.pdf",
-        stage="completed",
-        instance="default",
-    )
-    db.save_chunks("wf-classified", [
-        {"chunk_number": 1, "original_text": "some content", "token_count": 5},
-    ])
-    scheme_catalog.apply_scheme_metadata(
-        "wf-classified", document_kind="scheme", scheme_code="testcode", scheme_name="Test Scheme",
-    )
-
-    r = asgi_client.post("/documents/wf-classified/reingest")
+    r = asgi_client.post("/documents/wf-reingest/reingest")
     assert r.status_code == 200, r.text
     assert r.json()["status"] == "started"
 
@@ -384,14 +390,7 @@ def test_reingest_allowed_once_classified(asgi_client, mock_temporal_client):
 def test_request_prod_ready_wrong_stage_rejected(asgi_client):
     from pipeline import db
 
-    db.upsert_document(
-        workflow_id="wf-prod-ready-wrong-stage",
-        document_id="doc-prod-ready-wrong-stage",
-        filename="x.pdf",
-        filepath="/tmp/x.pdf",
-        stage="chunk_review",
-        instance="default",
-    )
+    _doc(db, "wf-prod-ready-wrong-stage", code="prw", stage="chunk_review")
     r = asgi_client.post("/documents/wf-prod-ready-wrong-stage/request-prod-ready")
     assert r.status_code == 400
 
@@ -399,14 +398,7 @@ def test_request_prod_ready_wrong_stage_rejected(asgi_client):
 def test_request_prod_ready_flags_document_and_clears_on_approve(asgi_client, mock_temporal_client):
     from pipeline import db
 
-    db.upsert_document(
-        workflow_id="wf-prod-ready",
-        document_id="doc-prod-ready",
-        filename="x.pdf",
-        filepath="/tmp/x.pdf",
-        stage="approval_for_prod",
-        instance="default",
-    )
+    _doc(db, "wf-prod-ready", code="pr", stage="approval_for_prod")
     doc = db.get_document("wf-prod-ready")
     assert doc["prod_ready_requested_at"] is None
 
@@ -441,7 +433,7 @@ class TestResolveSchemeAliases:
     @pytest.mark.unit
     def test_nmeoop_gets_aliases_without_any_curation(self):
         """The real case: a scheme indexed with scheme_aliases: [] matched nothing."""
-        from pipeline.scheme_catalog import resolve_scheme_aliases
+        from pipeline.network.catalog.scheme_catalog import resolve_scheme_aliases
 
         aliases = resolve_scheme_aliases(
             "nmeoop", "National Mission on Edible Oils - Oil Palm", None
@@ -459,7 +451,7 @@ class TestResolveSchemeAliases:
 
     @pytest.mark.unit
     def test_acronym_is_derived_from_significant_words(self):
-        from pipeline.scheme_catalog import resolve_scheme_aliases
+        from pipeline.network.catalog.scheme_catalog import resolve_scheme_aliases
 
         aliases = resolve_scheme_aliases("cdp-2", "Crop Diversification Programme", None)
 
@@ -467,7 +459,7 @@ class TestResolveSchemeAliases:
 
     @pytest.mark.unit
     def test_stopwords_are_excluded_from_the_acronym(self):
-        from pipeline.scheme_catalog import resolve_scheme_aliases
+        from pipeline.network.catalog.scheme_catalog import resolve_scheme_aliases
 
         aliases = resolve_scheme_aliases("x", "National Mission on Edible Oils", None)
 
@@ -475,7 +467,7 @@ class TestResolveSchemeAliases:
 
     @pytest.mark.unit
     def test_curator_aliases_are_kept_and_come_first(self):
-        from pipeline.scheme_catalog import resolve_scheme_aliases
+        from pipeline.network.catalog.scheme_catalog import resolve_scheme_aliases
 
         aliases = resolve_scheme_aliases(
             "nmeoop",
@@ -489,17 +481,23 @@ class TestResolveSchemeAliases:
         assert "nmeoop" in {a.lower() for a in aliases}
 
     @pytest.mark.unit
-    def test_bootstrap_aliases_are_merged_for_known_codes(self):
-        from pipeline.scheme_catalog import resolve_scheme_aliases
+    def test_deployment_aliases_are_merged_for_known_codes(self, monkeypatch, tmp_path):
+        from pipeline.network.catalog.scheme_catalog import resolve_scheme_aliases
 
-        aliases = {a.lower() for a in resolve_scheme_aliases("nmeo", None, None)}
+        profile = tmp_path / "scheme-profile.json"
+        profile.write_text(
+            '{"aliases_by_code":{"example":{"scheme_name":"Example Scheme",'
+            '"scheme_aliases":["configured alias"]}}}'
+        )
+        monkeypatch.setenv("LEGACY_SCHEME_PROFILE_PATH", str(profile))
+        aliases = {a.lower() for a in resolve_scheme_aliases("example", None, None)}
 
-        assert "nmeo-os" in aliases
-        assert "oilseeds mission" in aliases
+        assert "configured alias" in aliases
+        assert "example scheme" in aliases
 
     @pytest.mark.unit
     def test_aliases_are_deduped_case_insensitively(self):
-        from pipeline.scheme_catalog import resolve_scheme_aliases
+        from pipeline.network.catalog.scheme_catalog import resolve_scheme_aliases
 
         aliases = resolve_scheme_aliases("pkvy", "Paramparagat Krishi Vikas Yojana", ["PKVY", "pkvy"])
 
@@ -508,8 +506,8 @@ class TestResolveSchemeAliases:
 
     @pytest.mark.unit
     def test_json_string_aliases_are_accepted(self):
-        """documents.scheme_aliases_json arrives as a JSON string."""
-        from pipeline.scheme_catalog import resolve_scheme_aliases
+        """Aliases may arrive as a JSON string."""
+        from pipeline.network.catalog.scheme_catalog import resolve_scheme_aliases
 
         aliases = resolve_scheme_aliases("makhana", "Makhana Scheme", '["fox nut", "lotus seed"]')
 
@@ -518,6 +516,6 @@ class TestResolveSchemeAliases:
 
     @pytest.mark.unit
     def test_no_code_and_no_name_yields_nothing(self):
-        from pipeline.scheme_catalog import resolve_scheme_aliases
+        from pipeline.network.catalog.scheme_catalog import resolve_scheme_aliases
 
         assert resolve_scheme_aliases(None, None, None) == []

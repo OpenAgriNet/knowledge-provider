@@ -76,7 +76,7 @@ export default function DashboardView() {
 
   if (loading) {
     return (
-      <div className="page-shell space-y-6">
+      <div className="page-shell">
         <div>
           <Skeleton className="h-8 w-40" />
           <Skeleton className="h-4 w-56 mt-2" />
@@ -96,7 +96,7 @@ export default function DashboardView() {
   }
 
   return (
-    <div className="page-shell space-y-6">
+    <div className="page-shell">
       <div>
         <h1 className="text-2xl font-serif font-semibold text-foreground">Dashboard</h1>
         <p className="text-sm text-muted-foreground mt-1">Pipeline operational overview</p>
@@ -112,7 +112,7 @@ export default function DashboardView() {
           onClick={() => navigate('/documents')}
         />
         <StatCard
-          label="Total States"
+          label="Total instances"
           value={formatCount(byInstance.length)}
           icon={<Globe2 className="h-4 w-4" />}
         />

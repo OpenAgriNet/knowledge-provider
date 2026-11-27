@@ -2,7 +2,7 @@
 
 This document describes **how Bharat Vistaar Docs Pipeline works end-to-end**: from SSO login and state/role resolution, through document processing and **DEV** ingestion, to **PROD** promotion that only **Bharat Vistaar Super Admin** can approve.
 
-Grounded in current code under `pipeline/`, `ui/`, and Keycloak group conventions.
+Historical deployment description, retained for migration and saved workflow histories. Current instance permissions, private Keycloak login, index-only processing, and network revision releases are described in [README](../README.md) and [Search contract](SEARCH.md). The DEV/PROD terminology below is not the current network retrieval authority.
 
 **Also see:** [SYSTEM_DESIGN.md](./SYSTEM_DESIGN.md) for full system design, plus the box-and-arrow diagrams:
 
@@ -43,7 +43,7 @@ flowchart TB
   end
 
   subgraph DataPlane
-    SQLite["SQLite<br/>documents, pages, chunks,<br/>jobs, audit"]
+    Postgres["Postgres<br/>documents, pages, chunks,<br/>jobs, audit"]
     MinIO["MinIO / S3<br/>source PDFs"]
     QdrantDev["Qdrant DEV<br/>search index"]
     QdrantProd["Qdrant PROD<br/>search index"]
@@ -59,11 +59,11 @@ flowchart TB
   Browser -->|"OIDC PKCE login"| KC
   Browser -->|"Bearer JWT + /api/*"| API
   API -->|"validate JWT / JWKS"| KC
-  API --> SQLite
+  API --> Postgres
   API --> MinIO
   API -->|"start / signal workflows"| Temporal
   Temporal --> Worker
-  Worker --> SQLite
+  Worker --> Postgres
   Worker --> MinIO
   Worker --> OCR
   Worker --> TR
@@ -81,7 +81,7 @@ flowchart TB
 | **Keycloak** | Source of truth for *who* is Super Admin vs which **state + role** a user has |
 | **JWT → API** | Map groups/roles → `permissions`, `instances`, `state_roles`; enforce tenancy + capability |
 | **Temporal workflow** | Durable pipeline with human gates (signals) |
-| **SQLite** | System of record for document stage, pages, chunks, uploader, `instance` |
+| **Postgres** | System of record for document stage, pages, chunks, uploader, `instance` |
 | **Qdrant DEV** | Searchable vectors after state-approved ingestion |
 | **Qdrant PROD** | Production vectors only after Super Admin `approve_prod` |
 
@@ -213,14 +213,14 @@ stateDiagram-v2
 
 | Stage | Who advances it | Effect |
 |---|---|---|
-| Upload → Registered | Contributor / Super Admin (`upload`) | File in MinIO; SQLite row; `instance` set |
-| OCR / Translation / Chunking | System (worker activities) | Pages/chunks in SQLite |
+| Upload → Registered | Contributor / Super Admin (`upload`) | File in MinIO; Postgres row; `instance` set |
+| OCR / Translation / Chunking | System (worker activities) | Pages/chunks in Postgres |
 | OCR / Translation / Chunk / **Pre-ingestion** approve | State **review** (+ pipeline as needed) or Super Admin | Temporal signal continues workflow |
 | **Ingesting in Dev** | System after `approve_ingestion` | `ingest_document_from_db` → **Qdrant DEV** |
 | **Approval for Prod** (queue) | Document waits | Still **DEV-only** in search until promote |
 | **Approve for Prod** | **Super Admin only** (`admin` / `RequireAdmin`) | `promote_document_to_prod_qdrant` → **Qdrant PROD** → `completed` |
 
-Signals (workflow): `approve_ocr`, `approve_translation`, `approve_chunks`, `approve_ingestion`, `approve_prod` — see `pipeline/workflows.py`.
+Signals (workflow): `approve_ocr`, `approve_translation`, `approve_chunks`, `approve_ingestion`, `approve_prod` — see `pipeline/temporal/workflows/`.
 
 API (examples):
 
@@ -355,14 +355,14 @@ flowchart LR
 ```mermaid
 flowchart TB
   PDF[Source PDF in MinIO]
-  SQLITE[(SQLite: pages + chunks<br/>+ instance + uploader)]
+  PGDB[(Postgres: pages + chunks<br/>+ instance + uploader)]
   DEV[(Qdrant DEV collection)]
   PROD[(Qdrant PROD collection)]
 
-  PDF --> SQLITE
-  SQLITE -->|"ingest_document_from_db<br/>after approve_ingestion"| DEV
+  PDF --> PGDB
+  PGDB -->|"ingest_document_from_db<br/>after approve_ingestion"| DEV
   DEV -->|"promote_document_to_prod_qdrant<br/>after Super Admin approve_prod"| PROD
-  SQLITE -.->|"stage mirror"| SQLITE
+  PGDB -.->|"stage mirror"| PGDB
 ```
 
 - **DEV ingest** activity: `ingest_document_from_db` (worker).
@@ -400,10 +400,10 @@ flowchart TB
 
 | Concern | Location |
 |---|---|
-| Stages enum | `pipeline/models.py` → `DocumentStage` |
-| Workflow + signals | `pipeline/workflows.py` |
-| DEV ingest / PROD promote activities | `pipeline/activities.py` |
-| Approve prod API | `pipeline/api/api.py` → `POST .../approve-prod` |
+| Stages enum | `pipeline/documents/models.py` → `DocumentStage` |
+| Workflow + signals | `pipeline/temporal/workflows/` |
+| DEV ingest / PROD promote activities | `pipeline/temporal/activities/` |
+| Approve prod API | `pipeline/api/routers/document_review.py` → `POST .../approve-prod` |
 | Permissions | `pipeline/auth/permissions.py` |
 | Groups / super_admin | `pipeline/auth/groups.py` |
 | Tenancy | `pipeline/auth/tenancy.py` |

@@ -54,7 +54,8 @@ RETIRED_LEAVES = ("reviewer",)
 # Roles that must only ever reach a token through a group.
 GROUPED_ROLES = (
     "super_admin",
-    "bh_viewer",
+    "global_viewer",
+    "bh_viewer",  # Existing realms can still use the legacy name.
     "state_admin",
     "state_approver",
     "state_contributor",
@@ -113,7 +114,7 @@ def _all_groups(admin: str, token: str) -> list[dict]:
 def _is_product_group(path: str) -> bool:
     """True when a group path grants a product role in the six-role model."""
     clean = (path or "").rstrip("/")
-    if clean in ("/global/super-admin", "/global/bh-viewer"):
+    if clean in ("/global/super-admin", "/global/global-viewer", "/global/bh-viewer"):
         return True
     parts = [p for p in clean.split("/") if p]
     return len(parts) == 3 and parts[0] == "states"
