@@ -142,6 +142,7 @@ EXPECTED_ROUTES: list[tuple[str, str]] = [
     ("PUT", "/admin/users/{user_id}/access"),
     ("PUT", "/documents/{workflow_id}/releases/{network_id}"),
     ("PUT", "/providers/{provider}"),
+    ("PUT", "/providers/{provider}/display-name"),
     ("PUT", "/providers/{provider}/members/{user_id}"),
     ("PUT", "/settings/search"),
     ("PUT", "/webhook/sources/{provider}/{source}"),

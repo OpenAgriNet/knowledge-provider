@@ -10,6 +10,29 @@ beforeEach(() => {
   fetchJson.mockReset()
 })
 
+it('saves the selected instance display name without changing its code', async () => {
+  fetchJson.mockImplementation(async (path, options) => {
+    if (path === '/providers') return { providers: [{ id: 'rice-id', provider: 'rice-lab' }] }
+    if (path.endsWith('/members')) return { members: [] }
+    if (path === '/providers/rice-lab/display-name' && options.method === 'PUT') {
+      return { id: 'rice-id', provider: 'rice-lab', ...JSON.parse(options.body) }
+    }
+    throw new Error(`Unexpected request: ${path}`)
+  })
+  const user = userEvent.setup()
+  render(<ProviderAccessPanel isSuperAdmin={false} />)
+  await user.click(await screen.findByRole('tab', { name: 'Details' }))
+  expect(screen.getByText('rice-lab', { exact: true })).toBeVisible()
+  expect(screen.getByLabelText('Display name')).toHaveAttribute('placeholder', 'RICE-LAB')
+  await user.type(screen.getByLabelText('Display name'), 'Rice Laboratory')
+  await user.click(screen.getByRole('button', { name: 'Save display name' }))
+  expect(await screen.findByText('Instance display name saved.')).toBeVisible()
+  expect(screen.getByRole('option', { name: 'Rice Laboratory (RICE-LAB)' })).toHaveValue('rice-lab')
+  await user.clear(screen.getByLabelText('Display name'))
+  await user.click(screen.getByRole('button', { name: 'Save display name' }))
+  expect(await screen.findByRole('option', { name: 'RICE-LAB' })).toHaveValue('rice-lab')
+})
+
 it('revokes only the member of the instance selected by an instance administrator', async () => {
   let revoked = false
   fetchJson.mockImplementation(async (path, options) => {

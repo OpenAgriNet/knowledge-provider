@@ -93,6 +93,8 @@ def _display_search_hit(hit: dict, requested_language: str | None) -> dict:
     """Present localized document labels and the legacy search response aliases."""
     name = hit.get("name")
     result = dict(hit)
+    if not result.get("instance_name") and (instance := result.get("instance")):
+        result["instance_name"] = instance.upper()
     if hit.get("type") == "scheme" or hit.get("scheme_code"):
         if identity := indexed_identity(hit):
             result["scheme_code"] = identity.get("code")
