@@ -1,0 +1,147 @@
+(
+$network := "__NETWORK_ID__";
+$digest := "__SCHEMA_DIGEST__";
+$list := function($values) { $append([], $values) };
+$clean := function($value) {
+ $type($value) = "string" ? $trim($replace($value, /^"|"$/, "")) :
+ $type($value) = "number" ? $string($value) : ""
+};
+$dayBound := function($value) { (
+ $day := $clean($value);
+ $contains($day, /^[0-9]+$/) ? $number($day)
+) };
+$validityBoundary := function($value) { (
+ $stamp := $clean($value);
+ $contains($stamp, /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/) or
+ $contains($stamp, /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+(Z|[+-][0-9]{2}:[0-9]{2})$/)
+ ? $stamp
+) };
+$part := function($label, $value) {
+ $clean($value) != "" ? $label & ": " & $clean($value) : ""
+};
+$lines := function($label, $values) {
+ $part($label, $join($filter($distinct($list($values).$clean($)), function($line) { $line != "" }), "; "))
+};
+$area := function($code, $name, $level) {
+ $exists($code) and $code != null and $string($code) != "" ?
+ {"codeScheme": "LGD", "areaCode": $string($code), "areaLevel": $level,
+ "areaName": $clean($name) != "" ? $clean($name)} : []
+};
+[
+ $list($).(
+ $event := $;
+ $root := $type(payload) = "object" ? payload : $event;
+ $parent := $exists($root.contentID) ? $root.contentID : $event.external_id;
+ $headline := $clean($root.title) != "" ? $clean($root.title) : $clean($event.title);
+ $domain := $clean($root.domainName);
+ $category := $domain in ["Agriculture", "Horticulture"] ? "Crop" :
+  $domain in ["Animal Husbandry", "Livestock", "Fisheries", "Aquaculture", "Poultry"] ? "Livestock" : $domain;
+ $commodity := $clean($root.commodityName);
+ $areas := $distinct([
+  $root.contentLocationDetails.(
+  $area(stateLgdCode, stateName, "state")
+  ),
+  $root.contentLocationDetails.districts.$area(districtLgdCode, districtName, "district")
+ ]);
+ $rootPublished := $event.status = "Published" or $root.status = "Published";
+ $flagged := $event.is_published in [0, "0", false] or $event.isPublished in [0, "0", false]
+  or $root.isPublished in [0, "0", false];
+ $explicitDraft := ($exists($event.status) and $event.status != null and $event.status != "Published")
+  or ($exists($root.status) and $root.status != null and $root.status != "Published");
+ $rootPublished and $not($flagged or $explicitDraft) and $exists($parent) and $headline != "" ?
+  $root.popList[status = "Published" or $not($exists(status)) or status = null].(
+  $detail := $clean(problemDetails);
+  $topic := $clean(problemType);
+  $season := $clean(season) != "" ? $clean(season) : $clean($root.season);
+  $seasons := $season != "" ? [$season] : [];
+  $validFrom := $validityBoundary(season_start_date);
+  $validTo := $validityBoundary(season_end_date);
+  $fromDays := $dayBound($exists(startPeriod) and startPeriod != null ? startPeriod : $root.startPeriod);
+  $toDays := $dayBound($exists(endPeriod) and endPeriod != null ? endPeriod : $root.endPeriod);
+  $timed := $category = "Crop" and ($exists($fromDays) or $exists($toDays)) and
+   ($not($exists($fromDays) and $exists($toDays)) or $fromDays <= $toDays);
+  $issued := $clean(issuedAt) != "" ? $clean(issuedAt) : $clean($root.issuedAt);
+  $lang := $clean(language) != "" ? $clean(language) : $clean($root.language);
+  $recommendation := $join($filter($append($list($root.advisory), $list(advisory)).$clean($), function($line) { $line != "" }), "\n\n");
+  $timing := $timed ? [{"relativeTiming": {"event": "Sowing", "fromDays": $fromDays, "toDays": $toDays}}];
+  $body := $join($filter([
+   $part("Problem", $detail),
+   $part("Problem type", $topic),
+   $lines("Description", $append($list($root.description), $list(description))),
+   $lines("Symptoms", $append($list($root.applicableSymptoms), $list(applicableSymptoms))),
+   $lines("Conditions", $append($list($root.applicableCondition), $list(applicableCondition))),
+   $lines("Causes", causative_factor),
+   $lines("Predisposing factors", predisposing_factor),
+   $part("Commodity", $commodity),
+   $part("Variety", $root.commodityVariety),
+   $lines("Variety details", $root.varietyDetails),
+   $part("Crop type", type_of_crop),
+   $part("Aquaculture type", Aquaculture_type),
+   $part("Season", $season),
+   $part("Age in weeks", age_weeks),
+   $part("Age in years", age_years),
+   $timed ? $part("Start day relative to sowing", $fromDays) : "",
+   $timed ? $part("End day relative to sowing", $toDays) : "",
+   $part("Start week", applicablePeriod_startWeek),
+   $part("End week", applicablePeriod_endWeek),
+   $part("Year", applicablePeriod_year),
+   $part("Season start date", season_start_date),
+   $part("Season end date", season_end_date),
+   $lines("Keywords", keywords),
+   $lines("Advisory", $append($list($root.advisory), $list(advisory)))
+  ], function($line) { $line != "" }), "\n\n");
+  $exists(popID) and popID != null and
+   ($body != "" and ($detail != "" or $clean(description) != "" or $clean(advisory) != ""
+   or $clean($root.description) != "" or $clean($root.advisory) != "")) ? {
+   "external_id": $string($parent) & ":" & $string(popID),
+   "title": $substring($headline & ($detail != "" and $detail != $headline ? " — " & $detail : ""), 0, 256),
+   "kind": "advisory",
+   "text": $body,
+   "language": $lang,
+   "source_url": $exists($root.sourceUri) ? $root.sourceUri,
+   "validity": $exists($validFrom) or $exists($validTo) ?
+   {"startsAt": $validFrom, "endsAt": $validTo},
+   "knowledge_metadata": {
+   "issued_at": $issued,
+   "schema_pack": {"network_id": $network, "capability": "openagrinet:AgricultureAdvisory", "digest": $digest,
+    "attributes": {"@type": "openagrinet:AgricultureAdvisory", "informationMode": "Direct",
+    "subjectCategories": [$category], "topics": [$topic], "issuedAt": $issued,
+    "languages": [$lang], "recommendations": [{"message": $recommendation, "language": $lang}],
+    "source": {"sourceId": $string($parent) & ":" & $string(popID), "sourceUri": $root.sourceUri},
+    "coverageAreas": $count($areas) > 0 ? $areas,
+    "applicability": $timing}},
+   "subject_categories": $category != "" ? [$category] : [],
+   "agriculture_subjects": $commodity != "" and $category in ["Crop", "Livestock"] ?
+    [{"descriptor": {"name": $commodity}}] : [],
+   "subjects": $commodity != "" and $category in ["Crop", "Livestock"] ?
+    [{"type": $lowercase($category), "descriptor": {"name": $commodity}}] : [],
+   "topics": $topic != "" ? [$substring($topic, 0, 128)] : [],
+   "attributes": {
+    "applicability": $timing,
+    "source_record": {"content_id": $parent, "pop_id": popID},
+    "validity_source": $exists($validFrom) or $exists($validTo) ?
+    {"startsAt": $exists($validFrom) ? "season_start_date",
+    "endsAt": $exists($validTo) ? "season_end_date"},
+    "subject": {
+    "domain": $domain != "" ? $domain,
+    "subdomain": $clean($root.subdomainName) != "" ? $clean($root.subdomainName),
+    "commodity": $commodity != "" ? $commodity,
+    "commodity_id": $root.commodityID,
+    "variety": $clean($root.commodityVariety) != "" ? $clean($root.commodityVariety),
+    "crop_type": $clean(type_of_crop) != "" ? $clean(type_of_crop),
+    "aquaculture_type": $clean(Aquaculture_type) != "" ? $clean(Aquaculture_type)
+    },
+    "problem": {"type": $topic, "details": $detail},
+    "keywords": $filter($list(keywords).$clean($), function($line) { $line != "" }),
+    "age": {"weeks": age_weeks, "years": age_years}
+   },
+   "seasons": $seasons,
+   "coverage_areas": $areas,
+   "applicability_groups": $count($areas) > 0 and $season != "" ?
+    [{"coverage_areas": $areas, "seasons": $seasons}] : []
+   }
+  } : []
+  ) : []
+ )
+]
+)
