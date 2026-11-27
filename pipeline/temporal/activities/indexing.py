@@ -192,10 +192,8 @@ async def promote_document_to_prod_qdrant(
         pages=db.get_pages(workflow_id),
     )
     activity.logger.info(
-        "Promoting %s records to PROD Qdrant collection %s (kind=%s)",
-        len(records),
-        prod_collection,
-        kind,
+        "promoting records to PROD Qdrant",
+        extra={"record_count": len(records), "collection": prod_collection, "kind": kind},
     )
     store = QdrantVectorStore(client=client)
     result = await asyncio.to_thread(

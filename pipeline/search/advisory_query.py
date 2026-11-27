@@ -1,4 +1,4 @@
-"""Advisory search for the ``advisory`` search profile.
+"""Advisory search for ``document_kind="advisory"``.
 
 Ported from the BV provider (bharat-provider-backend ``advisory-qdrant.util.ts``):
 keep the best passage per advisory entry, then prefer advisories for the
@@ -27,8 +27,7 @@ CROP_ALIASES = {
     "kodo millet": "Kodo Millet", "kodo": "Kodo Millet", "kodo-millet": "Kodo Millet",
 }
 
-# The ICAR advisory intake template writes the sowing window into the passage
-# text with these labels; reading them back needs no template change.
+# Older ICAR records recorded the sowing window only in passage text.
 _START_DAY = re.compile(r"Start day relative to sowing:\s*(-?\d+)")
 _END_DAY = re.compile(r"End day relative to sowing:\s*(-?\d+)")
 
@@ -43,10 +42,11 @@ def advisory_payload(metadata: KnowledgeMetadata, chunks: list[dict]) -> dict:
     if isinstance(source_record, dict) and source_record.get("pop_id") not in (None, ""):
         fields["pop_id"] = source_record["pop_id"]
 
-    text = "\n".join(str(chunk.get("edited_text") or chunk.get("original_text") or "") for chunk in chunks)
-    start, end = _START_DAY.search(text), _END_DAY.search(text)
-    if start and end:
-        fields["start_period"], fields["end_period"] = int(start.group(1)), int(end.group(1))
+    if "applicability" not in metadata.attributes:
+        text = "\n".join(str(chunk.get("edited_text") or chunk.get("original_text") or "") for chunk in chunks)
+        start, end = _START_DAY.search(text), _END_DAY.search(text)
+        if start and end:
+            fields["start_period"], fields["end_period"] = int(start.group(1)), int(end.group(1))
 
     states, districts = [], []
     for area in metadata.coverage_areas:
@@ -109,13 +109,43 @@ def season_list(hit: dict) -> list[str]:
     return [part.strip().lower() for key in hit.get("season_keys") or [] for part in re.split(r"[,;/]", str(key)) if part.strip()]
 
 
+def sowing_bounds(hit: dict) -> tuple[int | None, int | None]:
+    attributes = (hit.get("metadata") or {}).get("attributes") or {}
+    if "applicability" not in attributes:
+        legacy = _advisory(hit)
+        start, end = _period(legacy.get("start_period")), _period(legacy.get("end_period"))
+        return (start, end) if start is not None and end is not None and start <= end else (None, None)
+
+    rules = attributes["applicability"]
+    if not isinstance(rules, list) or len(rules) != 1:
+        return None, None
+    rule = rules[0]
+    # Only rank a timing-only rule. A rule with other qualifiers requires
+    # evaluating those qualifiers together before declaring a match.
+    if not isinstance(rule, dict) or rule.keys() != {"relativeTiming"}:
+        return None, None
+    timing = rule["relativeTiming"]
+    if not isinstance(timing, dict) or timing.get("event") != "Sowing":
+        return None, None
+    start, end = timing.get("fromDays"), timing.get("toDays")
+    if any(bound is not None and (type(bound) is not int or bound < 0) for bound in (start, end)):
+        return None, None
+    if start is not None and end is not None and start > end:
+        return None, None
+    return (0 if start is None and end is not None else start), end
+
+
 def has_day_range(hit: dict) -> bool:
-    return _period(_advisory(hit).get("start_period")) is not None and _period(_advisory(hit).get("end_period")) is not None
+    return any(bound is not None for bound in sowing_bounds(hit))
 
 
 def days_in_range(hit: dict, days: int | None) -> bool:
-    start, end = _period(_advisory(hit).get("start_period")), _period(_advisory(hit).get("end_period"))
-    return days is not None and start is not None and end is not None and start <= days <= end
+    if days is None:
+        return False
+    start, end = sowing_bounds(hit)
+    return ((start is not None or end is not None)
+            and (start is None or start <= days)
+            and (end is None or days <= end))
 
 
 def is_national(hit: dict) -> bool:

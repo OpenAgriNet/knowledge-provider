@@ -158,6 +158,25 @@ def test_real_icar_intake_template_feeds_the_advisory_fields():
     [record] = _prepare_records("doc-1", item["external_id"], [{"chunk_number": 1, "original_text": item["text"]}],
                                 kind=item["kind"], knowledge_metadata=item["knowledge_metadata"], source_type="webhook")
     fields = record["advisory"]
-    assert (fields["pop_id"], fields["start_period"], fields["end_period"]) == (819, 105, 120)
+    assert fields["pop_id"] == 819 and "start_period" not in fields and "end_period" not in fields
+    assert record["metadata"]["attributes"]["applicability"] == [
+        {"relativeTiming": {"event": "Sowing", "fromDays": 105, "toDays": 120}},
+    ]
+    assert aq.days_in_range(record, 105) and aq.days_in_range(record, 120)
+    assert not aq.days_in_range(record, 121)
     assert (fields["location_district_codes"], record["season_keys"]) == ([519], ["rabi"])
     assert "sorghum" in record["crop_keys"]
+
+
+@pytest.mark.parametrize(("rules", "days", "matched"), [
+    ([{"relativeTiming": {"event": "Sowing", "fromDays": 105}}], 120, True),
+    ([{"relativeTiming": {"event": "Sowing", "toDays": 120}}], -1, False),
+    ([{"relativeTiming": {"event": "Sowing", "toDays": 120}}], 120, True),
+    ([{"relativeTiming": {"event": "Transplanting", "fromDays": 105}}], 120, False),
+    ([{"relativeTiming": {"event": "Sowing", "fromDays": 105}, "waterRegimes": ["Irrigated"]}], 120, False),
+    ([{"relativeTiming": {"event": "Sowing", "fromDays": 120, "toDays": 105}}], 110, False),
+])
+def test_structured_sowing_rules_take_precedence_over_legacy_text(rules, days, matched):
+    record = hit("example", 0.70, start_period=-10, end_period=180)
+    record["metadata"] = {"attributes": {"applicability": rules}}
+    assert aq.days_in_range(record, days) is matched

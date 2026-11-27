@@ -15,7 +15,7 @@ async def update_document_state(
 ) -> dict:
     """Update document state in Postgres."""
 
-    activity.logger.info(f"Updating state for {workflow_id}: stage={stage}")
+    activity.logger.info("updating document stage", extra={"workflow_id": workflow_id, "stage": stage})
     return _set_stage(workflow_id, stage, page_count, chunk_count, error_message)
 
 

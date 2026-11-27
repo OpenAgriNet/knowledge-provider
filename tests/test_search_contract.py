@@ -188,7 +188,7 @@ def test_network_route_passes_exact_identity_and_instance_boundary(
     assert capturing_store.captured["release_network_id"] == "a"
     assert capturing_store.captured["allowed_instances"] == ["bv"]
     assert capturing_store.captured["name"] == "released-a"
-    assert response.json()["effective_config"]["ranking_score_field"] == "_score"
+    assert response.json()["effective_config"]["ranking_score_field"] == "_scheme_score"
 
 
 def test_adapter_collection_inventory_is_scoped_and_empty_grants_cannot_fall_back(test_client, capturing_store, network_reader, monkeypatch):
